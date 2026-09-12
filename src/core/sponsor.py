@@ -18,18 +18,52 @@ _SSL_CTX.verify_mode = ssl.CERT_NONE
 
 MEDIA_EXTS = {'jpg', 'png', 'webp', 'jpeg', 'gif', 'html', 'js', 'css', 'svg', 'mp3', 'mp4', 'json'}
 
-def extract_domain_candidates(ocr_lines):
-    candidates = []
-    texts = [line[1].strip() for line in (ocr_lines or []) if len(line) > 1]
+def unmask_domain_candidates(raw_text: str):
+    """Auto unmask domains with asterisks like shin-shih.co***.tw or site.c***"""
+    results = []
+    clean = raw_text.replace('★', '*').replace('x', 'x')
 
-    # Priority 1: Match URLs starting with http:// or https://
+    # Pattern 1: domain.c***.tw / domain.co***.vn / domain.co***.tw
+    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.(?:co|c)\*+\.([a-zA-Z]{2,4})', clean, re.IGNORECASE):
+        p, cc = m.group(1).lower(), m.group(2).lower()
+        results.extend([f"{p}.com.{cc}", f"{p}.co.{cc}", f"{p}.{cc}"])
+
+    # Pattern 2: domain.c*** or domain.co***
+    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.(?:co|c)\*+(?![a-zA-Z0-9])', clean, re.IGNORECASE):
+        results.append(f"{m.group(1).lower()}.com")
+
+    # Pattern 3: domain.n***
+    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.n\*+(?![a-zA-Z0-9])', clean, re.IGNORECASE):
+        results.append(f"{m.group(1).lower()}.net")
+
+    # Pattern 4: domain.o***
+    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.o\*+(?![a-zA-Z0-9])', clean, re.IGNORECASE):
+        results.append(f"{m.group(1).lower()}.org")
+
+    # Pattern 5: domain.v***
+    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.v\*+(?![a-zA-Z0-9])', clean, re.IGNORECASE):
+        results.append(f"{m.group(1).lower()}.vn")
+
+    return list(dict.fromkeys(results))
+
+def extract_domain_candidates(texts):
+    candidates = []
+
+    # Priority 0: Unmask any masked domains like shin-shih.co***.tw
+    for text in texts:
+        if '*' in text:
+            for u in unmask_domain_candidates(text):
+                if 'link4m' not in u and u not in candidates:
+                    candidates.append(u)
+
+    # Priority 1: Match full URLs http:// or https://
     for text in texts:
         for m in re.findall(r'https?:\/\/([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)+)', text):
             d = m.lower().rstrip('/')
             if 'link4m' not in d and d not in candidates:
                 candidates.append(d)
 
-    # Priority 2: Match any token with dot domain (letters/digits + dot + 2..10 letter TLD)
+    # Priority 2: Generic domain pattern (any 2-10 letter TLD)
     for text in texts:
         cleaned = re.sub(r'[^a-zA-Z0-9\.\-\/]', ' ', text)
         for part in cleaned.split():
@@ -62,6 +96,16 @@ def probe_domain_live(domain: str) -> str:
     return ""
 
 def detect_sponsor_domain(page_link) -> str:
+    all_texts = []
+
+    # Step 1: Extract from Link4M page DOM text directly
+    try:
+        page_text = page_link.locator("body").inner_text()
+        all_texts.extend(page_text.splitlines())
+    except Exception:
+        pass
+
+    # Step 2: Extract from target sponsor image
     target_img = None
     for _ in range(6):
         for img in page_link.locator("img").all():
@@ -73,34 +117,30 @@ def detect_sponsor_domain(page_link) -> str:
             break
         time.sleep(0.8)
 
-    if not target_img:
-        return ""
+    if target_img:
+        src = target_img.get_attribute("src") or ""
+        log(f"[*] Found sponsor SERP image: {src}")
 
-    src = target_img.get_attribute("src") or ""
-    log(f"[*] Found sponsor SERP image: {src}")
-
-    img_bytes = None
-    try:
-        img_bytes = target_img.screenshot()
-    except Exception:
-        pass
-    if not img_bytes:
+        img_bytes = None
         try:
-            resp = page_link.request.get(src)
-            if resp.ok:
-                img_bytes = resp.body()
+            img_bytes = target_img.screenshot()
         except Exception:
             pass
+        if not img_bytes:
+            try:
+                resp = page_link.request.get(src)
+                if resp.ok:
+                    img_bytes = resp.body()
+            except Exception:
+                pass
 
-    if not img_bytes:
-        return ""
+        if img_bytes:
+            res, _ = get_ocr()(img_bytes)
+            if res:
+                all_texts.extend([line[1].strip() for line in res if len(line) > 1])
 
-    res, _ = get_ocr()(img_bytes)
-    if not res:
-        return ""
-
-    candidates = extract_domain_candidates(res)
-    log(f"[*] OCR extracted domain candidates: {candidates}")
+    candidates = extract_domain_candidates(all_texts)
+    log(f"[*] Extracted domain candidates (including unmasked): {candidates}")
 
     # Probe live domain
     for c in candidates:
