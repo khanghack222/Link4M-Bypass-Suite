@@ -245,22 +245,30 @@ function showResultCard(finalUrl, durationSec) {
     console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
 }
 
-function runBypassLink4M(targetUrl) {
+let currentHeadless = false;
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function runBypassLink4M(targetUrl, headless = currentHeadless) {
     return new Promise((resolve) => {
         clearScreen();
         printBanner();
 
         const startTime = Date.now();
-        console.log(`  ${c.bgPurple} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.neonCyan}LINK4M FULL AUTOMATION (WHISPER AI + RAPIDOCR)${c.reset}\n`);
+        console.log(`  ${c.bgPurple} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.neonCyan}LINK4M FULL AUTOMATION (WHISPER AI + RAPIDOCR)${c.reset}`);
+        console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
 
         if (fs.existsSync(DEST_FILE)) {
             try { fs.unlinkSync(DEST_FILE); } catch (e) {}
         }
 
         let capturedDestUrl = null;
-        const pythonArgs = fs.existsSync(SCRIPT_PATH)
+        const baseArgs = fs.existsSync(SCRIPT_PATH)
             ? ["-u", "-X", "utf8", SCRIPT_PATH, targetUrl]
             : ["-u", "-X", "utf8", "-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import bypass; bypass.run(sys.argv[1])", targetUrl];
+        const pythonArgs = headless ? [...baseArgs, "--headless"] : baseArgs;
 
         const proc = spawn(getPythonPath(), pythonArgs, {
             cwd: ROOT_DIR,
@@ -309,12 +317,13 @@ function runBypassLink4M(targetUrl) {
     });
 }
 
-async function runBypassOctolink(targetUrl) {
+async function runBypassOctolink(targetUrl, headless = currentHeadless) {
     clearScreen();
     printBanner();
 
     const startTime = Date.now();
-    console.log(`  ${c.bgPink} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.hotPink}OCTOLINK ULTRA ENGINE (CANVAS PHYSICS + DEVICE GATE)${c.reset}\n`);
+    console.log(`  ${c.bgPink} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.hotPink}OCTOLINK ULTRA ENGINE (CANVAS PHYSICS + DEVICE GATE)${c.reset}`);
+    console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
     console.log(`  ${c.neonPurple}╭───${c.reset} ${c.bgPurple} 🎯 MỤC TIÊU ${c.reset}  ${c.bold}${c.neonCyan}${targetUrl}${c.reset}`);
 
     if (!fs.existsSync(OCTO_RUNNER)) {
@@ -324,14 +333,14 @@ async function runBypassOctolink(targetUrl) {
 
     try {
         const { runBypass } = require(OCTO_RUNNER);
-        const res = await runBypass(targetUrl, { headless: false }, (msg) => {
+        const res = await runBypass(targetUrl, { headless }, (msg) => {
             if (msg.includes("Bắt đầu")) {
                 console.log(`  ${c.neonPurple}├───${c.reset} ${c.bgBlue} 🚀 INITIATE ${c.reset}  ${c.electricBlue}${msg.replace(/^[🚀⚙️]\s*/, "")}${c.reset}`);
             } else if (msg.includes("Hook") || msg.includes("Canvas") || msg.includes("arc")) {
                 console.log(`  ${c.neonPurple}├───${c.reset} ${c.bgPink} 🎨 CANVAS HOOK ${c.reset}  ${c.brightPink}${msg}${c.reset}`);
             } else if (msg.includes("THÀNH CÔNG") || msg.includes("Link đích")) {
                 console.log(`  ${c.neonPurple}╰───${c.reset} ${c.bgGreen} 🎉 HOÀN TẤT ${c.reset}  ${c.mintGreen}${msg}${c.reset}`);
-            } else if (msg.includes("CẢNH BÁO") || msg.includes("Lỗi")) {
+            } else if (msg.includes("CẢNH BÁO") || msg.includes("Lỗi") || msg.includes("Black-holed")) {
                 console.log(`  ${c.neonPurple}│    ${c.flameOrange}⚠ ${msg}${c.reset}`);
             } else {
                 console.log(`  ${c.neonPurple}│    ${c.softGray}• ${msg}${c.reset}`);
@@ -362,12 +371,12 @@ function isLink4mUrl(u) {
     return lower.includes("link4m") || lower.includes("link4") || /link4m\.(net|org|co|me|vip)/i.test(lower);
 }
 
-async function dispatchUrl(url) {
+async function dispatchUrl(url, headless = currentHeadless) {
     const target = url.trim();
     if (isOctolinkUrl(target)) {
-        await runBypassOctolink(target);
+        await runBypassOctolink(target, headless);
     } else {
-        await runBypassLink4M(target);
+        await runBypassLink4M(target, headless);
     }
 }
 
@@ -377,12 +386,17 @@ async function main() {
         printBanner();
 
         // Khung Menu Chính Cực Kì Chuyên Nghiệp
+        const modeStatus = currentHeadless
+            ? `${c.mintGreen}ẨN (HEADLESS)${c.reset}  `
+            : `${c.flameOrange}HIỆN (WINDOW)${c.reset}    `;
+
         console.log(`  ${c.neonCyan}╔══════════════════════════════════════════════════════════════════════════════╗${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}                          ${c.bold}${c.cyberYellow}⚡ BẢNG ĐIỀU KHIỂN TÁC VỤ ⚡${c.reset}                         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╠══════════════════════════════════════════════════════════════════════════════╣${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.neonCyan}[1]${c.reset} ${c.bold}${c.pureWhite}⚡ Tự Động Nhận Diện Link${c.reset} ${c.dim}(Auto Detect: Link4M hoặc Octolink)${c.reset}         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.electricBlue}[2]${c.reset} ${c.bold}${c.pureWhite}🎯 Vượt Link4M Chuyên Sâu${c.reset} ${c.dim}(Whisper Audio AI + RapidOCR Vision)${c.reset}        ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.hotPink}[3]${c.reset} ${c.bold}${c.pureWhite}🎨 Vượt Octolink Chuyên Sâu${c.reset} ${c.dim}(Canvas Physics Engine + Device Gate)${c.reset}     ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.cyberYellow}[5]${c.reset} ${c.bold}${c.pureWhite}🖥️ Đổi Trình Duyệt: [${modeStatus}${c.bold}${c.pureWhite}]${c.reset} ${c.dim}(Bấm 5 để chuyển đổi)${c.reset}            ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.mintGreen}[4]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Thông Số Kỹ Thuật${c.reset}                                       ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.crimsonRed}[0]${c.reset} ${c.bold}${c.pureWhite}🚪 Thoát Ứng Dụng${c.reset}                                                      ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
@@ -404,6 +418,11 @@ async function main() {
         } else if (choice === "0") {
             console.log(`\n  ${c.mintGreen}✨ Tạm biệt anh yêu Tris! Chúc anh một ngày tốt lành! ✨${c.reset}\n`);
             process.exit(0);
+        } else if (choice === "5") {
+            currentHeadless = !currentHeadless;
+            console.log(`\n  ${c.mintGreen}✅ Đã chuyển sang chế độ: ${currentHeadless ? "Ẩn (Headless - Siêu tốc, không lỗi Black-hole)" : "Hiện cửa sổ (Window - Dễ quan sát)"}${c.reset}\n`);
+            await sleep(1200);
+            continue;
         } else if (choice === "4") {
             clearScreen();
             printBanner();
@@ -415,7 +434,9 @@ async function main() {
             console.log(`  ${c.bold}${c.hotPink}2. Octolink Bypass Core:${c.reset}`);
             console.log(`     • ${c.softGray}Canvas Physics Engine: Hook trực tiếp CanvasRenderingContext2D để track tâm điểm Hold.${c.reset}`);
             console.log(`     • ${c.softGray}Device Gate Pass: Giả lập TouchEvent / MouseEvent người thật, qua mặt bộ lọc bot.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.mintGreen}3. Tương tác mượt mà:${c.reset}`);
+            console.log(`  ${c.bold}${c.cyberYellow}3. Tùy chọn Headless linh hoạt:${c.reset}`);
+            console.log(`     • ${c.softGray}Phím [5]: Bật/Tắt chế độ chạy ẩn (Headless) giúp vượt link mượt mà và tránh double navigation.${c.reset}\n`);
+            console.log(`  ${c.bold}${c.mintGreen}4. Tương tác mượt mà:${c.reset}`);
             console.log(`     • ${c.softGray}Tự động bắt link từ Clipboard khi vừa mở menu (hỗ trợ cả Link4M & Octolink).${c.reset}`);
             console.log(`     • ${c.softGray}Hỗ trợ dán URL trực tiếp ngay tại menu chính mà không cần chọn bước phụ.${c.reset}`);
             console.log(`     • ${c.softGray}Tự động Copy kết quả link đích vào Clipboard ngay khi hoàn tất.${c.reset}\n`);
