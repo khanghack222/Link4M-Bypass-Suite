@@ -116,8 +116,8 @@ function printBanner() {
         console.log(`${c.bold}${gradients[i]}${l}${c.reset}`);
     });
 
-    console.log(`\n  ${c.bgPurple} ⚡ ULTRA SUITE ⚡ ${c.reset}  ${c.bold}${c.neonCyan}LINK4M${c.reset} ${c.softGray}&${c.reset} ${c.bold}${c.hotPink}OCTOLINK${c.reset} ${c.cyberYellow}AUTO BYPASS ENGINE 4.0${c.reset}`);
-    console.log(`  ${c.dim}${c.softGray}✦ RapidOCR Vision  ✦ Whisper AI Solver  ✦ Canvas Physics Hook  ✦ 100% Free & Offline${c.reset}\n`);
+    console.log(`\n  ${c.bgPurple} ⚡ ULTRA SUITE ⚡ ${c.reset}  ${c.bold}${c.neonCyan}LINK4M${c.reset} ${c.cyberYellow}AUTO BYPASS ENGINE 4.1 (A05 COMPLIANT)${c.reset}`);
+    console.log(`  ${c.dim}${c.softGray}✦ RapidOCR Vision  ✦ Whisper AI Solver  ✦ Auto Google Referrer  ✦ 100% Free & Offline${c.reset}\n`);
 }
 
 // Thanh tiến trình ProgressBar trực quan
@@ -374,10 +374,12 @@ function isLink4mUrl(u) {
 async function dispatchUrl(url, headless = currentHeadless) {
     const target = url.trim();
     if (isOctolinkUrl(target)) {
-        await runBypassOctolink(target, headless);
-    } else {
-        await runBypassLink4M(target, headless);
+        console.log(`\n  ${c.bgRed} ⛔ THÔNG BÁO TẠM NGỪNG DỰ ÁN OCTOLINK ⛔ ${c.reset}`);
+        console.log(`  ${c.crimsonRed}Website octolink.vip đã bị Cục An ninh mạng (A05 - Bộ Công An) chặn do có dấu hiệu vi phạm Điều 321, 322 Bộ luật Hình sự.${c.reset}`);
+        console.log(`  ${c.flameOrange}Dự án chính thức ngừng mọi hoạt động hỗ trợ Octolink để đảm bảo an toàn và tuân thủ pháp luật.${c.reset}\n`);
+        return;
     }
+    await runBypassLink4M(target, headless);
 }
 
 async function main() {
@@ -393,20 +395,24 @@ async function main() {
         console.log(`  ${c.neonCyan}╔══════════════════════════════════════════════════════════════════════════════╗${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}                          ${c.bold}${c.cyberYellow}⚡ BẢNG ĐIỀU KHIỂN TÁC VỤ ⚡${c.reset}                         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╠══════════════════════════════════════════════════════════════════════════════╣${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.neonCyan}[1]${c.reset} ${c.bold}${c.pureWhite}⚡ Tự Động Nhận Diện Link${c.reset} ${c.dim}(Auto Detect: Link4M hoặc Octolink)${c.reset}         ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.electricBlue}[2]${c.reset} ${c.bold}${c.pureWhite}🎯 Vượt Link4M Chuyên Sâu${c.reset} ${c.dim}(Whisper Audio AI + RapidOCR Vision)${c.reset}        ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.hotPink}[3]${c.reset} ${c.bold}${c.pureWhite}🎨 Vượt Octolink Chuyên Sâu${c.reset} ${c.dim}(Canvas Physics Engine + Device Gate)${c.reset}     ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.neonCyan}[1]${c.reset} ${c.bold}${c.pureWhite}⚡ Vượt Link4M Tự Động${c.reset} ${c.dim}(Auto Detect: Whisper AI + RapidOCR Vision)${c.reset}        ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.electricBlue}[2]${c.reset} ${c.bold}${c.pureWhite}🎯 Vượt Link4M Chuyên Sâu${c.reset} ${c.dim}(Nhập link Link4M thủ công)${c.reset}                 ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.crimsonRed}[3]${c.reset} ${c.dim}${c.crimsonRed}⛔ Octolink (ĐÃ DỪNG HỖ TRỢ - A05 Chặn Vi Phạm Pháp Luật)${c.reset}                  ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.cyberYellow}[5]${c.reset} ${c.bold}${c.pureWhite}🖥️ Đổi Trình Duyệt: [${modeStatus}${c.bold}${c.pureWhite}]${c.reset} ${c.dim}(Bấm 5 để chuyển đổi)${c.reset}            ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.mintGreen}[4]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Thông Số Kỹ Thuật${c.reset}                                       ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.mintGreen}[4]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Tuyên Bố Pháp Lý${c.reset}                                         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.crimsonRed}[0]${c.reset} ${c.bold}${c.pureWhite}🚪 Thoát Ứng Dụng${c.reset}                                                      ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
 
         const clipUrl = getClipboardUrl();
         if (clipUrl) {
             const isOcto = isOctolinkUrl(clipUrl);
-            const tag = isOcto ? `${c.bgPink} 🐙 OCTOLINK PHÁT HIỆN: ${c.reset}` : `${c.bgCyan} 🔗 LINK4M PHÁT HIỆN: ${c.reset}`;
-            console.log(`  ${tag} ${c.bold}${c.neonCyan}${clipUrl}${c.reset}`);
-            console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động chạy ngay link này!${c.reset}\n`);
+            if (isOcto) {
+                console.log(`  ${c.bgRed} ⛔ PHÁT HIỆN LINK OCTOLINK: ${c.reset} ${c.dim}${clipUrl}${c.reset}`);
+                console.log(`  ${c.crimsonRed}↳ Hệ thống từ chối xử lý link Octolink do đã bị Bộ Công An cấm.${c.reset}\n`);
+            } else {
+                console.log(`  ${c.bgCyan} 🔗 LINK4M PHÁT HIỆN: ${c.reset} ${c.bold}${c.neonCyan}${clipUrl}${c.reset}`);
+                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động chạy ngay link này!${c.reset}\n`);
+            }
         }
 
         const inputChoice = await ask(`  ${c.bold}${c.cyberYellow}➤ Chọn chế độ hoặc Dán link trực tiếp [1]: ${c.reset}`);
@@ -420,33 +426,34 @@ async function main() {
             process.exit(0);
         } else if (choice === "5") {
             currentHeadless = !currentHeadless;
-            console.log(`\n  ${c.mintGreen}✅ Đã chuyển sang chế độ: ${currentHeadless ? "Ẩn (Headless - Siêu tốc, không lỗi Black-hole)" : "Hiện cửa sổ (Window - Dễ quan sát)"}${c.reset}\n`);
+            console.log(`\n  ${c.mintGreen}✅ Đã chuyển sang chế độ: ${currentHeadless ? "Ẩn (Headless - Siêu tốc)" : "Hiện cửa sổ (Window - Dễ quan sát)"}${c.reset}\n`);
             await sleep(1200);
             continue;
         } else if (choice === "4") {
             clearScreen();
             printBanner();
-            console.log(`  ${c.bold}${c.neonCyan}📋 CHI TIẾT TÍNH NĂNG CÔNG NGHỆ BYPASS:${c.reset}\n`);
+            console.log(`  ${c.bold}${c.neonCyan}📋 THÔNG TIN HỆ THỐNG & TUYÊN BỐ PHÁP LÝ:${c.reset}\n`);
+            console.log(`  ${c.bold}${c.crimsonRed}⛔ THÔNG BÁO DỪNG DỰ ÁN OCTOLINK:${c.reset}`);
+            console.log(`     • ${c.softGray}Hệ thống octolink.vip đã bị Cục An ninh mạng (A05 - Bộ Công An) chặn do vi phạm Điều 321, 322 BLHS.${c.reset}`);
+            console.log(`     • ${c.softGray}Dự án tuân thủ nghiêm ngặt pháp luật và chính thức ngừng mọi hoạt động liên quan đến Octolink.${c.reset}\n`);
             console.log(`  ${c.bold}${c.electricBlue}1. Link4M Bypass Core:${c.reset}`);
             console.log(`     • ${c.softGray}RapidOCR trên ONNX Runtime: Nhận diện chính xác domain tài trợ từ ảnh SERP.${c.reset}`);
             console.log(`     • ${c.softGray}Whisper AI Audio Solver: Giải quyết 100% Google reCAPTCHA v2 không tốn 1 xu.${c.reset}`);
             console.log(`     • ${c.softGray}Tự động phục hồi domain bị che sao (*, ***, co***.tw, c***) và probe live HTTP/HTTPS.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.hotPink}2. Octolink Bypass Core:${c.reset}`);
-            console.log(`     • ${c.softGray}Canvas Physics Engine: Hook trực tiếp CanvasRenderingContext2D để track tâm điểm Hold.${c.reset}`);
-            console.log(`     • ${c.softGray}Device Gate Pass: Giả lập TouchEvent / MouseEvent người thật, qua mặt bộ lọc bot.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.cyberYellow}3. Tùy chọn Headless linh hoạt:${c.reset}`);
-            console.log(`     • ${c.softGray}Phím [5]: Bật/Tắt chế độ chạy ẩn (Headless) giúp vượt link mượt mà và tránh double navigation.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.mintGreen}4. Tương tác mượt mà:${c.reset}`);
-            console.log(`     • ${c.softGray}Tự động bắt link từ Clipboard khi vừa mở menu (hỗ trợ cả Link4M & Octolink).${c.reset}`);
+            console.log(`  ${c.bold}${c.cyberYellow}2. Tùy chọn Headless linh hoạt:${c.reset}`);
+            console.log(`     • ${c.softGray}Phím [5]: Bật/Tắt chế độ chạy ẩn (Headless --headless=new) siêu tốc.${c.reset}\n`);
+            console.log(`  ${c.bold}${c.mintGreen}3. Tương tác mượt mà:${c.reset}`);
+            console.log(`     • ${c.softGray}Tự động bắt link từ Clipboard khi vừa mở menu.${c.reset}`);
             console.log(`     • ${c.softGray}Hỗ trợ dán URL trực tiếp ngay tại menu chính mà không cần chọn bước phụ.${c.reset}`);
             console.log(`     • ${c.softGray}Tự động Copy kết quả link đích vào Clipboard ngay khi hoàn tất.${c.reset}\n`);
             await ask(`  ${c.cyberYellow}Nhấn Enter để quay lại menu chính...${c.reset}`);
             continue;
         } else if (choice === "3") {
-            const hint = clipUrl && isOctolinkUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: https://octolink.vip/K3r4k5)${c.reset}`;
-            let link = await ask(`\n  ${c.bold}${c.hotPink}Nhập link Octolink cần vượt${hint}:${c.reset} `);
-            if (!link) link = (clipUrl && isOctolinkUrl(clipUrl)) ? clipUrl : (clipUrl || "https://octolink.vip/K3r4k5");
-            await runBypassOctolink(link);
+            console.log(`\n  ${c.bgRed} ⛔ THÔNG BÁO TẠM NGỪNG HỖ TRỢ OCTOLINK ⛔ ${c.reset}`);
+            console.log(`  ${c.crimsonRed}Domain octolink.vip đã bị Cục An ninh mạng (A05 - Bộ Công An) ngăn chặn.${c.reset}`);
+            console.log(`  ${c.flameOrange}Mọi hoạt động vượt link liên quan đến Octolink đã được gỡ bỏ khỏi hệ thống theo quy định pháp luật.${c.reset}\n`);
+            await ask(`  ${c.cyberYellow}Nhấn Enter để quay lại menu chính...${c.reset}`);
+            continue;
         } else if (choice === "2") {
             const hint = clipUrl && isLink4mUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: https://link4m.net/go/2kCcIqn)${c.reset}`;
             let link = await ask(`\n  ${c.bold}${c.electricBlue}Nhập link Link4M cần vượt${hint}:${c.reset} `);
