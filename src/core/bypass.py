@@ -49,10 +49,56 @@ def run(target_url: str = None, headless: bool = False):
             ignore_https_errors=True
         )
         context.add_init_script("""
+            // 1. Quota & Webdriver bypass
             if (window.navigator && window.navigator.webkitTemporaryStorage) {
                 window.navigator.webkitTemporaryStorage.queryUsageAndQuota = (s) => { if (typeof s === 'function') s(0, 500*1024*1024*1024); };
             }
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+            // 2. Fake Google Referrer
+            try {
+                Object.defineProperty(document, 'referrer', {
+                    get: () => 'https://www.google.com/',
+                    configurable: true
+                });
+            } catch (e) {}
+
+            // 3. Always Active (Anti-Blur / Anti-Tab Switch / Fake Visibility)
+            try {
+                Object.defineProperty(document, 'hidden', {
+                    get: () => false,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'visibilityState', {
+                    get: () => 'visible',
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'webkitVisibilityState', {
+                    get: () => 'visible',
+                    configurable: true
+                });
+
+                window.hasFocus = () => true;
+
+                const blockedEvents = [
+                    'visibilitychange',
+                    'webkitvisibilitychange',
+                    'blur',
+                    'mouseleave'
+                ];
+
+                blockedEvents.forEach(eventType => {
+                    window.addEventListener(eventType, (e) => {
+                        e.stopImmediatePropagation();
+                    }, true);
+
+                    document.addEventListener(eventType, (e) => {
+                        e.stopImmediatePropagation();
+                    }, true);
+                });
+            } catch (e) {}
         """)
 
         page_link = context.new_page()
