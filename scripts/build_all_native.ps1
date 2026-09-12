@@ -1,4 +1,4 @@
-﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 chcp 65001 >$null 2>&1
 
@@ -38,14 +38,16 @@ foreach ($mod in $modules) {
     Remove-Item -Recurse -Force $buildDir -ErrorAction SilentlyContinue
 }
 
-# Copy recaptcha_solver.py (or keep as helper)
+# Copy helper scripts
 Copy-Item -Path "$ProjectRoot\src\core\recaptcha_solver.py" -Destination "$ReleaseDir\src\core\recaptcha_solver.py" -Force
+if (Test-Path "$ProjectRoot\src\core\octolink_runner.js") { Copy-Item -Path "$ProjectRoot\src\core\octolink_runner.js" -Destination "$ReleaseDir\src\core\octolink_runner.js" -Force }
+if (Test-Path "$ProjectRoot\src\core\ocr_helper.py") { Copy-Item -Path "$ProjectRoot\src\core\ocr_helper.py" -Destination "$ReleaseDir\src\core\ocr_helper.py" -Force }
 New-Item -ItemType File -Path "$ReleaseDir\src\core\__init__.py" -Force | Out-Null
 
 # Copy UI & helper scripts
 Copy-Item -Path "$ProjectRoot\src\ui\menu.js" -Destination "$ReleaseDir\src\ui\menu.js" -Force
-Copy-Item -Path "$ProjectRoot\package.json" -Destination "$ReleaseDir\package.json" -Force
-Copy-Item -Path "$ProjectRoot\README.md" -Destination "$ReleaseDir\README.md" -Force
+if (Test-Path "$ProjectRoot\package.json") { Copy-Item -Path "$ProjectRoot\package.json" -Destination "$ReleaseDir\package.json" -Force }
+if (Test-Path "$ProjectRoot\README.md") { Copy-Item -Path "$ProjectRoot\README.md" -Destination "$ReleaseDir\README.md" -Force }
 Copy-Item -Path "$ProjectRoot\scripts\bootstrap.ps1" -Destination "$ReleaseDir\scripts\bootstrap.ps1" -Force
 Copy-Item -Path "$ProjectRoot\scripts\Cai_Dat_Moi_Truong.bat" -Destination "$ReleaseDir\scripts\Cai_Dat_Moi_Truong.bat" -Force
 

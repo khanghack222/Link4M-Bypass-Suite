@@ -8,8 +8,37 @@ const fs = require('fs');
 const path = require('path');
 const { execSync, execFileSync } = require('child_process');
 
-const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const PYTHON_PATH = 'C:\\Users\\XUAN\\AppData\\Local\\Programs\\Python\\Python311\\python.exe';
+function getDynamicChromePath() {
+  const candidates = [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return 'chrome.exe';
+}
+
+function getDynamicPythonPath() {
+  const candidates = [
+    'C:\\Users\\XUAN\\AppData\\Local\\Programs\\Python\\Python311\\python.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Programs\\Python\\Python311\\python.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Programs\\Python\\Python312\\python.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Programs\\Python\\Python310\\python.exe'),
+    'C:\\Python311\\python.exe',
+    'C:\\Python312\\python.exe'
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return 'python';
+}
+
+const CHROME_PATH = getDynamicChromePath();
+const PYTHON_PATH = getDynamicPythonPath();
 const OCR_HELPER = path.join(__dirname, 'ocr_helper.py');
 
 // Danh sách domain đã xác nhận 100%
