@@ -26,3 +26,9 @@ simplified_handler.js
 tobruxaz.js
 redirect.obf.js
 trafficvn_*.js
+
+# Top secret research reports & reverse engineering
+BAO_CAO_NGHIEN_CUU_*.md
+RESEARCH_*.md
+research/
+release_native/
