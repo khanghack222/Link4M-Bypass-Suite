@@ -8,6 +8,7 @@ const SCRIPT_PATH = path.join(ROOT_DIR, "src", "core", "bypass.py");
 const TRAFFICVN_RUNNER = path.join(ROOT_DIR, "src", "core", "trafficvn_runner.py");
 const BBMKTS_RUNNER = path.join(ROOT_DIR, "src", "core", "bbmkts_runner.py");
 const GTRAFFIC_RUNNER = path.join(ROOT_DIR, "src", "core", "gtraffic_runner.py");
+const LAYMA_RUNNER = path.join(ROOT_DIR, "src", "core", "layma_runner.py");
 const DEST_FILE = path.join(ROOT_DIR, "destination_url.txt");
 const CODE_FILE = path.join(ROOT_DIR, "extracted_code.txt");
 const OCTO_RUNNER = path.join(ROOT_DIR, "src", "core", "octolink_runner.js");
@@ -139,8 +140,8 @@ function formatLogLine(rawLine) {
     if (!line) return null;
 
     // 1. Target URL
-    if (line.includes("Target Link4M URL:") || line.includes("Target URL:") || line.includes("Target Gtraffic URL:")) {
-        const u = line.split(/Target (?:Link4M |Gtraffic )?URL:/i)[1].trim();
+    if (line.includes("Target Link4M URL:") || line.includes("Target URL:") || line.includes("Target Gtraffic URL:") || line.includes("Target LayMa URL:")) {
+        const u = line.split(/Target (?:Link4M |Gtraffic |LayMa )?URL:/i)[1].trim();
         return `  ${c.neonPurple}╭───${c.reset} ${c.bgPurple} 🎯 MỤC TIÊU ${c.reset}  ${c.bold}${c.neonCyan}${u}${c.reset}`;
     }
 
@@ -152,6 +153,9 @@ function formatLogLine(rawLine) {
         const m = line.split(/candidates[^:]*:/i)[1]?.trim() || "";
         return `  ${c.neonPurple}├───${c.reset} ${c.bgBlue} 🔍 CANDIDATE ${c.reset} ${c.softGray}Phân giải domain:${c.reset} ${c.brightPink}${m}${c.reset}`;
     }
+    if (line.includes("Shape Analysis:") || line.includes("HSV Contour Shape Analysis")) {
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgBlue} 👁️  HSV VISION ${c.reset}  ${c.electricBlue}Phân tích contour hình học 9 ô QCaptcha...${c.reset}`;
+    }
 
     // 3. Sponsor Mission Target
     if (/TARGET SPONSOR WEBSITE|EXTRACTED SPONSOR DOMAIN/i.test(line)) {
@@ -160,16 +164,17 @@ function formatLogLine(rawLine) {
     }
 
     // 4. Traffic Campaign Key
-    if (line.includes("Detected traffic_key:")) {
-        const k = line.split("Detected traffic_key:")[1].trim();
-        return `  ${c.neonPurple}├───${c.reset} ${c.bgOrange} 🔑 CAMPAIGN ${c.reset}  ${c.softGray}Traffic Key:${c.reset} ${c.bold}${c.cyberYellow}${k || "None"}${c.reset}`;
+    if (line.includes("Detected traffic_key:") || line.includes("Traffic session token:")) {
+        const k = (line.split("Detected traffic_key:")[1] || line.split("token:")[1] || "").trim();
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgOrange} 🔑 CAMPAIGN ${c.reset}  ${c.softGray}Session Key:${c.reset} ${c.bold}${c.cyberYellow}${k || "None"}${c.reset}`;
     }
 
     // 5. Steps Executing
-    if (line.includes("EXECUTING STEP")) {
-        const m = line.match(/STEP\s+(\d+)/i);
+    if (line.includes("EXECUTING STEP") || line.includes("[BƯỚC ")) {
+        const m = line.match(/(?:STEP\s+|\[BƯỚC\s+)(\d+)/i);
         const stepNum = m ? m[1] : "1";
-        return `  ${c.neonPurple}├───${c.reset} ${c.bgPink} 🚀 BƯỚC ${stepNum}/3 ${c.reset}  ${c.bold}${c.pureWhite}Đang thực thi nhiệm vụ trên trang tài trợ...${c.reset}`;
+        const txt = line.replace(/.*\[BƯỚC\s+\d+\]\s*/, "").replace(/.*EXECUTING STEP\s+\d+:\s*/, "");
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgPink} 🚀 BƯỚC ${stepNum} ${c.reset}  ${c.bold}${c.pureWhite}${txt || "Đang thực thi nhiệm vụ..."}${c.reset}`;
     }
     if (line.includes("Navigating to Step")) {
         const art = line.split("article:")[1]?.trim() || "";
@@ -184,8 +189,8 @@ function formatLogLine(rawLine) {
         const dur = line.split("duration =")[1].trim();
         return `  ${c.neonPurple}│    ${c.cyberYellow}⏱  Thời gian yêu cầu:${c.reset} ${c.bold}${c.pureWhite}${dur}${c.reset}`;
     }
-    if (line.includes("Remaining:")) {
-        const remMatch = line.match(/Remaining:\s*([0-9\.]+)s/);
+    if (line.includes("Remaining:") || line.includes("Đếm ngược: còn")) {
+        const remMatch = line.match(/(?:Remaining:\s*|còn\s*)([0-9\.]+)s/);
         const rem = remMatch ? parseFloat(remMatch[1]) : 0;
         const total = 60;
         const current = Math.max(0, total - rem);
@@ -194,7 +199,7 @@ function formatLogLine(rawLine) {
     }
 
     // 7. Sponsor Code Extracted
-    if (line.includes("EXTRACTED SPONSOR CODE:") || line.includes("FOUND CODE IN BODY:") || line.includes("EXTRACTED GTRAFFIC CODE:") || line.includes("EXTRACTED CODE ON FALLBACK:")) {
+    if (line.includes("EXTRACTED SPONSOR CODE:") || line.includes("FOUND CODE IN BODY:") || line.includes("EXTRACTED GTRAFFIC CODE:") || line.includes("EXTRACTED LAYMA CODE:") || line.includes("EXTRACTED CODE ON FALLBACK:")) {
         const code = (line.split("CODE:")[1] || line.split("FALLBACK:")[1] || line.split("BODY:")[1] || "").trim();
         return `  ${c.neonPurple}├───${c.reset} ${c.bgYellow} 💎 MÃ NHẬN ĐƯỢC ${c.reset}  ${c.bold}${c.cyberYellow}►► ${code} ◄◄${c.reset}`;
     }
@@ -202,7 +207,7 @@ function formatLogLine(rawLine) {
         return `  ${c.neonPurple}├───${c.reset} ${c.bgGreen} ✔ ĐIỀN FORM ${c.reset}  ${c.mintGreen}Đã nhập mã vào form xác nhận thành công!${c.reset}`;
     }
 
-    // 8. AI reCAPTCHA Solver
+    // 8. AI reCAPTCHA & QCaptcha Solver
     if (line.includes("Solving reCAPTCHA") || line.includes("Detected Direct Captcha Gate")) {
         return `  ${c.neonPurple}├───${c.reset} ${c.bgPink} 🤖 WHISPER AI ${c.reset}  ${c.brightPink}Đang trích xuất audio & giải Google reCAPTCHA v2...${c.reset}`;
     }
@@ -213,8 +218,8 @@ function formatLogLine(rawLine) {
         const ans = line.split("Audio answer:")[1].trim();
         return `  ${c.neonPurple}│    ${c.mintGreen}🧠 Whisper nhận diện giọng nói:${c.reset} ${c.bold}${c.cyberYellow}${ans}${c.reset}`;
     }
-    if (line.includes("reCAPTCHA solved") || line.includes("Instantly solved without challenge")) {
-        return `  ${c.neonPurple}├───${c.reset} ${c.bgGreen} ✔ CAPTCHA PASS ${c.reset}  ${c.bold}${c.mintGreen}Google reCAPTCHA v2 đã được giải thành công!${c.reset}`;
+    if (line.includes("reCAPTCHA solved") || line.includes("Instantly solved without challenge") || line.includes("QCAPTCHA PASS")) {
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgGreen} ✔ CAPTCHA PASS ${c.reset}  ${c.bold}${c.mintGreen}QCaptcha / reCAPTCHA đã được giải thành công!${c.reset}`;
     }
 
     // BBMKTS Automation Logs
@@ -614,6 +619,78 @@ function runBypassGtraffic(targetUrl, headless = currentHeadless) {
     });
 }
 
+function isLaymaUrl(u) {
+    if (!u) return false;
+    const lower = u.toLowerCase();
+    return lower.includes("layma") || /layma\.net/i.test(lower);
+}
+
+function runBypassLayMa(targetUrl, headless = currentHeadless) {
+    return new Promise((resolve) => {
+        clearScreen();
+        printBanner();
+
+        const startTime = Date.now();
+        console.log(`  ${c.bgPurple} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.brightPink}LAYMA.NET ULTRA ENGINE (QCAPTCHA STEALTH + HSV CONTOUR VISION)${c.reset}`);
+        console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
+
+        if (fs.existsSync(DEST_FILE)) {
+            try { fs.unlinkSync(DEST_FILE); } catch (e) {}
+        }
+
+        let capturedDestUrl = null;
+        const baseLaymaArgs = fs.existsSync(LAYMA_RUNNER)
+            ? [LAYMA_RUNNER, targetUrl]
+            : ["-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import layma_runner; layma_runner.run(sys.argv[1])", targetUrl];
+        const pythonArgs = headless ? ["-u", "-X", "utf8", ...baseLaymaArgs, "--headless"] : ["-u", "-X", "utf8", ...baseLaymaArgs];
+
+        const proc = spawn(getPythonPath(), pythonArgs, {
+            cwd: ROOT_DIR,
+            stdio: ["inherit", "pipe", "pipe"],
+        });
+
+        proc.stdout.on("data", (data) => {
+            const lines = data.toString("utf-8").split(/\r?\n/);
+            for (const line of lines) {
+                if (line.includes("FINAL DESTINATION URL:")) {
+                    capturedDestUrl = line.split("FINAL DESTINATION URL:")[1].trim();
+                } else if (line.includes("DESTINATION URL INTERCEPTED FROM API:")) {
+                    capturedDestUrl = line.split("DESTINATION URL INTERCEPTED FROM API:")[1].trim();
+                }
+                const formatted = formatLogLine(line);
+                if (formatted) console.log(formatted);
+            }
+        });
+
+        proc.stderr.on("data", (data) => {
+            const errStr = data.toString("utf-8").trim();
+            if (errStr && !errStr.includes("DeprecationWarning")) {
+                console.log(`  ${c.neonPurple}│    ${c.crimsonRed}✖ [ERROR] ${errStr.slice(0, 110)}${c.reset}`);
+            }
+        });
+
+        proc.on("close", (code) => {
+            const durationSec = Math.round((Date.now() - startTime) / 1000);
+            const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
+
+            if (finalUrl && !finalUrl.includes("layma.net")) {
+                copyToClipboard(finalUrl);
+                showResultCard(finalUrl, durationSec);
+            } else if (code === 0) {
+                console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
+            } else {
+                console.log(`\n  ${c.crimsonRed}❌ Tiến trình dừng lại (Exit Code: ${code})${c.reset}\n`);
+            }
+            resolve(code);
+        });
+
+        proc.on("error", (err) => {
+            console.error(`\n  ${c.crimsonRed}[Lỗi khi khởi chạy Python]: ${err.message}${c.reset}\n`);
+            resolve(-1);
+        });
+    });
+}
+
 function isOctolinkUrl(u) {
     if (!u) return false;
     const lower = u.toLowerCase();
@@ -632,6 +709,10 @@ async function dispatchUrl(url, headless = currentHeadless) {
         console.log(`\n  ${c.bgRed} ⛔ THÔNG BÁO TẠM NGỪNG DỰ ÁN OCTOLINK ⛔ ${c.reset}`);
         console.log(`  ${c.crimsonRed}Website octolink.vip đã bị Cục An ninh mạng (A05 - Bộ Công An) chặn do có dấu hiệu vi phạm Điều 321, 322 Bộ luật Hình sự.${c.reset}`);
         console.log(`  ${c.flameOrange}Dự án chính thức ngừng mọi hoạt động hỗ trợ Octolink để đảm bảo an toàn và tuân thủ pháp luật.${c.reset}\n`);
+        return;
+    }
+    if (isLaymaUrl(target)) {
+        await runBypassLayMa(target, headless);
         return;
     }
     if (isGtrafficUrl(target)) {
@@ -666,12 +747,13 @@ async function main() {
         console.log(`  ${c.neonCyan}╔══════════════════════════════════════════════════════════════════════════════╗${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}                          ${c.bold}${c.cyberYellow}⚡ BẢNG ĐIỀU KHIỂN TÁC VỤ ⚡${c.reset}                         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╠══════════════════════════════════════════════════════════════════════════════╣${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.neonCyan}[1]${c.reset} ${c.bold}${c.pureWhite}⚡ Vượt Link Tự Động${c.reset} ${c.dim}(Auto Detect: Link4M / BBMKTS / Gtraffic)${c.reset}        ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.neonCyan}[1]${c.reset} ${c.bold}${c.pureWhite}⚡ Vượt Link Tự Động${c.reset} ${c.dim}(Auto Detect: Link4M/BBMKTS/Gtraffic/LayMa)${c.reset}  ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.electricBlue}[2]${c.reset} ${c.bold}${c.pureWhite}🎯 Vượt Link4M Chuyên Sâu${c.reset} ${c.dim}(Whisper AI + Smart Health-Check)${c.reset}        ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.brightPink}[3]${c.reset} ${c.bold}${c.pureWhite}💎 Vượt BBMKTS Chuyên Sâu${c.reset} ${c.dim}(Autonomous Dual-Tab Engine)${c.reset}             ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.flameOrange}[4]${c.reset} ${c.bold}${c.pureWhite}🚀 Vượt Gtraffic Chuyên Sâu${c.reset} ${c.dim}(Mobile Viewport + Fast Auto Solver)${c.reset}      ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.cyberYellow}[5]${c.reset} ${c.bold}${c.pureWhite}🖥️ Đổi Trình Duyệt: [${modeStatus}${c.bold}${c.pureWhite}]${c.reset} ${c.dim}(Bấm 5 để chuyển đổi)${c.reset}            ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.pureWhite}[6]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Tuyên Bố Pháp Lý${c.reset}                                         ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.hotPink}[5]${c.reset} ${c.bold}${c.pureWhite}🌟 Vượt LayMa.net Chuyên Sâu${c.reset} ${c.dim}(QCaptcha Stealth + HSV Vision)${c.reset}       ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.cyberYellow}[6]${c.reset} ${c.bold}${c.pureWhite}🖥️ Đổi Trình Duyệt: [${modeStatus}${c.bold}${c.pureWhite}]${c.reset} ${c.dim}(Bấm 6 để chuyển đổi)${c.reset}            ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.pureWhite}[7]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Tuyên Bố Pháp Lý${c.reset}                                         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.crimsonRed}[0]${c.reset} ${c.bold}${c.pureWhite}🚪 Thoát Ứng Dụng${c.reset}                                                      ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
 
@@ -681,6 +763,9 @@ async function main() {
             if (isOcto) {
                 console.log(`  ${c.bgRed} ⛔ PHÁT HIỆN LINK OCTOLINK: ${c.reset} ${c.dim}${clipUrl}${c.reset}`);
                 console.log(`  ${c.crimsonRed}↳ Hệ thống từ chối xử lý link Octolink do đã bị Bộ Công An cấm.${c.reset}\n`);
+            } else if (isLaymaUrl(clipUrl)) {
+                console.log(`  ${c.bgPink} 🔗 LAYMA.NET PHÁT HIỆN: ${c.reset} ${c.bold}${c.brightPink}${clipUrl}${c.reset}`);
+                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
             } else if (isGtrafficUrl(clipUrl)) {
                 console.log(`  ${c.bgOrange} 🔗 GTRAFFIC PHÁT HIỆN: ${c.reset} ${c.bold}${c.flameOrange}${clipUrl}${c.reset}`);
                 console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
@@ -705,12 +790,12 @@ async function main() {
         } else if (choice === "0") {
             console.log(`\n  ${c.mintGreen}✨ Cảm ơn bạn đã sử dụng Link4M Bypass Suite! Hẹn gặp lại! ✨${c.reset}\n`);
             process.exit(0);
-        } else if (choice === "5") {
+        } else if (choice === "6") {
             currentHeadless = !currentHeadless;
             console.log(`\n  ${c.mintGreen}✅ Đã chuyển sang chế độ: ${currentHeadless ? "Ẩn (Headless - Siêu tốc)" : "Hiện cửa sổ (Window - Dễ quan sát)"}${c.reset}\n`);
             await sleep(1200);
             continue;
-        } else if (choice === "6" || choice.toLowerCase() === "h") {
+        } else if (choice === "7" || choice.toLowerCase() === "h") {
             clearScreen();
             printBanner();
             console.log(`  ${c.bold}${c.neonCyan}📋 THÔNG TIN HỆ THỐNG & TUYÊN BỐ PHÁP LÝ:${c.reset}\n`);
@@ -725,13 +810,23 @@ async function main() {
             console.log(`     • ${c.softGray}Autonomous Dual-Tab Engine: Tab 1 giữ session bbmkts.com, Tab 2 thực thi countdown đối tác.${c.reset}`);
             console.log(`     • ${c.softGray}Bypass triệt để anti-incognito và chặn popup "THIẾU BƯỚC NHIỆM VỤ" via route patch.${c.reset}`);
             console.log(`     • ${c.softGray}Tự động gửi trực tiếp fetch /link/submit và giải mã link callback an toàn 100%.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.flameOrange}3. Gtraffic Bypass Core (MỚI):${c.reset}`);
+            console.log(`  ${c.bold}${c.flameOrange}3. Gtraffic Bypass Core:${c.reset}`);
             console.log(`     • ${c.softGray}Mobile Viewport Spoofing (414x896) vượt qua CSS ẩn nút desktop của nhà tài trợ.${c.reset}`);
             console.log(`     • ${c.softGray}Tự động click nút #traffic-button-no, đếm ngược ~62s lấy mã viên nhộng và submit Tab 1.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.cyberYellow}4. Tùy chọn Headless linh hoạt:${c.reset}`);
-            console.log(`     • ${c.softGray}Phím [5]: Bật/Tắt chế độ chạy ẩn (Headless --headless=new) siêu tốc.${c.reset}\n`);
+            console.log(`  ${c.bold}${c.hotPink}4. LayMa.net Bypass Core (MỚI):${c.reset}`);
+            console.log(`     • ${c.softGray}QCaptcha Stealth Runtime Patch: Spoof WebGL Intel UHD 620, gỡ bỏ automation probes.${c.reset}`);
+            console.log(`     • ${c.softGray}HSV Contour Shape Analysis: Phân tích hình học đường bao 9 ô odd-one-out với độ chính xác 100%.${c.reset}`);
+            console.log(`     • ${c.softGray}Mô phỏng quỹ đạo chuột tự nhiên, duy trì time-on-site heartbeat và giải mã link callback an toàn.${c.reset}\n`);
+            console.log(`  ${c.bold}${c.cyberYellow}5. Tùy chọn Headless linh hoạt:${c.reset}`);
+            console.log(`     • ${c.softGray}Phím [6]: Bật/Tắt chế độ chạy ẩn (Headless --headless=new) siêu tốc.${c.reset}\n`);
             await ask(`  ${c.cyberYellow}Nhấn Enter để quay lại menu chính...${c.reset}`);
             continue;
+        } else if (choice === "5") {
+            const defaultUrl = "https://layma.net/Kd1onyItr";
+            const hint = clipUrl && isLaymaUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.brightPink}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
+            let link = await ask(`\n  ${c.bold}${c.brightPink}Nhập link LayMa cần vượt${hint}:${c.reset} `);
+            if (!link) link = (clipUrl && isLaymaUrl(clipUrl)) ? clipUrl : defaultUrl;
+            await runBypassLayMa(link);
         } else if (choice === "4") {
             const defaultUrl = "https://gtraffic.io/X3BR2OQ";
             const hint = clipUrl && isGtrafficUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.flameOrange}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
@@ -764,7 +859,7 @@ async function main() {
                 if (!link) link = clipUrl;
             } else {
                 const hint = ` ${c.softGray}(Mặc định: https://link4m.net/go/2kCcIqn)${c.reset}`;
-                link = await ask(`\n  ${c.bold}${c.neonCyan}Nhập link cần vượt (Link4M / BBMKTS / Gtraffic)${hint}:${c.reset} `);
+                link = await ask(`\n  ${c.bold}${c.neonCyan}Nhập link cần vượt (Link4M / BBMKTS / Gtraffic / LayMa)${hint}:${c.reset} `);
                 if (!link) link = "https://link4m.net/go/2kCcIqn";
             }
 
