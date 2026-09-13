@@ -13,12 +13,14 @@ def is_valid_destination(u: str) -> bool:
         return False
     return not any(d in u for d in ["link4m.org", "link4m.net", "link4m.co", "link4m.me", "about:blank"])
 
-def run(target_url: str = None, headless: bool = False):
+def run(target_url: str = None, headless: bool = True):
     if not target_url:
-        target_url = sys.argv[1].strip() if len(sys.argv) > 1 else "https://link4m.net/go/2kCcIqn"
+        target_url = sys.argv[1].strip() if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else "https://link4m.net/go/2kCcIqn"
 
     # Check CLI flags
-    if "--headless" in sys.argv or os.environ.get("LINK4M_HEADLESS") == "1":
+    if "--head" in sys.argv:
+        headless = False
+    elif "--headless" in sys.argv or os.environ.get("LINK4M_HEADLESS") == "1":
         headless = True
 
     with open(LOG_FILE, "w", encoding="utf-8") as f:
@@ -38,7 +40,8 @@ def run(target_url: str = None, headless: bool = False):
             "--disable-renderer-backgrounding",
             "--no-first-run",
             "--no-default-browser-check",
-            "--window-size=1280,720"
+            "--window-size=1280,720",
+            "--host-resolver-rules=MAP happy.jpn.com 104.21.17.40, MAP jpn.com 54.153.56.183, MAP dawnseeker.za.com 104.21.54.177, MAP betflik24win.co 172.67.170.150, MAP what-on.com 172.67.178.139, MAP s1.what-on.com 104.21.43.112, MAP website-analytics.net 104.21.52.154"
         ]
         if headless:
             launch_args.extend([
@@ -157,13 +160,18 @@ def run(target_url: str = None, headless: bool = False):
             page_link.goto(target_url, wait_until="domcontentloaded", timeout=40000)
         except Exception as e:
             log(f"[!] Warning on initial goto: {e}")
-        time.sleep(0.3)
 
+        # Fast wait for dynamic form elements
+        try:
+            page_link.wait_for_selector("input.password, input[name='password'], #password-2", timeout=2500)
+        except Exception:
+            pass
+
+        has_pwd = page_link.locator("input.password, input[name='password'], #password-2").count() > 0
         has_recaptcha = page_link.locator(".g-recaptcha, iframe[src*='recaptcha']").count() > 0
-        has_pwd = page_link.locator("input.password, input[name='password']").count() > 0
         is_direct = has_recaptcha and not has_pwd
 
-        solver = RecaptchaAudioSolver(headless=False, model_name="base.en")
+        solver = RecaptchaAudioSolver(headless=headless, model_name="tiny.en")
 
         if is_direct:
             log("[+] Detected Direct Captcha Gate Mode")
@@ -246,13 +254,28 @@ def run(target_url: str = None, headless: bool = False):
                         }
                         const f1 = jQuery('#main-form');
                         if (f1.length && typeof checkPassword === 'function') {
-                            setTimeout(() => {
-                                if (!window.destination_url) {
-                                    window.check_form = f1;
-                                    checkPassword();
-                                }
-                            }, 500);
+                            window.check_form = f1;
+                            checkPassword();
                         }
+                    }
+
+                    // Direct API fallback dispatch
+                    const fActive = document.querySelector('#main-form-2') || document.querySelector('#main-form');
+                    if (fActive) {
+                        const formData = new FormData(fActive);
+                        if (validToken) formData.set('g-recaptcha-response', validToken);
+                        const params = new URLSearchParams(formData).toString();
+                        const endpoint = (window.api_domain || 'https://s1.link4m.app') + '/links/get-link-info';
+                        fetch(endpoint, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+                            body: params
+                        }).then(r => r.json()).then(res => {
+                            if (res && res.url) {
+                                window.destination_url = res.url;
+                                document.querySelectorAll('.get-link').forEach(a => { a.href = res.url; a.classList.remove('disabled'); });
+                            }
+                        }).catch(() => {});
                     }
 
                     if (typeof checkCaptcha === 'function') checkCaptcha();

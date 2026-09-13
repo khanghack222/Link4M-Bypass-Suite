@@ -2,6 +2,7 @@ import re
 import time
 import urllib.request
 import ssl
+import base64
 from rapidocr_onnxruntime import RapidOCR
 from config import log
 
@@ -44,10 +45,15 @@ def unmask_domain_candidates(raw_text: str):
     for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.v\*+(?![a-zA-Z0-9])', clean, re.IGNORECASE):
         results.append(f"{m.group(1).lower()}.vn")
 
+    # Pattern 6: split/masked domains like dawnseeker. .com or site.***.com
+    for m in re.finditer(r'([a-zA-Z0-9\-]{3,})\.(?:[\s\*\.\-\_]+)(com|net|org|vn|tw|za\.com|co|site|vip)', clean, re.IGNORECASE):
+        p, suf = m.group(1).lower(), m.group(2).lower()
+        results.extend([f"{p}.za.{suf}", f"{p}.{suf}", f"{p}.com.{suf}", f"{p}.com", f"{p}.net", f"{p}.org"])
+
     return list(dict.fromkeys(results))
 
 VALID_TLDS = [
-    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'com', 'net', 'org', 'io', 'cc',
+    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'com', 'net', 'org', 'io', 'cc',
     'me', 'vn', 'tw', 'vip', 'tv', 'co', 'site', 'top', 'online', 'xyz',
     'info', 'biz', 'club', 'games', 'app', 'live', 'ai', 'in', 'us', 'uk'
 ]
@@ -79,9 +85,9 @@ def extract_domain_candidates(ocr_lines):
         if fixed != text:
             texts.append(fixed)
 
-    # Priority 0: Unmask any masked domains like shin-shih.co***.tw
+    # Priority 0: Unmask any masked domains like shin-shih.co***.tw or dawnseeker. .com
     for text in texts:
-        if '*' in text:
+        if any(sym in text for sym in ['*', '★', '...']) or re.search(r'[a-zA-Z0-9\-]{3,}\.\s*(?:\.|\*+)?\s*(?:com|net|org|vn)', text):
             for u in unmask_domain_candidates(text):
                 if 'link4m' not in u and u not in candidates:
                     candidates.append(u)
@@ -111,48 +117,81 @@ def extract_domain_candidates(ocr_lines):
                 if 'link4m' not in d and len(d) >= 4 and d not in candidates:
                     candidates.append(d)
 
-    # Phân hạng candidate: ưu tiên domain dài hơn, có từ khóa nhà cái
+    # Phân hạng candidate: ưu tiên tuyệt đối domain có Website: hoặc https:// trong OCR
     def rank_c(c):
         score = 0
         clow = c.lower()
+        if 'google' in clow or 'link4m' in clow:
+            return -9999
+        for txt in texts:
+            tlow = txt.lower().replace(' ', '')
+            if f"https://{clow}" in tlow or f"http://{clow}" in tlow or f"website:{clow}" in tlow:
+                score += 500
+        if clow.count('.') >= 2:
+            score += 40
         if any(kw in clow for kw in ['88', 'bet', 'keo', 'cai', 'casino', 'game', 'club', 'slot', 'win']):
-            score += 30
-        prefix = clow.split('.')[0]
-        if prefix.isdigit() and len(prefix) <= 4:
-            score -= 20
+            score += 20
         score += len(clow)
         return score
 
+    candidates = [c for c in candidates if 'google' not in c.lower() and 'link4m' not in c.lower()]
     candidates.sort(key=rank_c, reverse=True)
     return candidates
 
 from concurrent.futures import ThreadPoolExecutor
 
-def _probe_single_proto(proto_url: str) -> str:
+def _probe_single_proto(proto_url: str):
     try:
         req = urllib.request.Request(
             proto_url,
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         )
-        with urllib.request.urlopen(req, context=_SSL_CTX, timeout=1.5) as resp:
+        with urllib.request.urlopen(req, context=_SSL_CTX, timeout=2.5) as resp:
             if resp.getcode() in (200, 301, 302):
-                return proto_url
+                html = resp.read(65536).decode('utf-8', errors='ignore')
+                has_script = any(k in html.lower() for k in ['traffic', 'widget', 'what-on', 'website-analytics', 'service-v', 'lấy mã', 'lay ma'])
+                return (proto_url, has_script)
+    except Exception:
+        pass
+    return ("", False)
+
+def resolve_ip_google(domain: str) -> str:
+    try:
+        url = f"https://dns.google/resolve?name={domain}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, context=_SSL_CTX, timeout=1.5) as r:
+            import json
+            data = json.loads(r.read())
+            for ans in data.get('Answer', []):
+                if ans.get('type') == 1:
+                    return ans['data']
     except Exception:
         pass
     return ""
 
-def probe_domain_live(domain: str) -> str:
+def probe_domain_live(domain: str):
     targets = [f"https://{domain}", f"http://{domain}"]
     with ThreadPoolExecutor(max_workers=2) as ex:
         futures = [ex.submit(_probe_single_proto, t) for t in targets]
+        best_url = ""
+        has_best_script = False
         for f in futures:
-            res = f.result()
-            if res:
-                return res
-    return ""
+            res_url, has_sc = f.result()
+            if res_url:
+                if has_sc:
+                    return (res_url, True)
+                if not best_url:
+                    best_url = res_url
+        if best_url:
+            return (best_url, has_best_script)
+    ip = resolve_ip_google(domain)
+    if ip:
+        return (f"https://{domain}", False)
+    return ("", False)
 
 def detect_sponsor_domain(page_link):
     all_texts = []
+    base64_images = []
 
     # Step 1: Extract from Link4M page DOM text directly
     try:
@@ -161,39 +200,74 @@ def detect_sponsor_domain(page_link):
     except Exception:
         pass
 
-    # Step 2: Extract from target sponsor image
-    target_img = None
-    for _ in range(6):
-        for img in page_link.locator("img").all():
-            src = img.get_attribute("src") or ""
-            if "img.link4m.net" in src and ("/1_" in src or "advertiser" in src):
-                target_img = img
-                break
-        if target_img:
-            break
-        time.sleep(0.15)
-
-    if target_img:
-        src = target_img.get_attribute("src") or ""
-        log(f"[*] Found sponsor SERP image: {src}")
-
-        img_bytes = None
+    # Step 2: Extract from target sponsor images and base64 images
+    for _ in range(8):
         try:
-            img_bytes = target_img.screenshot()
+            imgs_info = page_link.evaluate("""() => {
+                const res = [];
+                document.querySelectorAll('img').forEach(img => {
+                    const s = img.src || '';
+                    if (s.startsWith('data:image/')) {
+                        res.push({ type: 'b64', src: s });
+                    } else if (s.includes('img.link4m.net') || s.includes('advertiser') || /\\d+_\\d+\\.(?:jpg|png)/.test(s)) {
+                        res.push({ type: 'url', src: s });
+                    }
+                });
+                return res;
+            }""")
+            if imgs_info:
+                break
         except Exception:
             pass
-        if not img_bytes:
-            try:
-                resp = page_link.request.get(src)
-                if resp.ok:
-                    img_bytes = resp.body()
-            except Exception:
-                pass
+        time.sleep(0.2)
 
-        if img_bytes:
-            res, _ = get_ocr()(img_bytes)
+    ocr = get_ocr()
+    def _fetch_one_img(item):
+        try:
+            if item['type'] == 'b64':
+                b64_str = item['src'].split(',', 1)[1] if ',' in item['src'] else item['src']
+                return base64.b64decode(b64_str)
+            else:
+                req = urllib.request.Request(item['src'], headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://link4m.net/'})
+                with urllib.request.urlopen(req, context=_SSL_CTX, timeout=3.5) as r:
+                    return r.read()
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(len(imgs_info or [1]), 4)) as ex:
+        all_img_bytes = list(ex.map(_fetch_one_img, imgs_info or []))
+
+    for img_bytes in all_img_bytes:
+        if not img_bytes:
+            continue
+        try:
+            res, _ = ocr(img_bytes)
             if res:
-                all_texts.extend([line[1].strip() for line in res if len(line) > 1])
+                for line in res:
+                    if len(line) > 1:
+                        t = line[1].strip()
+                        all_texts.append(t)
+                try:
+                    items = []
+                    for box, text, conf in res:
+                        cy = (box[0][1] + box[2][1]) / 2.0
+                        min_x = min(p[0] for p in box)
+                        items.append((cy, min_x, text))
+                    items.sort(key=lambda x: x[0])
+                    clusters = []
+                    for it in items:
+                        if not clusters or abs(clusters[-1][0] - it[0]) > 15:
+                            clusters.append([it[0], [it]])
+                        else:
+                            clusters[-1][1].append(it)
+                    for _, box_list in clusters:
+                        box_list.sort(key=lambda x: x[1])
+                        c_line = ' '.join(b[2] for b in box_list)
+                        all_texts.append(c_line)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     candidates = extract_domain_candidates(all_texts)
     log(f"[*] Extracted domain candidates (including unmasked): {candidates}")
@@ -202,10 +276,14 @@ def detect_sponsor_domain(page_link):
     def rank_candidate(c):
         score = 0
         clow = c.lower()
+        for txt in all_texts:
+            tlow = txt.lower()
+            if f"https://{clow}" in tlow or f"http://{clow}" in tlow or f"website:{clow}" in tlow.replace(' ', ''):
+                score += 500
+        if clow.count('.') >= 2:
+            score += 40
         if any(kw in clow for kw in ['88', 'bet', 'keo', 'cai', 'casino', 'game', 'club', 'slot', 'win']):
             score += 20
-        if clow.count('.') >= 2:
-            score += 10
         prefix = clow.split('.')[0]
         if len(prefix) <= 3 and not prefix.isdigit():
             score -= 15
@@ -214,16 +292,21 @@ def detect_sponsor_domain(page_link):
 
     candidates.sort(key=rank_candidate, reverse=True)
 
-    # Probe live domain theo thứ tự ưu tiên
+    # Probe live domain: domains with verified active sponsor scripts get TOP priority!
+    script_urls = []
     live_urls = []
     for c in candidates:
-        live_url = probe_domain_live(c)
-        if live_url and live_url not in live_urls:
-            live_urls.append(live_url)
+        live_url, has_sc = probe_domain_live(c)
+        if live_url:
+            if has_sc and live_url not in script_urls:
+                script_urls.append(live_url)
+            elif live_url not in live_urls:
+                live_urls.append(live_url)
 
-    if live_urls:
-        log(f"[+] Verified live sponsor website candidates: {live_urls}")
-        return live_urls
+    final_live = script_urls + [u for u in live_urls if u not in script_urls]
+    if final_live:
+        log(f"[+] Verified live sponsor website candidates (priority sorted): {final_live}")
+        return final_live
 
     if candidates:
         fallbacks = [f"https://{c}" for c in candidates]
@@ -236,23 +319,36 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
     log(f"[*] Opening sponsor site via Google referrer: {sponsor_url}")
     page = context.new_page()
 
+    # 1. Neutralize detectIncognito cleanly
+    page.add_init_script("""
+        if (window.navigator && window.navigator.webkitTemporaryStorage) {
+            window.navigator.webkitTemporaryStorage.queryUsageAndQuota = function(success, error) {
+                if (typeof success === 'function') success(100, 100000000000);
+            };
+        }
+        window.mouse_scroll = true;
+        window.traffic_click = true;
+    """)
+
     def route_handler(route):
         req = route.request
         if req.resource_type in ["image", "media", "font"]:
             route.abort()
             return
         u = req.url.lower()
-        if any(k in u for k in ["service", "widget", "traffic", "what-on", "yoads"]):
+        if any(k in u for k in ["service", "widget", "traffic", "what-on", "website-analytics", "yoads"]):
             try:
                 res = route.fetch()
                 body = res.text()
-                # Fast countdown patches: 10s duration instead of 60s
-                body = re.sub(r'traffic_wait_time\s*=\s*\d+', 'traffic_wait_time = 10', body)
-                body = re.sub(r'traffic_step_2_wait_time\s*=\s*\d+', 'traffic_step_2_wait_time = 4', body)
+                # Bypass detectIncognito checks in scripts
+                body = body.replace('if(result.isPrivate){', 'if(false){')
+                body = re.sub(r'var check_ref\s*=\s*false;', 'var check_ref = true;', body)
+                # Keep scroll/active state
                 body = body.replace('!mouse_scroll', 'false')
                 body = body.replace('mouse_scroll = !1', 'mouse_scroll = true')
                 body = body.replace('mouse_scroll = false', 'mouse_scroll = true')
-                body = body.replace('nsec-=100', 'nsec-=250')
+                body = body.replace('traffic_blurred\n\t\t\t\t\t\t\t\t\t\t\t||', '')
+                body = body.replace('traffic_blurred ||', '')
                 route.fulfill(response=res, body=body)
                 return
             except Exception:
@@ -260,17 +356,6 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
         route.continue_()
 
     page.route("**/*", route_handler)
-    page.add_init_script("""
-        window.mouse_scroll = true;
-        window.traffic_click = true;
-        setInterval(() => {
-            window.mouse_scroll = true;
-            document.querySelectorAll('[data-time]').forEach(el => {
-                let cur = parseFloat(el.dataset.time);
-                if (cur > 10) el.dataset.time = '10';
-            });
-        }, 150);
-    """)
 
     try:
         page.goto(sponsor_url, wait_until="domcontentloaded", referer="https://www.google.com/", timeout=40000)
@@ -347,6 +432,16 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                 if (typeof forceShowButton === 'function') forceShowButton();
             }}
             window.scrollTo(0, document.body.scrollHeight);
+
+            // Active scroll heartbeat to defeat mouse_scroll timer pause in service-v3.js
+            if (!window.heartbeat_scroll) {{
+                let dir = 1;
+                window.heartbeat_scroll = setInterval(() => {{
+                    window.scrollBy(0, 25 * dir);
+                    dir = -dir;
+                    window.dispatchEvent(new Event('scroll'));
+                }}, 750);
+            }}
         }}""")
 
     visited = {sponsor_url.rstrip("/")}
@@ -381,12 +476,13 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
             if not article:
                 article = f"{sponsor_url}/bai-viet-{step}/"
                 visited.add(article.rstrip("/"))
-            log(f"[*] Navigating to Step {step} article: {article}")
+            art_url = f"{article}#ss-{traffic_key}" if traffic_key and "#" not in article else article
+            log(f"[*] Navigating to Step {step} article: {art_url}")
             try:
-                page.goto(article, wait_until="domcontentloaded", timeout=35000)
+                page.goto(art_url, wait_until="domcontentloaded", timeout=35000)
             except Exception:
                 pass
-            time.sleep(0.4)
+            time.sleep(0.5)
 
         prep()
         time.sleep(0.3)
@@ -413,23 +509,31 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
             btn.evaluate("el => el.click()")
         time.sleep(0.4)
 
-        sec_dur = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : 10; }}")
+        sec_dur = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : 60; }}")
         log(f"[*] Step {step}: Countdown duration = {sec_dur}s")
 
         dir_wheel = 1
-        for tick in range(1, 35):
-            time.sleep(0.4)
+        max_ticks = int((sec_dur + 15) * 2)
+        for tick in range(1, max(max_ticks, 40)):
+            time.sleep(0.5)
             if tick % 4 == 0:
                 dir_wheel = -dir_wheel
-                page.mouse.wheel(0, 100 * dir_wheel)
+                page.mouse.wheel(0, 120 * dir_wheel)
 
             rem = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : null; }}")
             if rem is not None:
-                if tick % 3 == 0 or rem <= 3:
+                if tick % 6 == 0 or rem <= 3:
                     log(f"  [Step {step}] Remaining: {rem}s")
                 if rem <= 0:
                     page.evaluate("() => { if (typeof checkButtonClick === 'function') checkButtonClick(); }")
-                    time.sleep(0.4)
+                    if step == 1:
+                        for _ in range(8):
+                            has_quest = page.evaluate(f"() => {{ for (let k in localStorage) {{ if (k.includes('quest')) return true; }} return false; }}")
+                            if has_quest:
+                                break
+                            time.sleep(0.5)
+                    else:
+                        time.sleep(1.0)
                     break
 
             if code_found:

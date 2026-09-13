@@ -17,7 +17,7 @@ Write-Host "`n=======================================================" -Foregrou
 Write-Host "  BIEN DICH TOAN BO CORE PYTHON SANG NATIVE BINARY (.PYD)" -ForegroundColor Yellow
 Write-Host "=======================================================`n" -ForegroundColor Cyan
 
-$modules = @("config", "sponsor", "bypass")
+$modules = @("config", "sponsor", "bypass", "layma_runner", "gtraffic_runner", "bbmkts_runner")
 
 foreach ($mod in $modules) {
     Write-Host "[*] Dang bien dich $mod.py sang $mod.pyd..." -ForegroundColor Cyan
