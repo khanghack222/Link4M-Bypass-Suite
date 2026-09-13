@@ -41,6 +41,7 @@ CAMPAIGN_RULES = [
     (['ok365', 'ok 365'], 'https://ok365.com'),
     (['van phong', 'văn phòng', 'hai ba trung', 'hai bà trưng', 'tim van phong', 'cho thue van phong'], 'https://timvanphong.com.vn'),
     (['thoitiet', 'thời tiết', 'thoitiethomnay'], 'https://thoitiethomnay.org'),
+    (['eric ly', 'ericly'], 'https://ericly.net'),
 ]
 
 def resolve_sponsor_domain(keyword_text: str, img_url: str) -> str:
@@ -287,8 +288,8 @@ def run(target_url: str = None, headless: bool = False):
             log(f"[!] Warning on initial goto: {e}")
         
         # Wait for page1's own API campaign info response
-        for _ in range(40):
-            if campaign_info.get("keyword_text") or campaign_info.get("source"):
+        for _ in range(50):
+            if campaign_info.get("keyword_text") and len(str(campaign_info.get("keyword_text")).strip()) > 0:
                 break
             time.sleep(0.1)
 
@@ -296,10 +297,13 @@ def run(target_url: str = None, headless: bool = False):
             try:
                 dom_camp = page1.evaluate("""() => {
                     const img = document.querySelector('img[src*="cdn.gtraffic.io"]')?.src || '';
-                    return { img };
+                    const kw = document.querySelector('.keyword-text, [class*="keyword"]')?.innerText || '';
+                    return { img, kw };
                 }""")
                 if dom_camp.get("img") and not campaign_info.get("source"):
                     campaign_info["source"] = dom_camp["img"]
+                if dom_camp.get("kw") and not campaign_info.get("keyword_text"):
+                    campaign_info["keyword_text"] = dom_camp["kw"].strip()
             except Exception:
                 pass
 
