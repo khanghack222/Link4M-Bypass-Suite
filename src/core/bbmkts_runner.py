@@ -83,15 +83,20 @@ def run(target_link: str = None, headless: bool = None):
             final_code = None
 
             # -------------------------------------------------------------
-            # KIEM TRA CHIEN DICH LOAI B (CANVAS / MA TRUC TIEP)
+            # KIEM TRA CHIEN DICH LOAI B (CANVAS / MA TRUC TIEP / ANH STATIC)
             # -------------------------------------------------------------
+            lower_html = html1.lower()
+            if any(k in lower_html for k in ['không phải chờ 200', 'không phải code chờ giây', 'tra...25', 'he thong seo']):
+                final_code = "trafficseo2025"
+                log(f"[NHAN DIEN HEURISTIC] Phat hien chien dich SEO Static Guide! Ma mac dinh: >>> {final_code} <<<")
+
             canvas_script = None
             for s in re.findall(r'<script[^>]*>(.*?)</script>', html1, re.S):
                 if 'imgCanvas' in s or 'canvas' in s:
                     canvas_script = s
                     break
 
-            if canvas_script:
+            if not final_code and canvas_script:
                 m_img = re.search(r'[\'"](https?://[^\'"]*uploads/[^\'"]+)[\'"]', canvas_script)
                 if not m_img:
                     m_img = re.search(r'[\'"](/uploads/[^\'"]+)[\'"]', canvas_script)
@@ -122,6 +127,28 @@ def run(target_link: str = None, headless: bool = None):
                                     log(f"[NHAN DIEN] Chien dich Co san ma tren anh! Ma: >>> {final_code} <<<")
                     except Exception as e:
                         log(f"[WARN] Loi xu ly anh canvas: {e}")
+
+            # Kiem tra tat ca anh trong uploads/ neu van chua tim ra ma
+            if not final_code:
+                upload_imgs = re.findall(r'https?://[^\s"\'<>]+/uploads/[^\s"\'<>]+\.(?:png|jpg|jpeg|webp)', html1)
+                for img_u in upload_imgs:
+                    if 'icon' in img_u.lower() or 'logo' in img_u.lower():
+                        continue
+                    tmp_img = os.path.join(TEMP_DIR, "guide_detect_" + os.path.basename(img_u.split('?')[0]))
+                    try:
+                        urllib.request.urlretrieve(img_u, tmp_img)
+                        lines, _ = get_ocr()(tmp_img)
+                        all_text = ' '.join([l[1] for l in (lines or [])])
+                        if 'Tra' in all_text and '25' in all_text:
+                            final_code = "trafficseo2025"
+                            log(f"[NHAN DIEN OCR UPLOAD] Anh {os.path.basename(img_u)} chua ma SEO! >>> {final_code} <<<")
+                            break
+                        elif 'vietnam' in all_text.lower():
+                            final_code = "vietnam"
+                            log(f"[NHAN DIEN OCR UPLOAD] Anh {os.path.basename(img_u)} chua ma VietNam! >>> {final_code} <<<")
+                            break
+                    except Exception as e:
+                        pass
 
             # -------------------------------------------------------------
             # KIEM TRA CHIEN DICH LOAI A (LINK NGOAI / WEBSITE DOI TAC)
@@ -477,11 +504,13 @@ def run(target_link: str = None, headless: bool = None):
             final_destination = res['data']
             log(f"[TAB 1] Phat hien link dich: {final_destination}")
         else:
-            check_btn = page1.query_selector('#check222')
+            check_btn = page1.query_selector('#formgetlink') or page1.query_selector('#check222') or page1.query_selector('button[type="submit"]')
             if check_btn:
-                log("[TAB 1] Mo khoa va click nut #check222...")
-                page1.evaluate("document.getElementById('check222').disabled = false;")
-                check_btn.click()
+                log("[TAB 1] Mo khoa va click nut submit (#formgetlink / #check222)...")
+                page1.evaluate("""() => {
+                    let b = document.getElementById('formgetlink') || document.getElementById('check222') || document.querySelector('button[type="submit"]');
+                    if (b) { b.disabled = false; b.click(); }
+                }""")
 
         # -------------------------------------------------------------
         # TRICH XUAT VA GIAI MA LINK NGOAI CUOI CUNG
@@ -541,6 +570,7 @@ def run(target_link: str = None, headless: bool = None):
         if final_destination:
             log(f"   [THANH CONG 100%] LINK DICH CUOI CUNG:")
             log(f"   >>> {final_destination} <<<")
+            log(f"FINAL DESTINATION URL: {final_destination}")
         else:
             log(f"   [-] URL hien tai: {page1.url}")
         log("=================================================================")
@@ -558,6 +588,9 @@ def run(target_link: str = None, headless: bool = None):
         if final_destination:
             try:
                 with open(DEST_FILE, "w", encoding="utf-8") as f:
+                    f.write(final_destination)
+                final_dest_file = os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt")
+                with open(final_dest_file, "w", encoding="utf-8") as f:
                     f.write(final_destination)
                 desk_dest = os.path.expanduser(r"~\Desktop\destination_url.txt")
                 with open(desk_dest, "w", encoding="utf-8") as f_d:
