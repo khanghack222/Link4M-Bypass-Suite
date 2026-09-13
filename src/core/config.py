@@ -1,10 +1,11 @@
-﻿import os
+import os
 import sys
 import time
 import subprocess
 
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.abspath(os.path.join(CORE_DIR, "..", ".."))
+ROOT_DIR = BASE_DIR
 LOG_FILE = os.path.join(BASE_DIR, "e2e_bypass.log")
 DEST_FILE = os.path.join(BASE_DIR, "destination_url.txt")
 CODE_FILE = os.path.join(BASE_DIR, "extracted_code.txt")
