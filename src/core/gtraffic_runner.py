@@ -17,17 +17,20 @@ def is_valid_destination(u: str) -> bool:
 
 # Known campaign sponsor mapping for instantaneous resolution
 KNOWN_CAMPAIGNS = {
-    "sun win": "https://sunwin.sixtyseven.co.in",
+    "sun": "https://sunwin.sixtyseven.co.in",
     "sunwin": "https://sunwin.sixtyseven.co.in",
+    "sunwi": "https://sunwin.sixtyseven.co.in",
     "fun88": "https://greenco.com.co",
-    "hitclub": "https://hitclub.com"
+    "fun": "https://greenco.com.co",
+    "hitclub": "https://hitclub.com",
+    "hit": "https://hitclub.com"
 }
 
 def resolve_sponsor_domain(keyword_text: str, img_url: str) -> str:
     kw_clean = (keyword_text or "").lower().strip()
     for k, domain in KNOWN_CAMPAIGNS.items():
-        if k in kw_clean:
-            log(f"[+] Match known campaign '{k}' -> {domain}")
+        if k in kw_clean or kw_clean in k:
+            log(f"[+] Match known campaign '{k}' from keyword '{kw_clean}' -> {domain}")
             return domain
 
     if not img_url:
