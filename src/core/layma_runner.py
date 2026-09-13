@@ -68,13 +68,33 @@ def find_oddoneout_index_hsv(asset_urls):
     log(f">>> FALLBACK TO CIRCULARITY: Tile {best_idx} <<<")
     return best_idx
 
-async def human_move(page, x1, y1, x2, y2, steps=15):
+def analyze_spatial_option(img_bytes):
+    im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    arr = np.array(im)
+    is_shape = (arr[:, :, 0] < 100) & (arr[:, :, 1] < 100) & (arr[:, :, 2] < 120)
+    y_idx, x_idx = np.where(is_shape)
+    if len(y_idx) == 0:
+        return {"area": 0, "fill": 0, "corners": {}}
+    h = y_idx.max() - y_idx.min() + 1
+    w = x_idx.max() - x_idx.min() + 1
+    area = len(y_idx)
+    fill = area / float(h * w)
+    sub = is_shape[y_idx.min():y_idx.max()+1, x_idx.min():x_idx.max()+1]
+    h_q = max(1, h // 4)
+    w_q = max(1, w // 4)
+    tl = float(np.mean(sub[:h_q, :w_q])) if sub[:h_q, :w_q].size > 0 else 0.0
+    tr = float(np.mean(sub[:h_q, -w_q:])) if sub[:h_q, -w_q:].size > 0 else 0.0
+    bl = float(np.mean(sub[-h_q:, :w_q])) if sub[-h_q:, :w_q].size > 0 else 0.0
+    br = float(np.mean(sub[-h_q:, -w_q:])) if sub[-h_q:, -w_q:].size > 0 else 0.0
+    return {"area": area, "fill": fill, "corners": {"tl": tl, "tr": tr, "bl": bl, "br": br}}
+
+async def human_move(page, x1, y1, x2, y2, steps=6):
     for i in range(1, steps + 1):
         p = i / float(steps)
-        cur_x = x1 + (x2 - x1) * p + random.uniform(-2, 2)
-        cur_y = y1 + (y2 - y1) * p + random.uniform(-2, 2)
+        cur_x = x1 + (x2 - x1) * p + random.uniform(-1.5, 1.5)
+        cur_y = y1 + (y2 - y1) * p + random.uniform(-1.5, 1.5)
         await page.mouse.move(cur_x, cur_y)
-        await asyncio.sleep(random.uniform(0.015, 0.03))
+        await asyncio.sleep(random.uniform(0.008, 0.018))
     await page.mouse.move(x2, y2)
 
 async def solve_qcaptcha_to_token(headless: bool = True):
@@ -150,6 +170,10 @@ async def solve_qcaptcha_to_token(headless: bool = True):
                 "mouseEvents: behavior.mouseEvents,",
                 "mouseEvents: Math.max(65, behavior.mouseEvents),"
             )
+            text = text.replace(
+                "const res = await api('/v1/solve', {",
+                "console.log('[DEBUG_SOLVE_REQ]', JSON.stringify({ sid: state.sid, cid: state.challenge.cid, answer: Array.isArray(override) ? override : [override], powNonce: state.challengePow })); const res = await api('/v1/solve', {"
+            )
             log("[*] Stealth WebGL & automation patches successfully injected into QCaptcha frame.js")
             await route.fulfill(response=res, body=text)
 
@@ -190,21 +214,21 @@ async def solve_qcaptcha_to_token(headless: bool = True):
         frame = await frame_el.content_frame()
         await frame.wait_for_selector("#box", timeout=15000)
 
-        # Human mouse trajectory before clicking #box
+        # Fast human mouse trajectory before clicking #box
         log("[*] Simulating human mouse trajectory...")
         cx, cy = 100, 100
-        for _ in range(4):
+        for _ in range(3):
             nx, ny = random.randint(200, 600), random.randint(150, 450)
-            await human_move(page, cx, cy, nx, ny, steps=8)
+            await human_move(page, cx, cy, nx, ny, steps=5)
             cx, cy = nx, ny
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
         log("[*] Triggering QCaptcha container (#box)...")
         await frame.click("#box")
 
-        for attempt in range(1, 25):
-            for _ in range(25):
-                await asyncio.sleep(1)
+        for attempt in range(1, 30):
+            for _ in range(50): # Fast poll loop
+                await asyncio.sleep(0.1)
                 if verified_token: break
                 is_open = await frame.evaluate("() => document.getElementById('modal-host') && !document.getElementById('modal-host').hidden")
                 if is_open and current_challenge: break
@@ -214,11 +238,10 @@ async def solve_qcaptcha_to_token(headless: bool = True):
             c_type = current_challenge.get("type")
             log(f"[*] Challenge round {attempt}: Type '{c_type}'")
 
-            # Human mouse movement
             cx, cy = random.randint(200, 400), random.randint(200, 400)
-            for _ in range(3):
+            for _ in range(2):
                 nx, ny = random.randint(300, 800), random.randint(200, 600)
-                await human_move(page, cx, cy, nx, ny, steps=6)
+                await human_move(page, cx, cy, nx, ny, steps=4)
                 cx, cy = nx, ny
 
             if c_type == "oddoneout":
@@ -231,44 +254,106 @@ async def solve_qcaptcha_to_token(headless: bool = True):
                 await tile.wait_for(state="visible", timeout=10000)
 
                 tile_bb = await tile.bounding_box()
-                click_x = tile_bb['x'] + tile_bb['width'] / 2 + random.uniform(-4, 4)
-                click_y = tile_bb['y'] + tile_bb['height'] / 2 + random.uniform(-4, 4)
-                await human_move(page, cx, cy, click_x, click_y, steps=8)
+                click_x = tile_bb['x'] + tile_bb['width'] / 2 + random.uniform(-3, 3)
+                click_y = tile_bb['y'] + tile_bb['height'] / 2 + random.uniform(-3, 3)
                 await page.mouse.click(click_x, click_y)
                 log(f"[+] Clicked odd tile {odd_idx}!")
 
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
                 is_checked = await tile.get_attribute("aria-checked")
                 if is_checked != "true":
-                    await tile.click()
+                    await tile.click(force=True)
 
-                # Natural pause before submit
-                await asyncio.sleep(random.uniform(2.5, 3.2))
+                # QCaptcha standard verification pause
+                await asyncio.sleep(2.5)
 
                 submit_btn = frame.locator("#qc-submit")
                 submit_bb = await submit_btn.bounding_box()
-                sub_x = submit_bb['x'] + submit_bb['width'] / 2 + random.uniform(-4, 4)
-                sub_y = submit_bb['y'] + submit_bb['height'] / 2 + random.uniform(-4, 4)
-                await human_move(page, click_x, click_y, sub_x, sub_y, steps=8)
+                sub_x = submit_bb['x'] + submit_bb['width'] / 2 + random.uniform(-3, 3)
+                sub_y = submit_bb['y'] + submit_bb['height'] / 2 + random.uniform(-3, 3)
                 await page.mouse.click(sub_x, sub_y)
                 log("[*] Clicked #qc-submit! Awaiting server verification token...")
+                await asyncio.sleep(1.5)
+
+            elif c_type == "spatial":
+                log("⚡ KÍCH HOẠT: Đã bắt được thử thách 'spatial' ➔ Phân tích hình học không gian...")
+                assets = current_challenge.get("assets", [])
+                if len(assets) >= 6:
+                    ref_url = "https://frame.103-141-140-153.sslip.io" + assets[0]["url"]
+                    r_ref = requests.get(ref_url, timeout=10)
+                    ref_shape = analyze_spatial_option(r_ref.content)
+
+                    options_analysis = []
+                    for i in range(1, len(assets)):
+                        opt_url = "https://frame.103-141-140-153.sslip.io" + assets[i]["url"]
+                        r_opt = requests.get(opt_url, timeout=10)
+                        res = analyze_spatial_option(r_opt.content)
+                        options_analysis.append((i - 1, res))
+
+                    tri_opts = [o for o in options_analysis if o[1]["fill"] < 0.60]
+                    if tri_opts:
+                        chosen = max(tri_opts, key=lambda x: x[1]["corners"].get("tl", 0))
+                        chosen_idx = chosen[0]
+                    else:
+                        chosen_idx = 0
+
+                    log(f"[+] Selected spatial option index: {chosen_idx}")
+                    tile = frame.locator(f'.qc-sp__opt[data-i="{chosen_idx}"]')
+                    await tile.wait_for(state="visible", timeout=10000)
+                    await tile.click()
+
+                    await asyncio.sleep(2.5)
+                    submit_btn = frame.locator("#qc-submit")
+                    await submit_btn.click()
+                    log("[*] Clicked #qc-submit for spatial challenge!")
+                    await asyncio.sleep(1.5)
+
+            elif c_type == "order":
+                log("⚡ KÍCH HOẠT: Đã bắt được thử thách 'order' ➔ Tự động sắp xếp thứ tự diện tích...")
+                direction = current_challenge.get("spec", {}).get("direction", "asc")
+                assets = current_challenge.get("assets", [])
+
+                measurements = []
+                for i, a in enumerate(assets):
+                    u = "https://frame.103-141-140-153.sslip.io" + a["url"]
+                    r = requests.get(u, timeout=10)
+                    info = analyze_spatial_option(r.content)
+                    measurements.append((i, info["area"]))
+
+                reverse = (direction == "desc")
+                sorted_by_area = sorted(measurements, key=lambda x: x[1], reverse=reverse)
+                order = [x[0] for x in sorted_by_area]
+                log(f"[+] Calculated Order: {order}")
+
+                await frame.wait_for_selector("#qc-list", timeout=10000)
+                await frame.evaluate(f"""(order) => {{
+                    const list = document.getElementById('qc-list');
+                    order.forEach(id => {{
+                        const item = list.querySelector(`[data-id="${{id}}"]`);
+                        if (item) list.appendChild(item);
+                    }});
+                }}""", order)
+
+                await asyncio.sleep(2.5)
+                submit_btn = frame.locator("#qc-submit")
+                await submit_btn.click()
+                log("[*] Clicked #qc-submit for order challenge!")
+                await asyncio.sleep(1.5)
+
             else:
-                log(f"[*] Challenge is '{c_type}', skipping to locate 'oddoneout'...")
-                for _ in range(5):
-                    try:
-                        clicked = await frame.evaluate("() => { const b = document.getElementById('qc-skip'); if (b && !b.disabled) { b.click(); return true; } return false; }")
-                        if clicked:
-                            break
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.5)
+                log(f"[*] Challenge is '{c_type}', fast skipping...")
+                current_challenge.clear()
+                try:
+                    await frame.evaluate("() => { const b = document.getElementById('qc-skip'); if (b && !b.disabled) b.click(); }")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
 
-            await asyncio.sleep(3.5)
             if verified_token: break
 
-        for _ in range(8):
+        for _ in range(10):
             if verified_token: break
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             t = await page.evaluate("() => window.__qcaptcha_token")
             if t:
                 verified_token = t
@@ -328,7 +413,7 @@ def run(target_url: str = None, headless: bool = False):
                     break
         except Exception as e:
             log(f"[*] Retrying campaign fetch: {e}")
-        time.sleep(2)
+        time.sleep(1.5)
 
     if not camp:
         log("[!] Không lấy được thông tin chiến dịch từ LayMa API.")
@@ -342,21 +427,9 @@ def run(target_url: str = None, headless: bool = False):
     log(f"[+] Thời gian yêu cầu chờ: {wait_seconds}s")
     log(f"[+] Visit Ticket: {visit_ticket}")
 
-    # BƯỚC 2: Tự động giải mã QCaptcha
-    log("\n[BƯỚC 2] Bắt đầu tự động giải mã QCaptcha (HSV Contour Vision)...")
+    # BƯỚC 2 & 3: Song song hóa QCaptcha Solver & Visit Countdown
+    log("\n[BƯỚC 2 & 3] Chạy song song QCaptcha Solver và Visit Ticket Countdown...")
     start_time = time.time()
-    qc_token = asyncio.run(solve_qcaptcha_to_token(headless=headless))
-
-    if not qc_token:
-        log("[!] Không lấy được QCaptcha verification token.")
-        return None
-
-    log(f"\n✔ QCAPTCHA PASS: Đã xác thực thành công QCaptcha token: {qc_token[:35]}...")
-
-    # BƯỚC 3: Chờ đếm ngược & gửi heartbeat visit
-    elapsed = time.time() - start_time
-    rem_wait = max(0, int(wait_seconds - elapsed))
-    log(f"\n[BƯỚC 3] Đã trôi qua {int(elapsed)}s. Cần duy trì time-on-site {rem_wait}s để hoàn tất chu kỳ...")
 
     widget_headers = {
         **headers,
@@ -364,6 +437,7 @@ def run(target_url: str = None, headless: bool = False):
         "X-Traffic-Session": sess_token
     }
 
+    # Đăng ký visit ban đầu
     try:
         session.post("https://api.layma.net/api/traffic/visit", json={
             "trafficSessionToken": traffic_session_token,
@@ -373,17 +447,33 @@ def run(target_url: str = None, headless: bool = False):
     except Exception:
         pass
 
-    for sec in range(rem_wait, 0, -10):
-        log(f"  ⌛ Đếm ngược: còn {sec}s...")
-        time.sleep(min(10, sec))
-        try:
-            session.post("https://api.layma.net/api/traffic/visit", json={
-                "trafficSessionToken": traffic_session_token,
-                "visitTicket": visit_ticket,
-                "trafficId": traffic_id
-            }, headers=widget_headers, timeout=10)
-        except Exception:
-            pass
+    # Giải mã QCaptcha
+    qc_token = asyncio.run(solve_qcaptcha_to_token(headless=headless))
+
+    if not qc_token:
+        log("[!] Không lấy được QCaptcha verification token.")
+        return None
+
+    log(f"\n✔ QCAPTCHA PASS: Đã xác thực thành công QCaptcha token: {qc_token[:35]}...")
+
+    elapsed = time.time() - start_time
+    log(f"[*] Thời gian giải QCaptcha + khởi chạy: {elapsed:.2f}s")
+
+    # Gửi ping visit hoàn tất
+    try:
+        session.post("https://api.layma.net/api/traffic/visit", json={
+            "trafficSessionToken": traffic_session_token,
+            "visitTicket": visit_ticket,
+            "trafficId": traffic_id
+        }, headers=widget_headers, timeout=10)
+    except Exception:
+        pass
+
+    # Ép thời gian đếm ngược về mốc 25-30s cho server LayMa chấp nhận
+    if elapsed < 25:
+        to_sleep = 25 - elapsed
+        log(f"[*] Chờ thêm {to_sleep:.1f}s để đạt mốc thời gian tối thiểu (25s) của LayMa...")
+        time.sleep(to_sleep)
 
     log("[+] Hoàn tất thời gian đếm ngược hợp lệ!")
 
