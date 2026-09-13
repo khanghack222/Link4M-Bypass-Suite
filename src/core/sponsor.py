@@ -384,23 +384,25 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
         if not text:
             return ""
         clean = re.sub(r'<[^>]+>', '', str(text))
+        clean = re.sub(r'^(?:M[ãa]\s*KM|M[ãa]\s*x[áa]c\s*nh[ậa]n|Code|M[ãa])[\s\:\-]+', '', clean, flags=re.IGNORECASE)
         return clean.strip()
 
     def is_valid_sponsor_code(text: str) -> bool:
         t = clean_code_str(text)
-        if not t or len(t) < 4 or len(t) > 20:
+        if not t or len(t) < 4 or len(t) > 25:
             return False
-        if any(w in t.lower() for w in ['click', 'vui lòng', 'vui long', 'link', 'bước', 'buoc', 'lay ma', 'lấy mã', 'chờ', 'cho', 'seconds', 'giây', 'vui']):
+        if any(w in t.lower() for w in ['click', 'vui lòng', 'vui long', 'link', 'bước', 'buoc', 'lay ma', 'lấy mã', 'chờ', 'seconds', 'giây']):
             return False
-        return bool(re.match(r'^[A-Za-z0-9_\-]{4,20}$', t))
+        return bool(re.match(r'^[A-Za-z0-9_\-]{4,25}$', t))
 
     code_found = None
     def on_resp(res):
         nonlocal code_found
-        if any(ep in res.url for ep in ["get_quest_code.html", "get_code", "ajax_code", "lay_ma"]):
+        if any(ep in res.url for ep in ["get_quest_code.html", "get_code", "ajax_code", "lay_ma", "process-site", "check-site", "iatum"]):
             try:
                 data = res.json()
-                raw = data.get("html") or data.get("code") or data.get("data")
+                log(f"[*] API Response raw from {res.url[:70]}: {data}")
+                raw = data.get("html") or data.get("code") or data.get("data") or data.get("c")
                 if raw:
                     val = clean_code_str(raw)
                     if is_valid_sponsor_code(val):
@@ -408,7 +410,7 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                         log(f"🎉 EXTRACTED SPONSOR CODE FROM API: {code_found}")
                     else:
                         log(f"[*] API intermediate message: {val}")
-            except Exception:
+            except Exception as ex:
                 pass
     page.on("response", on_resp)
 
@@ -473,19 +475,21 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                         break
             except Exception:
                 pass
-            if not article:
-                article = f"{sponsor_url}/bai-viet-{step}/"
-                visited.add(article.rstrip("/"))
-            art_url = f"{article}#ss-{traffic_key}" if traffic_key and "#" not in article else article
+            if not article or article == sponsor_url:
+                article = sponsor_url.rstrip("/")
+                sep = "&" if "?" in article else "?"
+                art_url = f"{article}{sep}step={step}#ss-{traffic_key}" if traffic_key else f"{article}{sep}step={step}"
+            else:
+                art_url = f"{article}#ss-{traffic_key}" if traffic_key and "#" not in article else article
             log(f"[*] Navigating to Step {step} article: {art_url}")
             try:
                 page.goto(art_url, wait_until="domcontentloaded", timeout=35000)
             except Exception:
                 pass
-            time.sleep(0.5)
+            time.sleep(1.0)
 
         prep()
-        time.sleep(0.3)
+        time.sleep(0.5)
 
         btn = page.locator(btn_sel).first
         if btn.count() == 0:
@@ -520,32 +524,95 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                 dir_wheel = -dir_wheel
                 page.mouse.wheel(0, 120 * dir_wheel)
 
-            rem = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : null; }}")
+            rem = page.evaluate(f"""() => {{
+                const el = document.getElementById('{traffic_key}');
+                if (el && el.dataset.time) return parseFloat(el.dataset.time);
+                const btn = document.querySelector(".completed, [class*='completed'], [id='{traffic_key}'] button, [id='{traffic_key}'], button");
+                if (btn) {{
+                    const m = (btn.innerText || '').match(/(\\d+)\\s*(?:giây|s)/i);
+                    if (m) return parseFloat(m[1]);
+                }}
+                return null;
+            }}""")
             if rem is not None:
                 if tick % 6 == 0 or rem <= 3:
                     log(f"  [Step {step}] Remaining: {rem}s")
                 if rem <= 0:
                     page.evaluate("() => { if (typeof checkButtonClick === 'function') checkButtonClick(); }")
                     if step == 1:
-                        for _ in range(8):
+                        # Kiểm tra xem mã có xuất hiện luôn ở bước 1 không (single-step sponsor / traffic.com.vn)
+                        for _ in range(16):
+                            time.sleep(0.5)
+                            if code_found:
+                                break
+                            try:
+                                dom_t = page.evaluate(f"""() => {{
+                                    const el = document.getElementById('{traffic_key}');
+                                    if (el) {{
+                                        const d = el.getElementsByTagName('div')[0];
+                                        if (d && d.innerText) return d.innerText;
+                                        return el.dataset.code || el.value || el.innerText || '';
+                                    }}
+                                    const cBtn = document.querySelector('.completed, [class*="completed"]');
+                                    if (cBtn && cBtn.innerText) return cBtn.innerText;
+                                    return null;
+                                }}""")
+                                if dom_t:
+                                    cleaned = clean_code_str(dom_t)
+                                    if is_valid_sponsor_code(cleaned):
+                                        code_found = cleaned
+                                        log(f"🎉 EXTRACTED SPONSOR CODE FROM DOM IN STEP 1: {code_found}")
+                                        break
+                            except Exception:
+                                pass
                             has_quest = page.evaluate(f"() => {{ for (let k in localStorage) {{ if (k.includes('quest')) return true; }} return false; }}")
                             if has_quest:
                                 break
-                            time.sleep(0.5)
                     else:
-                        time.sleep(1.0)
+                        log(f"[*] Step {step} countdown finished! Waiting for mission code from API/DOM...")
+                        for _ in range(30):
+                            time.sleep(0.5)
+                            if code_found:
+                                break
+                            try:
+                                dom_t = page.evaluate(f"""() => {{
+                                    const el = document.getElementById('{traffic_key}');
+                                    if (el) {{
+                                        const d = el.getElementsByTagName('div')[0];
+                                        if (d && d.innerText) return d.innerText;
+                                        return el.dataset.code || el.value || el.innerText || '';
+                                    }}
+                                    return null;
+                                }}""")
+                                if dom_t:
+                                    cleaned = clean_code_str(dom_t)
+                                    if is_valid_sponsor_code(cleaned):
+                                        code_found = cleaned
+                                        log(f"🎉 EXTRACTED SPONSOR CODE FROM DOM IN STEP {step}: {code_found}")
+                                        break
+                            except Exception:
+                                pass
                     break
 
             if code_found:
                 break
 
+        if code_found:
+            break
+
     if not code_found:
         time.sleep(1.5)
         dom_val = page.evaluate(f"""() => {{
+            const elDirect = document.getElementById('{traffic_key}');
+            if (elDirect) {{
+                const t = (elDirect.dataset.code || elDirect.value || elDirect.innerText || '').trim();
+                if (/^[A-Za-z0-9_\\-]{{4,20}}$/.test(t) && !/lay|ma|click|link|buoc/i.test(t)) return t;
+            }}
             const selList = [
-                '#{traffic_key}',
-                '#{traffic_key} button',
-                '#{traffic_key} span',
+                "[id='{traffic_key}']",
+                "[id='{traffic_key}'] button",
+                "[id='{traffic_key}'] span",
+                "[id='{traffic_key}'] div",
                 '.whatoncode',
                 '.ma-xac-nhan',
                 '#ma-km',
@@ -553,11 +620,13 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                 '[data-code]'
             ];
             for (const s of selList) {{
-                const el = document.querySelector(s);
-                if (el) {{
-                    const t = (el.dataset.code || el.value || el.innerText || '').trim();
-                    if (/^[A-Za-z0-9_\\-]{{4,20}}$/.test(t) && !/lay|ma|click|link|buoc/i.test(t)) return t;
-                }}
+                try {{
+                    const el = document.querySelector(s);
+                    if (el) {{
+                        const t = (el.dataset.code || el.value || el.innerText || '').trim();
+                        if (/^[A-Za-z0-9_\\-]{{4,20}}$/.test(t) && !/lay|ma|click|link|buoc/i.test(t)) return t;
+                    }}
+                }} catch (e) {{}}
             }}
             return null;
         }}""")

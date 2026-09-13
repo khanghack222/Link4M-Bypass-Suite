@@ -9,6 +9,31 @@ ROOT_DIR = BASE_DIR
 LOG_FILE = os.path.join(BASE_DIR, "e2e_bypass.log")
 DEST_FILE = os.path.join(BASE_DIR, "destination_url.txt")
 CODE_FILE = os.path.join(BASE_DIR, "extracted_code.txt")
+PROXIES_FILE = os.path.join(BASE_DIR, "proxies.txt")
+
+def load_proxies():
+    if not os.path.exists(PROXIES_FILE):
+        return []
+    proxies = []
+    with open(PROXIES_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip().lstrip('\ufeff')
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(":")
+            if len(parts) == 4:
+                proxies.append({
+                    "server": f"http://{parts[0]}:{parts[1]}",
+                    "username": parts[2],
+                    "password": parts[3],
+                    "raw": line
+                })
+            elif len(parts) == 2:
+                proxies.append({
+                    "server": f"http://{parts[0]}:{parts[1]}",
+                    "raw": line
+                })
+    return proxies
 
 def get_chrome_path():
     candidates = [

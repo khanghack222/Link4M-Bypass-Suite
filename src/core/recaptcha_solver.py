@@ -59,6 +59,8 @@ class RecaptchaAudioSolver:
         for idx, a in enumerate(anchors):
             try:
                 box = a.bounding_box()
+                if not box or box.get('height', 0) < 30 or box.get('width', 0) < 100:
+                    continue
                 cf = a.content_frame
                 if not cf:
                     continue
@@ -67,7 +69,7 @@ class RecaptchaAudioSolver:
                     continue
                 
                 body_text = cf.locator("body").inner_text() or ""
-                has_quota_error = any(w in body_text.lower() for w in ["quota", "exceeding", "bị lỗi"])
+                has_quota_error = any(w in body_text.lower() for w in ["quota", "exceeding", "bị lỗi", "error"])
                 
                 y_pos = box['y'] if box else 0
                 candidate_anchors.append({
@@ -81,22 +83,26 @@ class RecaptchaAudioSolver:
             except Exception:
                 continue
 
-        # Sort: healthy first (has_error == False), then bottom-first (higher Y)
-        candidate_anchors.sort(key=lambda x: (not x["has_error"], x["y"]), reverse=True)
+        # Sort: healthy first (has_error == False), then top-first (visible on main-form, lower Y)
+        candidate_anchors.sort(key=lambda x: (not x["has_error"], -x["y"]), reverse=True)
 
         for cand in candidate_anchors:
             try:
                 a = cand["anchor"]
                 chk = cand["chk"]
+                cf = cand["frame"]
                 
                 try:
                     a.scroll_into_view_if_needed()
-                    time.sleep(0.4)
+                    time.sleep(0.3)
                 except Exception:
                     pass
 
-                chk.click()
-                time.sleep(1.5)
+                try:
+                    chk.click(timeout=5000)
+                except Exception:
+                    cf.evaluate("() => { const el = document.getElementById('recaptcha-anchor'); if (el) el.click(); }")
+                time.sleep(2.0)
 
                 if chk.get_attribute("aria-checked") == "true":
                     token = page.evaluate("() => { for (const el of document.querySelectorAll('[name=\"g-recaptcha-response\"]')) { if (el.value && el.value.length > 20) return el.value; } return ''; }")
@@ -107,21 +113,21 @@ class RecaptchaAudioSolver:
 
                 # Locate active visible bframe
                 active_bframe = None
-                for _ in range(8):
+                for _ in range(10):
                     bframes = page.locator("iframe[src*='recaptcha/api2/bframe'], iframe[src*='recaptcha/enterprise/bframe']").all()
                     for bf in bframes:
                         try:
                             bbox = bf.bounding_box()
-                            if bbox and bbox['y'] > 0 and bbox['width'] > 0 and bf.is_visible():
+                            if bbox and bbox.get('y', -9999) > 0 and bbox.get('width', 0) > 100 and bf.is_visible():
                                 b_cf = bf.content_frame
-                                if b_cf and b_cf.locator("#recaptcha-audio-button").count() > 0:
+                                if b_cf:
                                     active_bframe = b_cf
                                     break
                         except Exception:
                             pass
                     if active_bframe:
                         break
-                    time.sleep(0.5)
+                    time.sleep(0.4)
 
                 if not active_bframe:
                     print(f"[!] No visible bframe for candidate anchor {cand['index']}. Trying next candidate...", flush=True)
