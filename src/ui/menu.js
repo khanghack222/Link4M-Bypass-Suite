@@ -285,7 +285,7 @@ function showResultCard(finalUrl, durationSec) {
     console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
 }
 
-let currentHeadless = false;
+let currentHeadless = true;
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));

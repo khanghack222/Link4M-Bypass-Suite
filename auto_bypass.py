@@ -171,7 +171,7 @@ def read_captured_destination() -> str:
     return ""
 
 
-def execute_bypass(target_url: str, headless: bool = False) -> str:
+def execute_bypass(target_url: str, headless: bool = True) -> str:
     """Executes the specialized bypass runner according to the URL category."""
     target_url = target_url.strip()
     category = classify_url(target_url)
@@ -233,7 +233,7 @@ def execute_bypass(target_url: str, headless: bool = False) -> str:
         return ""
 
 
-def run_loop_watcher(headless: bool = False):
+def run_loop_watcher(headless: bool = True):
     """Continuous Clipboard Watcher Mode: auto-bypasses whenever a shortlink is copied."""
     print(f"  {BG_GREEN} 🔄 CHẾ ĐỘ GIÁM SÁT CLIPBOARD TỰ ĐỘNG (LOOP WATCHER) 🔄 {C_RESET}")
     print(f"  {C_GRAY}Đang lắng nghe Clipboard... Hãy copy bất kỳ link shortlink nào (Ctrl+C).{C_RESET}")
@@ -266,15 +266,13 @@ def main():
     )
     parser.add_argument("url", nargs="?", default=None, help="Target shortlink URL to bypass")
     parser.add_argument("--head", "-w", "--window", action="store_true", help="Run with visible browser window")
-    parser.add_argument("--headless", "-hl", action="store_true", help="Run in headless browser mode (default)")
+    parser.add_argument("--headless", "-hl", action="store_true", default=True, help="Run in headless browser mode (default)")
     parser.add_argument("--loop", "-l", action="store_true", help="Continuously monitor clipboard for new shortlinks")
 
     args = parser.parse_args()
 
-    # Headless decision: default to windowed if not specified or headless if flag passed
-    headless = True if args.headless else False
-    if args.head:
-        headless = False
+    # Default to 100% headless unless explicitly requested windowed
+    headless = False if args.head else True
 
     print_banner()
 

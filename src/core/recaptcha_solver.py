@@ -50,38 +50,42 @@ class RecaptchaAudioSolver:
     def solve_on_page(self, page: Page, timeout_sec: int = 35) -> Dict[str, Any]:
         t0 = time.perf_counter()
         
-        # 1. Collect all anchor frames and their properties
-        anchors = page.locator("iframe[src*='recaptcha/api2/anchor'], iframe[src*='recaptcha/enterprise/anchor']").all()
-        if not anchors:
-            return {"success": False, "error": "no_anchors_found"}
-
+        # 1. Wait and collect all valid anchor frames
         candidate_anchors = []
-        for idx, a in enumerate(anchors):
-            try:
-                box = a.bounding_box()
-                if not box or box.get('height', 0) < 30 or box.get('width', 0) < 100:
+        for _wait in range(20):
+            anchors = page.locator("iframe[src*='recaptcha/api2/anchor'], iframe[src*='recaptcha/enterprise/anchor']").all()
+            for idx, a in enumerate(anchors):
+                try:
+                    box = a.bounding_box()
+                    if not box or box.get('height', 0) < 30 or box.get('width', 0) < 100:
+                        continue
+                    cf = a.content_frame
+                    if not cf:
+                        continue
+                    chk = cf.locator("#recaptcha-anchor")
+                    if chk.count() == 0:
+                        continue
+                    
+                    body_text = cf.locator("body").inner_text() or ""
+                    has_quota_error = any(w in body_text.lower() for w in ["quota", "exceeding", "bị lỗi", "error"])
+                    
+                    y_pos = box['y'] if box else 0
+                    candidate_anchors.append({
+                        "anchor": a,
+                        "frame": cf,
+                        "chk": chk,
+                        "y": y_pos,
+                        "has_error": has_quota_error,
+                        "index": idx
+                    })
+                except Exception:
                     continue
-                cf = a.content_frame
-                if not cf:
-                    continue
-                chk = cf.locator("#recaptcha-anchor")
-                if chk.count() == 0:
-                    continue
-                
-                body_text = cf.locator("body").inner_text() or ""
-                has_quota_error = any(w in body_text.lower() for w in ["quota", "exceeding", "bị lỗi", "error"])
-                
-                y_pos = box['y'] if box else 0
-                candidate_anchors.append({
-                    "anchor": a,
-                    "frame": cf,
-                    "chk": chk,
-                    "y": y_pos,
-                    "has_error": has_quota_error,
-                    "index": idx
-                })
-            except Exception:
-                continue
+            if candidate_anchors:
+                break
+            time.sleep(0.5)
+
+        if not candidate_anchors:
+            return {"success": False, "error": "no_anchors_found"}
 
         # Sort: healthy first (has_error == False), then top-first (visible on main-form, lower Y)
         candidate_anchors.sort(key=lambda x: (not x["has_error"], -x["y"]), reverse=True)

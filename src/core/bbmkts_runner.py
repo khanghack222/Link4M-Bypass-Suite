@@ -33,7 +33,7 @@ def run(target_link: str = None, headless: bool = None):
     if not target_link:
         target_link = sys.argv[1].strip() if len(sys.argv) > 1 and sys.argv[1].startswith("http") else "https://bbmkts.com/go/3p82s"
     if headless is None:
-        headless = "--headless" in sys.argv or "-h" in sys.argv
+        headless = False if ("--head" in sys.argv or "-w" in sys.argv or "--window" in sys.argv) else True
 
     final_destination = None
 

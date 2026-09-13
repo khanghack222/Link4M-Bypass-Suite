@@ -156,40 +156,77 @@ def run(target_url: str = None, headless: bool = True):
 
         page_link.on("response", handle_resp)
 
+        solver = RecaptchaAudioSolver(headless=headless, model_name="tiny.en")
+
+        # ⚡ TẦNG 1: TURBO DIRECT CAPTCHA EXPLOIT (Nhảy cóc 3s)
+        def route_adv(route):
+            log("⚡ [TURBO EXPLOIT] Chặn /api/campaign/get-advertise -> Ép Link4M kích hoạt Cổng Captcha Trực Tiếp!")
+            route.abort()
+
+        page_link.route("**/api/campaign/get-advertise", route_adv)
+
         try:
-            page_link.goto(target_url, wait_until="domcontentloaded", timeout=40000)
+            page_link.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            time.sleep(2)
         except Exception as e:
             log(f"[!] Warning on initial goto: {e}")
 
-        # Fast wait for dynamic form elements
-        try:
-            page_link.wait_for_selector("input.password, input[name='password'], #password-2", timeout=2500)
-        except Exception:
-            pass
+        # Chờ Cổng Captcha Trực Tiếp render đầy đủ (tối đa 6s)
+        for _ in range(12):
+            if page_link.locator("h4").filter(has_text="Vui lòng check captcha").count() > 0 or \
+               page_link.locator("#recaptcha iframe, .g-recaptcha iframe").count() > 0:
+                break
+            time.sleep(0.5)
 
-        has_pwd = page_link.locator("input.password, input[name='password'], #password-2").count() > 0
-        has_recaptcha = page_link.locator(".g-recaptcha, iframe[src*='recaptcha']").count() > 0
-        is_direct = has_recaptcha and not has_pwd
+        # Kiểm tra xem Cổng Captcha Trực Tiếp đã được kích hoạt thành công chưa
+        is_direct_gate = page_link.locator("h4").filter(has_text="Vui lòng check captcha").count() > 0 or \
+                         (page_link.locator("#advertise-html-wrapper").count() == 0 and page_link.locator(".g-recaptcha, #recaptcha").count() > 0)
 
-        solver = RecaptchaAudioSolver(headless=headless, model_name="tiny.en")
+        if is_direct_gate:
+            log("🚀 [TURBO EXPLOIT] Đã kích hoạt thành công Cổng Captcha Trực Tiếp (Bỏ qua 100% nhiệm vụ tìm web)!")
+            for turbo_try in range(1, 3):
+                try:
+                    if turbo_try > 1:
+                        log(f"[*] Thử lại giải Captcha Cổng Trực Tiếp (Lần {turbo_try})...")
+                        page_link.reload(wait_until="domcontentloaded", timeout=20000)
+                        time.sleep(2)
+                    res_solve = solver.solve_on_page(page_link, timeout_sec=25)
+                    log(f"[+] Turbo solver result: {res_solve}")
+                    if res_solve.get("success"):
+                        time.sleep(0.5)
+                        page_link.evaluate("""() => {
+                            if (typeof recaptcha_callback === 'function') recaptcha_callback();
+                            else if (typeof checkCaptcha === 'function') checkCaptcha();
+                        }""")
+                        for _ in range(20):
+                            if is_valid_destination(final_destination_url):
+                                break
+                            btn = page_link.locator(".get-link, a[class*='get-link']")
+                            if btn.count() > 0:
+                                href = btn.first.get_attribute("href")
+                                if href and is_valid_destination(href):
+                                    final_destination_url = href
+                                    log(f"🎉 DESTINATION URL CAPTURED FROM BUTTON: {final_destination_url}")
+                                    break
+                            time.sleep(0.5)
+                    if is_valid_destination(final_destination_url):
+                        break
+                except Exception as e:
+                    log(f"[!] Turbo solver note: {e}")
 
-        if is_direct:
-            log("[+] Detected Direct Captcha Gate Mode")
-            try:
-                solver.solve_on_page(page_link)
-            except Exception as e:
-                log(f"[!] AI solver note: {e}")
-            time.sleep(0.4)
-            page_link.evaluate("""() => {
-                if (typeof recaptcha_callback === 'function') recaptcha_callback();
-                else if (typeof checkCaptcha === 'function') checkCaptcha();
-                document.querySelectorAll('#btn-main, #btn-continue, button[type="submit"], input[type="submit"], .btn-primary, .get-link').forEach(btn => {
-                    if (!btn.classList.contains('disabled')) {
-                        btn.click();
-                    }
-                });
-            }""")
+        # Nếu Turbo Exploit đã lấy được link đích -> Hoàn tất!
+        if is_valid_destination(final_destination_url):
+            log(f"🎉🎉🎉 [TURBO WIN] VƯỢT LINK4M SIÊU TỐC TRONG 3 GIÂY: {final_destination_url}")
         else:
+            # 🛡️ TẦNG 2: FALLBACK TOÀN DIỆN SANG LUỒNG WEB TÀI TRỢ (SPONSOR QUEST)
+            log("[*] Chuyển tiếp sang Tầng 2: Vượt bằng luồng Web tài trợ (Sponsor Quest)...")
+            try:
+                page_link.unroute("**/api/campaign/get-advertise")
+                page_link.reload(wait_until="domcontentloaded", timeout=30000)
+                time.sleep(3)
+            except Exception as e:
+                log(f"[!] Reload error: {e}")
+
             sponsor_url = detect_sponsor_domain(page_link)
             if not sponsor_url:
                 log("[!] Could not auto-detect sponsor domain. Halting.")

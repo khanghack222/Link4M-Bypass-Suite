@@ -185,11 +185,13 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str) -> str:
 
     return None
 
-def run(target_url: str = None, headless: bool = False):
+def run(target_url: str = None, headless: bool = True):
     if not target_url:
         target_url = sys.argv[1].strip() if len(sys.argv) > 1 and sys.argv[1].startswith("http") else "https://gtraffic.io/X3BR2OQ"
 
-    if "--headless" in sys.argv or "-h" in sys.argv or os.environ.get("GTRAFFIC_HEADLESS") == "1":
+    if "--head" in sys.argv or "-w" in sys.argv or "--window" in sys.argv:
+        headless = False
+    elif "--headless" in sys.argv or "-h" in sys.argv or os.environ.get("GTRAFFIC_HEADLESS") == "1":
         headless = True
 
     log(f"[*] Target Gtraffic URL: {target_url}")

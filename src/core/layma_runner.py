@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from playwright.sync_api import sync_playwright
 
 BASE_DIR = r"C:\Users\XUAN\.gemini\antigravity\scratch\Link4M_Bypass_Suite"
+ROOT_DIR = BASE_DIR
 DEST_FILE = os.path.join(BASE_DIR, "DESTINATION_FINAL_URL.txt")
 CODE_FILE = os.path.join(BASE_DIR, "extracted_code.txt")
 
@@ -44,16 +45,12 @@ def run(target_url: str = None, headless: bool = None):
     if not target_url:
         target_url = sys.argv[1].strip() if len(sys.argv) > 1 and sys.argv[1].startswith("http") else "https://layma.net/pohWNZgba"
     if headless is None:
-        headless = "--headless" in sys.argv or "-h" in sys.argv or os.environ.get("LAYMA_HEADLESS") == "1"
-
-    sponsor_domain = "agilafc.com"
-    traffic_key = "4AzF9IZh9"
+        headless = False if ("--head" in sys.argv or "-w" in sys.argv or "--window" in sys.argv) else True
 
     print("=" * 60)
     print(f"🚀 LINK4M / LAYMA BYPASS ENGINE - TARGET: {target_url}")
     print("=" * 60)
     print(f"[*] Target LayMa URL: {target_url}")
-    print(f"[*] Sponsor Domain: https://{sponsor_domain} (Platform: Google, Key: {traffic_key})")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -97,19 +94,31 @@ def run(target_url: str = None, headless: bool = None):
 
         def on_layma_res(res):
             nonlocal final_destination_url, direct_redirect_url
-            if any(ep in res.url for ep in ["/api/traffic/checkcode", "/checkcode"]):
+            u_low = res.url.lower()
+            if "checkcode" in u_low:
                 try:
-                    raw = res.text()
-                    m_go = re.search(r"https?://[^\s\"\'<>]*/api/traffic/go/[A-Za-z0-9_\-]+", raw)
-                    if m_go:
-                        direct_redirect_url = m_go.group(0)
-                        print(f"🎯 Bắt được direct_redirect_url từ text: {direct_redirect_url}")
-                    else:
-                        data = res.json()
-                        u = data.get("redirectUrl") or data.get("RedirectUrl") or data.get("url")
-                        if u and u.startswith("http"):
-                            direct_redirect_url = u
-                            print(f"🎯 Nhận redirectUrl từ JSON: {direct_redirect_url}")
+                    data = res.json()
+                    print(f"[+] LayMa checkcode response: {data}")
+                    u = data.get("redirectUrl") or data.get("RedirectUrl") or data.get("url")
+                    if u and u.startswith("http"):
+                        direct_redirect_url = u
+                        print(f"🎯 Nhận redirectUrl từ JSON: {direct_redirect_url}")
+                except Exception as e:
+                    try:
+                        raw = res.text()
+                        m_go = re.search(r"https?://[^\s\"\'<>]*/api/traffic/go/[A-Za-z0-9_\-]+", raw)
+                        if m_go:
+                            direct_redirect_url = m_go.group(0)
+                            print(f"🎯 Bắt được direct_redirect_url từ text: {direct_redirect_url}")
+                    except Exception:
+                        pass
+
+            if "api/traffic/go/" in u_low:
+                try:
+                    loc = res.headers.get("location")
+                    if loc and "layma.net" not in loc:
+                        final_destination_url = loc
+                        print(f"🎯 Bắt được 302 Location từ api/traffic/go/: {final_destination_url}")
                 except Exception:
                     pass
         page_layma.on("response", on_layma_res)
@@ -118,10 +127,87 @@ def run(target_url: str = None, headless: bool = None):
         page_layma.goto(target_url, wait_until="domcontentloaded")
         time.sleep(2)
 
-        camp_id = page_layma.locator("#campainId").inner_text().strip()
+        camp_id = page_layma.locator("#campainId").inner_text().strip() if page_layma.locator("#campainId").count() > 0 else ""
         print(f"[+] Campaign ID on LayMa: {camp_id}")
 
-        # 2. Open Sponsor page (agilafc.com)
+        SPONSOR_KEYS = {
+            "agilafc.com": "4AzF9IZh9",
+            "vijaylaxmigranito.in": "JkfFIYs4i",
+            "www.vijaylaxmigranito.in": "JkfFIYs4i",
+            "dunchurchsportsandfootballclub.co.uk": "4AzF9IZh9",
+        }
+        DEAD_SPONSORS = ["go88yt", "go88", "sunwin", "qo88", "lo88", "88yt", "smileitsolutions"]
+
+        def detect_layma_sponsor():
+            selectors = ['#linkWeb', '#hinh_nv', 'img.url-hint-image', 'img[src*="/posts/"]', '.box-linkFB-wrap img']
+            for sel in selectors:
+                loc = page_layma.locator(sel)
+                if loc.count() > 0:
+                    tmp_ocr = os.path.join(ROOT_DIR, "data", "temp", "layma_linkweb.png")
+                    os.makedirs(os.path.dirname(tmp_ocr), exist_ok=True)
+                    try:
+                        loc.first.screenshot(path=tmp_ocr)
+                        from rapidocr_onnxruntime import RapidOCR
+                        lines, _ = RapidOCR()(tmp_ocr)
+                        if lines:
+                            all_texts = [l[1].strip().lower() for l in lines]
+                            joined = ' '.join(all_texts)
+                            if any(d in joined for d in DEAD_SPONSORS):
+                                for d in DEAD_SPONSORS:
+                                    if d in joined:
+                                        return f"dead_{d}"
+                            for t in all_texts:
+                                m = re.search(r'([a-zA-Z0-9\-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', t)
+                                if m and not any(k in m.group(1) for k in ['layma', 'google', 'facebook', 'youtube']):
+                                    return m.group(1)
+                            if any(k in joined for k in ['go88', 'qo88', 'lo88']):
+                                return "go88yt.com"
+                            return all_texts[0]
+                    except Exception as e:
+                        print(f"[!] OCR error on {sel}: {e}")
+            return None
+
+        detected_sponsor = detect_layma_sponsor()
+        print(f"[*] OCR detected sponsor domain on page: '{detected_sponsor}'")
+
+        for sw_attempt in range(3):
+            if detected_sponsor and any(d in detected_sponsor for d in DEAD_SPONSORS):
+                print(f"[!] Sponsor '{detected_sponsor}' không khả dụng / Cloudflare (Lần {sw_attempt + 1}). Tự động đổi nhiệm vụ (#btn-baoloi)...")
+                btn_baoloi = page_layma.locator("#btn-baoloi")
+                if btn_baoloi.count() > 0:
+                    btn_baoloi.click()
+                    time.sleep(1)
+                    btn_confirm = page_layma.locator("#btnXacNhanDoiNhiemVu")
+                    if btn_confirm.count() > 0:
+                        btn_confirm.click()
+                        print("[*] Đã nhấn xác nhận đổi nhiệm vụ, đợi 8s tải lại campaign mới...")
+                        time.sleep(8)
+                        page_layma.wait_for_load_state("domcontentloaded")
+                        camp_id = page_layma.locator("#campainId").inner_text().strip() if page_layma.locator("#campainId").count() > 0 else ""
+                        detected_sponsor = detect_layma_sponsor()
+                        print(f"[+] Sau khi đổi: Campaign ID: {camp_id}, Sponsor: '{detected_sponsor}'")
+            else:
+                break
+
+        sponsor_domain = "agilafc.com"
+        traffic_key = "4AzF9IZh9"
+        if detected_sponsor:
+            clean_dom = re.sub(r'^(?:https?://)?(?:www\.)?', '', detected_sponsor).strip('/')
+            for k, v in SPONSOR_KEYS.items():
+                if k in detected_sponsor or detected_sponsor in k or k in clean_dom:
+                    sponsor_domain = k
+                    traffic_key = v
+                    break
+            else:
+                sponsor_domain = clean_dom
+
+        # Check mission type on LayMa (Google search vs Direct link)
+        layma_body_text = page_layma.inner_text("body").lower()
+        is_direct = "gõ trang web" in layma_body_text or "truy cập liên kết" in layma_body_text or ("từ khóa" not in layma_body_text and "google" not in layma_body_text)
+        flatform_target = 'tructiep' if is_direct else 'google'
+        print(f"[*] Resolved Sponsor Domain: https://{sponsor_domain} (Traffic Key: {traffic_key}, Platform: {flatform_target})")
+
+        # 2. Open Sponsor page
         page_sponsor = context.new_page()
         extracted_layma_code = None
 
@@ -143,10 +229,11 @@ def run(target_url: str = None, headless: bool = None):
             res = route.fetch()
             text = res.text()
 
-            # Force flatform = 'google'
-            text = re.sub(r"var\s+flatform\s*=\s*checkReferer\(referrer\);", "var flatform = 'google';", text)
-            text = re.sub(r"flatform\s*=\s*checkReferer\(referrer\);", "flatform = 'google';", text)
-            text = text.replace("var flatform = 'tructiep';", "var flatform = 'google';")
+            # Dynamic flatform based on mission
+            text = re.sub(r"var\s+flatform\s*=\s*checkReferer\(referrer\);", f"var flatform = '{flatform_target}';", text)
+            text = re.sub(r"flatform\s*=\s*checkReferer\(referrer\);", f"flatform = '{flatform_target}';", text)
+            text = text.replace("var flatform = 'tructiep';", f"var flatform = '{flatform_target}';")
+            text = text.replace("var flatform = 'google';", f"var flatform = '{flatform_target}';")
 
             # Force Solution 1 (1 single page, 1 step)
             text = text.replace(
@@ -161,7 +248,7 @@ def run(target_url: str = None, headless: bool = None):
             # Fix DOM container null
             text = text.replace(
                 'document.getElementById("xacthucButton").style.display = "block";',
-                'if (!document.getElementById("xacthucButton")) { showTrackingMessage(""); } document.getElementById("xacthucButton").style.display = "block";'
+                'var _xb = document.getElementById("xacthucButton"); if (_xb) _xb.style.display = "block";'
             )
             # Bypass wait satisfied check
             text = text.replace('function canOpenGetCode(element) {', 'function canOpenGetCode(element) { return true;')
@@ -200,22 +287,55 @@ def run(target_url: str = None, headless: bool = None):
         )
         time.sleep(2)
 
+        # Dynamically detect traffic_key from page scripts
+        try:
+            detected_key = page_sponsor.evaluate("""() => {
+                const s = document.querySelector('script[src*="Traffic/Index"], script[src*="traffic/index"]');
+                if (s) {
+                    const m = s.src.match(/[Tt]raffic\/[Ii]ndex\/([A-Za-z0-9_-]+)/);
+                    if (m) return m[1];
+                }
+                return null;
+            }""")
+            if detected_key:
+                traffic_key = detected_key
+                print(f"[+] Tự động phát hiện Traffic Key từ script: {traffic_key}")
+        except Exception:
+            pass
+
         # Click the LẤY MÃ button
         time.sleep(1.0)
-        clicked = page_sponsor.evaluate(f"""() => {{
-            const el = document.getElementById('{traffic_key}');
+        clicked_res = page_sponsor.evaluate(f"""() => {{
+            let el = document.getElementById('{traffic_key}');
+            let foundKey = '{traffic_key}';
+            if (!el) {{
+                const s = document.querySelector('script[src*="Traffic/Index"], script[src*="traffic/index"]');
+                if (s) {{
+                    const m = s.src.match(/[Tt]raffic\/[Ii]ndex\/([A-Za-z0-9_-]+)/);
+                    if (m) {{
+                        foundKey = m[1];
+                        el = document.getElementById(m[1]);
+                    }}
+                }}
+            }}
+            if (!el) {{
+                el = document.querySelector('[class*="Ran"], button[id*="Az"], div[id*="Az"], div[id*="Jkf"], div[id*="DrD"], div[id]');
+                if (el && el.id) foundKey = el.id;
+            }}
             if (el) {{
                 const sp = el.querySelector('span') || el;
                 sp.click();
-                return true;
+                return {{ success: true, key: foundKey }};
             }}
-            return false;
+            return {{ success: false, key: foundKey }};
         }}""")
-        if clicked:
-            print("⚡ Kích hoạt nút LẤY MÃ thành công! Bắt đầu đếm ngược 60s...")
+        if clicked_res and clicked_res.get('success'):
+            if clicked_res.get('key'):
+                traffic_key = clicked_res['key']
+            print(f"⚡ Kích hoạt nút LẤY MÃ thành công (Key: {traffic_key})! Bắt đầu đếm ngược 60s...")
         else:
             print("[!] Thử query selector click nút lấy mã...")
-            page_sponsor.evaluate("() => { const b = document.querySelector('[class*=\"Ran\"], button[id], div[id*=\"4Az\"]'); if (b) b.click(); }")
+            page_sponsor.evaluate("() => { const b = document.querySelector('[class*=\"Ran\"], button[id], div[id*=\"Az\"], div[id*=\"Jkf\"], div[id*=\"DrD\"]'); if (b) b.click(); }")
 
         # Wait 60 seconds with scrolling to keep session active
         dir_w = 1
@@ -251,8 +371,8 @@ def run(target_url: str = None, headless: bool = None):
 
         # Solve QCaptcha loop
         print("[*] Bắt đầu tự động giải QCaptcha challenge...")
-        for round_idx in range(30):
-            time.sleep(1.0)
+        for round_idx in range(60):
+            time.sleep(0.8)
 
             token = page_sponsor.evaluate('''() => {
                 const api = window.hcaptcha || window.qcaptcha;
@@ -262,7 +382,14 @@ def run(target_url: str = None, headless: bool = None):
                 print(f"[🎉] QCaptcha Token Verified: {token[:40]}...")
                 print("[*] Gửi token lên máy chủ lấy mã...")
                 page_sponsor.evaluate('''([tok, key]) => {
-                    const el = document.getElementById(key);
+                    let el = document.getElementById(key);
+                    if (!el) {
+                        const s = document.querySelector('script[src*="Traffic/Index"], script[src*="traffic/index"]');
+                        if (s) {
+                            const m = s.src.match(/[Tt]raffic\/[Ii]ndex\/([A-Za-z0-9_-]+)/);
+                            if (m) el = document.getElementById(m[1]);
+                        }
+                    }
                     if (typeof window.__submitGetCode === 'function') {
                         window.__submitGetCode(el, '0', { qCaptchaToken: tok });
                     }
@@ -415,10 +542,7 @@ def run(target_url: str = None, headless: bool = None):
         time.sleep(0.3)
 
         page_layma.evaluate('''(code) => {
-            // Hook window.open and resolveCheckCodeRedirect to skip 3s countdown
-            window.open = function(u) {
-                if (u && typeof u === 'string') window.location.href = u;
-            };
+            // Hook resolveCheckCodeRedirect to navigate immediately without waiting
             const oldResolve = window.resolveCheckCodeRedirect;
             window.resolveCheckCodeRedirect = function(res) {
                 const u = oldResolve ? oldResolve(res) : (typeof res === 'string' ? res : (res && res.redirectUrl));
@@ -426,6 +550,11 @@ def run(target_url: str = None, headless: bool = None):
                     window.location.href = u;
                 }
                 return u;
+            };
+            // Neutering window.open so the subsequent 3s countdown setInterval does NOT trigger a second OTP call
+            window.open = function(u, target) {
+                console.log('Ignored duplicate window.open redirect call:', u);
+                return null;
             };
 
             const inp = document.getElementById('codeInput') || document.querySelector('input[name="code"]');
@@ -443,25 +572,30 @@ def run(target_url: str = None, headless: bool = None):
         }''', extracted_layma_code)
         print("✔ Đã gửi xác nhận mã trên LayMa!")
 
-        # Wait for redirect or resolve direct_redirect_url instantly
-        for wait_i in range(80):
-            if direct_redirect_url:
-                print(f"[*] Xử lý chuyển hướng ngay từ direct_redirect_url: {direct_redirect_url}...")
-                try:
-                    r_redir = http_session.get(direct_redirect_url, allow_redirects=True, timeout=8)
-                    if r_redir.url and "layma.net" not in r_redir.url:
-                        final_destination_url = r_redir.url
-                        break
-                except Exception as ex:
-                    pass
-
+        # Wait for redirect to final destination url
+        print("[*] Đang chờ trình duyệt chuyển hướng đến link đích cuối cùng...")
+        for wait_i in range(50):
             if final_destination_url and "layma.net" not in final_destination_url:
                 break
-            time.sleep(0.1)
+
             curr = page_layma.url
-            if curr and curr.startswith("http") and "layma.net" not in curr:
+            if curr and curr.startswith("http") and "layma.net" not in curr and "/api/traffic/go/" not in curr:
                 final_destination_url = curr
                 break
+
+            time.sleep(0.4)
+
+        # Fallback only if still on layma and direct_redirect_url was captured
+        if (not final_destination_url or "layma.net" in final_destination_url) and direct_redirect_url:
+            try:
+                print(f"[*] Fallback: Điều hướng trực tiếp tới {direct_redirect_url}...")
+                page_layma.goto(direct_redirect_url, wait_until="domcontentloaded", timeout=12000)
+                time.sleep(1)
+                curr = page_layma.url
+                if curr and "layma.net" not in curr:
+                    final_destination_url = curr
+            except Exception as e:
+                print(f"[!] Fallback goto error: {e}")
 
         if final_destination_url:
             print("\n" + "=" * 70)
@@ -484,6 +618,7 @@ def run(target_url: str = None, headless: bool = None):
 
         time.sleep(2)
         browser.close()
+        return final_destination_url
 
 if __name__ == "__main__":
     run()
