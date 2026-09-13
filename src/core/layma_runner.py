@@ -40,20 +40,24 @@ def analyze_tile_url(args):
     except Exception:
         return (idx, 0, 0, 0)
 
-def main():
-    target_url = "https://layma.net/pohWNZgba"
+def run(target_url: str = None, headless: bool = None):
+    if not target_url:
+        target_url = sys.argv[1].strip() if len(sys.argv) > 1 and sys.argv[1].startswith("http") else "https://layma.net/pohWNZgba"
+    if headless is None:
+        headless = "--headless" in sys.argv or "-h" in sys.argv or os.environ.get("LAYMA_HEADLESS") == "1"
+
     sponsor_domain = "agilafc.com"
     traffic_key = "4AzF9IZh9"
 
     print("=" * 60)
-    print("🚀 LINK4M / LAYMA BYPASS ENGINE - TARGET: pohWNZgba")
+    print(f"🚀 LINK4M / LAYMA BYPASS ENGINE - TARGET: {target_url}")
     print("=" * 60)
     print(f"[*] Target LayMa URL: {target_url}")
     print(f"[*] Sponsor Domain: https://{sponsor_domain} (Platform: Google, Key: {traffic_key})")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=True,
+            headless=headless,
             args=[
                 '--disable-blink-features=AutomationControlled',
                 '--no-sandbox',
@@ -482,4 +486,4 @@ def main():
         browser.close()
 
 if __name__ == "__main__":
-    main()
+    run()
