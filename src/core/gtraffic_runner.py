@@ -38,7 +38,9 @@ CAMPAIGN_RULES = [
     (['sun', 'sixtyseven'], 'https://sunwin.sixtyseven.co.in'),
     (['fun', 'greenco'], 'https://greenco.com.co'),
     (['hitclub', 'hit club', 'hit'], 'https://hitclub.com'),
-    (['ok365', 'ok 365'], 'https://ok365.com')
+    (['ok365', 'ok 365'], 'https://ok365.com'),
+    (['van phong', 'văn phòng', 'hai ba trung', 'hai bà trưng', 'tim van phong', 'cho thue van phong'], 'https://timvanphong.com.vn'),
+    (['thoitiet', 'thời tiết', 'thoitiethomnay'], 'https://thoitiethomnay.org'),
 ]
 
 def resolve_sponsor_domain(keyword_text: str, img_url: str) -> str:
@@ -60,78 +62,119 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str) -> str:
     def is_actual_sponsor(url: str) -> bool:
         if not url: return False
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
             with urllib.request.urlopen(req, timeout=4) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
                 return any(w in html for w in [
-                    'trade-btn', 'traffic-button', 'pages.dev/traffic', 'pages.dev/bt',
-                    'pages.dev/andanh', 'ontops.link', 'client.gtraffic.io', 'captchano', 'verifyclf'
+                    'trade-btn', 'trade-btn-clf', 'traffic-button', 'pages.dev/traffic', 'pages.dev/bt',
+                    'pages.dev/andanh', 'ontops.link', 'client.gtraffic.io', 'dr-client.gtraffic.io',
+                    'captchano', 'verifyclf', 'btf.js', 'btd.js', 'bt.js'
                 ])
         except Exception:
             return False
 
     kw_clean = (keyword_text or "").lower().strip()
-    # 1. If keyword contains or is directly a domain (e.g. bebepourlavie.info, thoitiethomnay.org)
-    d_matches = re.findall(r'[a-zA-Z0-9\-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?', kw_clean)
-    for dm in d_matches:
-        if not dm.endswith('.png') and not dm.endswith('.jpg') and not dm.endswith('.js') and not dm.endswith('.svg'):
-            live_res = probe_domain_live(dm)
-            live_u = live_res[0] if isinstance(live_res, tuple) else live_res
-            if live_u and is_actual_sponsor(live_u):
-                log(f"[+] Found verified live sponsor from domain in keyword: {live_u}")
-                return live_u
-            elif live_u:
-                log(f"[+] Found live sponsor candidate from keyword: {live_u}")
-                return live_u
 
-    # 2. Match known campaigns / rule triggers
+    # 1. Match known campaigns / rule triggers FIRST (Instant 0.001s)
     if kw_clean:
         for triggers, domain in CAMPAIGN_RULES:
             if any(t in kw_clean for t in triggers):
                 log(f"[+] Match known campaign triggers {triggers} from '{kw_clean}' -> {domain}")
                 return domain
 
-    # 3. Slug variants from keyword and probe common TLDs
+    # 2. Check if keyword contains domain with or without space (e.g. 'thoitiethomnay org' -> 'thoitiethomnay.org')
+    COMMON_TLDS = ['com.vn', 'net.vn', 'org.vn', 'edu.vn', 'com', 'org', 'net', 'vn', 'info', 'xyz', 'top', 'site', 'vip', 'io']
+    for tld in COMMON_TLDS:
+        pattern = rf'([a-zA-Z0-9\-]+)[\s\.]+{re.escape(tld)}(?:\s|$)'
+        m = re.search(pattern, kw_clean)
+        if m:
+            cand = f"{m.group(1)}.{tld}"
+            live_res = probe_domain_live(cand)
+            live_u = live_res[0] if isinstance(live_res, tuple) else live_res
+            if live_u and is_actual_sponsor(live_u):
+                log(f"[+] Verified live sponsor directly from keyword TLD pattern: {live_u}")
+                return live_u
+            elif live_u:
+                log(f"[+] Found live sponsor from keyword TLD: {live_u}")
+                return live_u
+
+    d_matches = re.findall(r'[a-zA-Z0-9\-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?', kw_clean)
+    for dm in d_matches:
+        if not any(dm.endswith(ext) for ext in ['.png', '.jpg', '.js', '.svg']):
+            live_res = probe_domain_live(dm)
+            live_u = live_res[0] if isinstance(live_res, tuple) else live_res
+            if live_u and is_actual_sponsor(live_u):
+                log(f"[+] Found verified live sponsor from domain in keyword: {live_u}")
+                return live_u
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def check_candidate_worker(c):
+        try:
+            live_res = probe_domain_live(c)
+            live_url = live_res[0] if isinstance(live_res, tuple) else live_res
+            if live_url and is_actual_sponsor(live_url):
+                return live_url
+        except Exception:
+            pass
+        return None
+
+    # 3. Concurrent slug variants probe
     slugs = generate_slug_variants(kw_clean)
+    slug_candidates = []
     for slug in slugs:
         if len(slug) >= 3 and not slug.isdigit():
-            log(f"[*] Checking slug candidate '{slug}' for live domains...")
-            for tld in ['com', 'vn', 'net', 'org', 'com.vn', 'info', 'xyz', 'top', 'site', 'vip', 'io']:
-                test_c = f"{slug}.{tld}"
-                live_res = probe_domain_live(test_c)
-                live_u = live_res[0] if isinstance(live_res, tuple) else live_res
-                if live_u and is_actual_sponsor(live_u):
-                    log(f"[+] Found verified live sponsor from keyword slug: {live_u}")
-                    return live_u
+            for tld in ['com', 'vn', 'net', 'org', 'com.vn', 'info']:
+                slug_candidates.append(f"{slug}.{tld}")
+
+    if slug_candidates:
+        with ThreadPoolExecutor(max_workers=min(20, len(slug_candidates))) as ex:
+            futures = [ex.submit(check_candidate_worker, c) for c in slug_candidates[:25]]
+            for fut in as_completed(futures):
+                res = fut.result()
+                if res:
+                    log(f"[+] Found verified live sponsor from slug: {res}")
+                    return res
 
     if not img_url:
         return None
 
+    # 4. OCR on campaign image & Parallel probe of all candidates
     log(f"[*] Downloading campaign image for OCR: {img_url}")
     temp_img = os.path.join(ROOT_DIR, "data", "temp", "gtraffic_camp.png")
     os.makedirs(os.path.dirname(temp_img), exist_ok=True)
     try:
-        req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp, open(temp_img, "wb") as f:
+        req = urllib.request.Request(img_url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://gtraffic.io/"
+        })
+        with urllib.request.urlopen(req, timeout=8) as resp, open(temp_img, "wb") as f:
             f.write(resp.read())
         ocr = get_ocr()
         res, _ = ocr(temp_img)
         lines = [line[1] for line in (res or [])]
         log(f"[*] OCR extracted {len(lines)} lines from campaign image.")
         candidates = extract_domain_candidates(lines)
-        if candidates:
-            log(f"[*] Domain candidates from image: {candidates}")
-            for c in candidates:
-                live_res = probe_domain_live(c)
-                live_url = live_res[0] if isinstance(live_res, tuple) else live_res
-                if live_url and is_actual_sponsor(live_url):
-                    log(f"[+] Found verified live sponsor from image: {live_url}")
-                    return live_url
-            for c in candidates:
-                live_res = probe_domain_live(c)
-                live_url = live_res[0] if isinstance(live_res, tuple) else live_res
-                if live_url:
-                    return live_url
+
+        # Filter bogus candidates (e.g. single character host like l.com.vn)
+        filtered_candidates = []
+        for c in (candidates or []):
+            h = c.split('.')[0].replace('www.', '')
+            if len(h) >= 3:
+                filtered_candidates.append(c)
+                if 'phong.com.vn' in c:
+                    filtered_candidates.extend(['timvanphong.com.vn', 'chothuevanphong.com.vn', 'thuevanphong.com.vn'])
+        filtered_candidates = list(dict.fromkeys(filtered_candidates))
+
+        if filtered_candidates:
+            log(f"[*] Fast parallel probing {len(filtered_candidates)} candidates from image...")
+            with ThreadPoolExecutor(max_workers=min(25, len(filtered_candidates))) as ex:
+                futures = {ex.submit(check_candidate_worker, c): c for c in filtered_candidates}
+                for fut in as_completed(futures):
+                    res = fut.result()
+                    if res:
+                        log(f"[+] Found verified live sponsor from image: {res}")
+                        return res
     except Exception as e:
         log(f"[!] OCR resolution note: {e}")
     finally:
@@ -239,15 +282,15 @@ def run(target_url: str = None, headless: bool = False):
 
         log("[TAB 1] Navigating to Gtraffic shortlink...")
         try:
-            page1.goto(target_url, wait_until="networkidle", timeout=40000)
+            page1.goto(target_url, wait_until="domcontentloaded", timeout=25000)
         except Exception as e:
             log(f"[!] Warning on initial goto: {e}")
         
         # Wait for page1's own API campaign info response
-        for _ in range(20):
+        for _ in range(40):
             if campaign_info.get("keyword_text") or campaign_info.get("source"):
                 break
-            time.sleep(0.5)
+            time.sleep(0.1)
 
         if not campaign_info.get("keyword_text") or not campaign_info.get("source"):
             try:
