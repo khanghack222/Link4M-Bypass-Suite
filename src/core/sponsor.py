@@ -72,8 +72,18 @@ def extract_domain_candidates(ocr_lines):
             if t:
                 raw_texts.append(t)
 
-    # Expand texts with OCR typo corrections (e.g. .i0 -> .io, .c0m -> .com, .0rg -> .org)
+    # Expand texts with OCR typo corrections
     texts = []
+    full_joined = ' '.join(raw_texts)
+    raw_texts.append(full_joined)
+    # Remove all spaces between domain-like word tokens (e.g. bong com 686 -> bongcom686, https://bong com -> https://bong.com)
+    joined_domain_parts = re.sub(r'([a-zA-Z0-9\-]+)\s*\.\s*([a-zA-Z0-9\-]+)', r'\1.\2', full_joined)
+    raw_texts.append(joined_domain_parts)
+    joined_space_dots = re.sub(r'([a-zA-Z0-9\-]+)\s+([a-zA-Z0-9\-]+)\s+(com|net|org|co|vn|io|686|88|win)', r'\1.\2.\3', full_joined)
+    raw_texts.append(joined_space_dots)
+    joined_direct_dots = re.sub(r'([a-zA-Z0-9\-]+)\s+(com|net|org|co|vn|io)\s+([a-zA-Z0-9]+)', r'\1.\2.\3', full_joined)
+    raw_texts.append(joined_direct_dots)
+
     for text in raw_texts:
         texts.append(text)
         fixed = text
@@ -92,12 +102,41 @@ def extract_domain_candidates(ocr_lines):
                 if 'link4m' not in u and u not in candidates:
                     candidates.append(u)
 
-    # Priority 1: Match URLs starting with http:// or https://
+    # Priority 1: Match URLs starting with http:// or https:// (allowing trailing path/sub-parts)
     for text in texts:
         for m in re.findall(r'https?:\/\/([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)+)', text):
             d = m.lower().rstrip('/')
             if 'link4m' not in d and d not in candidates:
                 candidates.append(d)
+        for m in re.finditer(r'(?:https?:\/\/)?([a-zA-Z0-9\-]+\.(?:com|net|org|co|vn|tw))\s*[\.\s_]*([a-zA-Z0-9]+)', text, re.IGNORECASE):
+            d = f"{m.group(1).lower()}.{m.group(2).lower()}" if m.group(2).isdigit() else f"{m.group(1).lower()}{m.group(2).lower()}"
+            if 'link4m' not in d and d not in candidates:
+                candidates.append(m.group(1).lower())
+                candidates.append(d)
+
+    # Priority 1.5: Stems without valid TLDs (e.g. https://phanvansantos or https://www.ok365)
+    EXPAND_TLDS = ['com', 'vn', 'net', 'org', 'info', 'com.vn', 'xyz', 'top', 'site', 'vip', 'io']
+    for text in texts:
+        for m in re.finditer(r'https?:\/\/([a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+)*)', text, re.IGNORECASE):
+            stem = m.group(1).lower().rstrip('/')
+            if 'link4m' not in stem and 'google' not in stem:
+                parts = stem.split('.')
+                if len(parts) == 1 or (len(parts) == 2 and parts[0] == 'www'):
+                    base = parts[-1]
+                    for t in EXPAND_TLDS:
+                        c1 = f"{base}.{t}"
+                        c2 = f"www.{base}.{t}"
+                        if c1 not in candidates: candidates.append(c1)
+                        if c2 not in candidates: candidates.append(c2)
+
+    # Priority 1.8: Alphanumeric tokens with digits in OCR (e.g. BongDa686 -> bongda686.com, ok365 -> ok365.com)
+    for text in texts:
+        for m in re.finditer(r'([a-zA-Z]{3,}[0-9]{1,4}|[a-zA-Z0-9]*[0-9]+[a-zA-Z0-9]*)', text):
+            tok = m.group(1).lower()
+            if 4 <= len(tok) <= 25 and not tok.isdigit():
+                for t in ['com', 'vn', 'net', 'org', 'com.vn', 'vip', 'io', 'top']:
+                    c1 = f"{tok}.{t}"
+                    if c1 not in candidates: candidates.append(c1)
 
     # Priority 2: Match strictly valid TLDs with word boundary (?![a-zA-Z0-9])
     for text in texts:
@@ -111,7 +150,7 @@ def extract_domain_candidates(ocr_lines):
         cleaned = re.sub(r'[^a-zA-Z0-9\.\-\/]', ' ', text)
         for part in cleaned.split():
             part = part.strip('./-')
-            m = re.search(rf'(?:[a-zA-Z0-9\-]+\.)+({TLD_REGEX})$', part, re.IGNORECASE)
+            m = re.search(rf'(?:[a-zA-Z0-9\-]+\.)+({TLD_REGEX})', part, re.IGNORECASE)
             if m:
                 d = part.lower().rstrip('/')
                 if 'link4m' not in d and len(d) >= 4 and d not in candidates:

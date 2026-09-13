@@ -59,4 +59,16 @@ traffic_no.js
 
 service_v2_6e.js
 site_v1.js
+proxies.txt
+*proxy*
+*inspect_*
+*fix_*
+create_test_span.py
+write_span_test.py
+qcaptcha_api.js
+traffic_agila.js
+traffic_index_4JilBaPXK.js
+DESTINATION_FINAL_URL.txt
+src/core/*.js
+
 

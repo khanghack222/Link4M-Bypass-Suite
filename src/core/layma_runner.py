@@ -1,34 +1,31 @@
-import sys
-import json
-import urllib.parse
-import asyncio
-import io
-import time
-import random
-import requests
+import sys, os, time, re, io, json, requests
+sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
 import cv2
 import numpy as np
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
-from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
 
-sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+BASE_DIR = r"C:\Users\XUAN\.gemini\antigravity\scratch\Link4M_Bypass_Suite"
+DEST_FILE = os.path.join(BASE_DIR, "DESTINATION_FINAL_URL.txt")
+CODE_FILE = os.path.join(BASE_DIR, "extracted_code.txt")
 
-# Thread pool với session tái sử dụng để download 9 tiles cực nhanh
 executor = ThreadPoolExecutor(max_workers=9)
 http_session = requests.Session()
 http_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 })
 
-def analyze_tile_fast(args):
+def analyze_tile_url(args):
     idx, url = args
+    if url.startswith('/'):
+        url = 'https://frame.103-141-140-153.sslip.io' + url
     try:
-        r = http_session.get(url, timeout=2)
+        r = http_session.get(url, timeout=5)
         im = Image.open(io.BytesIO(r.content)).convert('RGB')
         arr = np.array(im)
         hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
-        mask = (hsv[:, :, 1] > 40) | (hsv[:, :, 2] < 140)
+        mask = (hsv[:, :, 1] > 30) | (hsv[:, :, 2] < 150)
         mask_u8 = mask.astype(np.uint8) * 255
         contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
@@ -43,385 +40,446 @@ def analyze_tile_fast(args):
     except Exception:
         return (idx, 0, 0, 0)
 
-def find_oddoneout_index_extreme(asset_urls):
-    t0 = time.time()
-    args_list = [(i, u) for i, u in enumerate(asset_urls)]
-    tile_features = list(executor.map(analyze_tile_fast, args_list))
-    tile_features.sort(key=lambda x: x[0])
-    
-    vertices_list = [f[1] for f in tile_features]
-    print(f"[*] Extreme Shape Analysis ({time.time()-t0:.3f}s): {vertices_list}", flush=True)
-    from collections import Counter
-    v_counts = Counter(vertices_list)
-    
-    if len(v_counts) > 1:
-        odd_v = min(v_counts.keys(), key=lambda k: v_counts[k])
-        for f in tile_features:
-            if f[1] == odd_v:
-                print(f">>> IDENTIFIED ODD TILE: {f[0]} (Vertices={f[1]}) <<<", flush=True)
-                return f[0]
-                
-    circs = [f[2] for f in tile_features]
-    med_c = np.median(circs)
-    diffs = [abs(c - med_c) for c in circs]
-    best_idx = int(np.argmax(diffs))
-    print(f">>> FALLBACK CIRCULARITY TILE: {best_idx} <<<", flush=True)
-    return best_idx
+def main():
+    target_url = "https://layma.net/pohWNZgba"
+    sponsor_domain = "agilafc.com"
+    traffic_key = "4AzF9IZh9"
 
-async def solve_qcaptcha_extreme():
-    parent_html = """<!DOCTYPE html>
-<html>
-<head>
-    <title>QCaptcha Extreme Auto-Solver</title>
-    <script src="https://js.103-141-140-153.sslip.io/api.js" async defer></script>
-</head>
-<body style="margin: 0; padding: 20px;">
-    <div id="qcaptcha-box" class="q-captcha"
-         data-sitekey="d0c97bcc-d88c-42d1-8a0c-1180bf53e2a1"
-         data-callback="onQCaptchaSuccess"
-         data-lang="vi">
-    </div>
-    <script>
-        window.onQCaptchaSuccess = function(token) {
-            console.log('[PARENT WIN] Verified token:', token);
-            window.__qcaptcha_token = token;
-        };
-    </script>
-</body>
-</html>
-"""
+    print("=" * 60)
+    print("🚀 LINK4M / LAYMA BYPASS ENGINE - TARGET: pohWNZgba")
+    print("=" * 60)
+    print(f"[*] Target LayMa URL: {target_url}")
+    print(f"[*] Sponsor Domain: https://{sponsor_domain} (Platform: Google, Key: {traffic_key})")
 
-    current_challenge = {}
-    verified_token = None
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
             headless=True,
             args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-gpu",
-                "--disable-dev-shm-usage"
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--window-size=1280,720'
             ]
         )
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1024, "height": 600}
+        context = browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            viewport={'width': 1280, 'height': 720}
         )
-        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
-        page = await context.new_page()
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            try {
+                Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+                Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+                window.hasFocus = () => true;
+            } catch (e) {}
+        """)
 
-        # Stealth & Inject Auto-Skip trực tiếp trong JS engine của QCaptcha
-        async def route_frame_js(route):
-            res = await route.fetch()
-            text = await res.text()
-            text = text.replace(
-                "function automationProbe() {",
-                "function automationProbe() { return { artifacts: [], missingApis: [] };"
-            )
-            text = text.replace(
-                "function webglInfo() {",
-                "function webglInfo() { return { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)' };"
-            )
-            text = text.replace(
-                "webdriver: navigator.webdriver === true,",
-                "webdriver: false,"
-            )
-            text = text.replace(
-                "untrustedEvents: behavior.untrustedEvents,",
-                "untrustedEvents: 0,"
-            )
-            text = text.replace(
-                "solveMs: Math.round(performance.now() - state.startedAt),",
-                "solveMs: Math.max(5000, Math.round(performance.now() - state.startedAt)),"
-            )
-            text = text.replace(
-                "mouseEvents: behavior.mouseEvents,",
-                "mouseEvents: Math.max(99, behavior.mouseEvents),"
-            )
-            await route.fulfill(response=res, body=text)
+        # 1. Open LayMa page
+        page_layma = context.new_page()
+        final_destination_url = None
+        direct_redirect_url = None
 
-        await page.route("**/frame.js", route_frame_js)
+        def on_nav(frame):
+            nonlocal final_destination_url
+            if frame == page_layma.main_frame:
+                u = frame.url
+                if u and u.startswith("http") and "layma.net" not in u:
+                    final_destination_url = u
+                    print(f"🎯 Bắt được chuyển trang đích tức thì: {final_destination_url}")
+        page_layma.on("framenavigated", on_nav)
 
-        async def on_response(res):
-            nonlocal verified_token
-            if any(k in res.url for k in ["verify_passive", "solve", "skip"]):
+        def on_layma_res(res):
+            nonlocal final_destination_url, direct_redirect_url
+            if any(ep in res.url for ep in ["/api/traffic/checkcode", "/checkcode"]):
                 try:
-                    data = await res.json()
-                    ep = res.url.split("/")[-1]
-                    print(f"[*] API {ep}: {json.dumps(data, ensure_ascii=False)}", flush=True)
-                    if data.get("action") == "pass" or data.get("ok") is True:
-                        t = data.get("token")
-                        if t: verified_token = t
-                    elif data.get("type"):
-                        current_challenge.clear()
-                        current_challenge.update(data)
-                    elif data.get("next"):
-                        current_challenge.clear()
-                        current_challenge.update(data.get("next"))
-                    elif data.get("action") == "challenge":
-                        current_challenge.clear()
-                        current_challenge.update(data)
-                except:
-                    pass
-
-        page.on("response", on_response)
-
-        await page.route("https://smileitsolutions.co.in/solve-now", lambda route: route.fulfill(
-            status=200, content_type="text/html", body=parent_html
-        ))
-
-        await page.goto("https://smileitsolutions.co.in/solve-now", wait_until="commit")
-
-        frame_el = await page.wait_for_selector("iframe[title='QCaptcha']", timeout=8000)
-        frame = await frame_el.content_frame()
-        await frame.wait_for_selector("#box", timeout=5000)
-
-        # Click #box kích hoạt challenge ngay lập tức
-        await frame.click("#box")
-
-        for attempt in range(1, 100):
-            for _ in range(30):
-                if verified_token: break
-                is_open = await frame.evaluate("() => document.getElementById('modal-host') && !document.getElementById('modal-host').hidden")
-                if is_open and current_challenge: break
-                await asyncio.sleep(0.015)
-
-            if verified_token: break
-
-            c_type = current_challenge.get("type")
-            print(f"[*] Active Challenge: {c_type}", flush=True)
-
-            if c_type == "oddoneout":
-                print(f"[*] >>> SOLVING ODD-ONE-OUT EXTREME (Attempt {attempt}) <<<", flush=True)
-                assets = current_challenge.get("assets", [])
-                full_urls = ["https://frame.103-141-140-153.sslip.io" + a["url"] for a in assets]
-                odd_idx = find_oddoneout_index_extreme(full_urls)
-
-                tile_selector = f'.qc-tile[data-i="{odd_idx}"]'
-                try:
-                    await frame.wait_for_selector(tile_selector, state="attached", timeout=4000)
-                    await frame.click(tile_selector, force=True)
-                except Exception as ex:
-                    print(f"[*] Retry tile click via JS: {ex}", flush=True)
-                    await frame.evaluate(f"() => {{ const el = document.querySelector('{tile_selector}'); if (el) el.click(); }}")
-
-                await asyncio.sleep(0.05)
-                try:
-                    await frame.click("#qc-submit", force=True)
+                    raw = res.text()
+                    m_go = re.search(r"https?://[^\s\"\'<>]*/api/traffic/go/[A-Za-z0-9_\-]+", raw)
+                    if m_go:
+                        direct_redirect_url = m_go.group(0)
+                        print(f"🎯 Bắt được direct_redirect_url từ text: {direct_redirect_url}")
+                    else:
+                        data = res.json()
+                        u = data.get("redirectUrl") or data.get("RedirectUrl") or data.get("url")
+                        if u and u.startswith("http"):
+                            direct_redirect_url = u
+                            print(f"🎯 Nhận redirectUrl từ JSON: {direct_redirect_url}")
                 except Exception:
-                    await frame.evaluate("() => { const b = document.getElementById('qc-submit'); if (b) b.click(); }")
-                print("[*] Submitted oddoneout answer! Waiting token...", flush=True)
-                await asyncio.sleep(0.3)
+                    pass
+        page_layma.on("response", on_layma_res)
 
-            elif c_type == "grid3x3":
-                qkey = current_challenge.get("spec", {}).get("questionKey", "")
-                print(f"[*] >>> SOLVING GRID3X3 ({qkey}) EXTREME (Attempt {attempt}) <<<", flush=True)
-                assets = current_challenge.get("assets", [])
-                full_urls = ["https://frame.103-141-140-153.sslip.io" + a["url"] for a in assets]
-                
-                args_list = [(i, u) for i, u in enumerate(full_urls)]
-                tile_features = list(executor.map(analyze_tile_fast, args_list))
-                tile_features.sort(key=lambda x: x[0])
-                
-                matches = []
-                if qkey == "triangle":
-                    matches = [f[0] for f in tile_features if f[1] == 3]
-                elif qkey in ["square", "rectangle"]:
-                    matches = [f[0] for f in tile_features if f[1] == 4]
-                elif qkey == "pentagon":
-                    matches = [f[0] for f in tile_features if f[1] == 5]
-                elif qkey == "hexagon":
-                    matches = [f[0] for f in tile_features if f[1] == 6]
-                elif qkey == "octagon":
-                    matches = [f[0] for f in tile_features if f[1] == 8]
-                elif qkey == "circle":
-                    matches = [f[0] for f in tile_features if f[2] > 0.75]
-                elif qkey in ["star", "cross"]:
-                    matches = [f[0] for f in tile_features if f[1] >= 10]
+        print(f"[*] Step 1: Navigating to LayMa shortlink: {target_url}...")
+        page_layma.goto(target_url, wait_until="domcontentloaded")
+        time.sleep(2)
 
-                if matches:
-                    print(f"[*] Grid3x3 Matches for {qkey}: {matches}", flush=True)
-                    await frame.evaluate(f"""(indices) => {{
-                        indices.forEach(idx => {{
-                            const el = document.querySelector(`.qc-tile[data-i="${{idx}}"]`);
-                            if (el) el.click();
-                        }});
-                    }}""", matches)
-                    await asyncio.sleep(0.05)
-                    try:
-                        await frame.click("#qc-submit", force=True)
-                    except Exception:
-                        await frame.evaluate("() => { const b = document.getElementById('qc-submit'); if (b) b.click(); }")
-                    print("[*] Submitted grid3x3 answers! Waiting token...", flush=True)
-                    await asyncio.sleep(0.3)
+        camp_id = page_layma.locator("#campainId").inner_text().strip()
+        print(f"[+] Campaign ID on LayMa: {camp_id}")
+
+        # 2. Open Sponsor page (agilafc.com)
+        page_sponsor = context.new_page()
+        extracted_layma_code = None
+
+        def route_frame_js(route):
+            res = route.fetch()
+            text = res.text()
+            text = text.replace("function automationProbe() {", "function automationProbe() { return { artifacts: [], missingApis: [] };")
+            text = text.replace("function webglInfo() {", "function webglInfo() { return { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)' };")
+            text = text.replace("webdriver: navigator.webdriver === true,", "webdriver: false,")
+            text = text.replace("untrustedEvents: behavior.untrustedEvents,", "untrustedEvents: 0,")
+            text = text.replace("mouseEvents: behavior.mouseEvents,", "mouseEvents: 142,")
+            text = text.replace("solveMs: Math.round(performance.now() - state.startedAt),", "solveMs: Math.max(3800, Math.round(performance.now() - state.startedAt)),")
+            text = text.replace("const state = {", "window.__qc_state = null; const state = window.__qc_state = {")
+            text = text.replace("async function skipType(reason) {", "window.__qc_skip = skipType; async function skipType(reason) {")
+            text = text.replace("async function submit(override, extra = {}) {", "window.__qc_submit = submit; async function submit(override, extra = {}) {")
+            route.fulfill(response=res, body=text)
+
+        def route_traffic_js(route):
+            res = route.fetch()
+            text = res.text()
+
+            # Force flatform = 'google'
+            text = re.sub(r"var\s+flatform\s*=\s*checkReferer\(referrer\);", "var flatform = 'google';", text)
+            text = re.sub(r"flatform\s*=\s*checkReferer\(referrer\);", "flatform = 'google';", text)
+            text = text.replace("var flatform = 'tructiep';", "var flatform = 'google';")
+
+            # Force Solution 1 (1 single page, 1 step)
+            text = text.replace(
+                'randomSolution = Math.floor((Math.random() * 2));',
+                'randomSolution = 0;'
+            )
+            # Bypass incognito
+            text = text.replace(
+                'var detectIncognito = function () {',
+                'var detectIncognito = function () { return Promise.resolve({ isPrivate: false, browserName: "Chrome" }); }; var _old_detect = function() {'
+            )
+            # Fix DOM container null
+            text = text.replace(
+                'document.getElementById("xacthucButton").style.display = "block";',
+                'if (!document.getElementById("xacthucButton")) { showTrackingMessage(""); } document.getElementById("xacthucButton").style.display = "block";'
+            )
+            # Bypass wait satisfied check
+            text = text.replace('function canOpenGetCode(element) {', 'function canOpenGetCode(element) { return true;')
+            text = text.replace('function isGetCodeWaitSatisfied(element) {', 'function isGetCodeWaitSatisfied(element) { return true;')
+            text = text.replace('function haltIfSpeedHack() {', 'function haltIfSpeedHack() { return false;')
+            text = text.replace('function detectSpeedHack() {', 'function detectSpeedHack() { return false;')
+            text = text.replace('function submitGetCodeRequest(element, solution, captchaPayload, isRetry) {', 'window.__submitGetCode = submitGetCodeRequest; function submitGetCodeRequest(element, solution, captchaPayload, isRetry) {')
+            text = text.replace('function checkButtonClick(step = 4){', 'window.__checkButtonClick = checkButtonClick; function checkButtonClick(step = 4){')
+            text = re.sub(r"checkScrollUpDown\w*\([^)]*\);\s*return true;", "return false;", text)
+            text = re.sub(r"checkClickManHinh\w*\([^)]*\);\s*return true;", "return false;", text)
+            route.fulfill(response=res, body=text)
+
+        page_sponsor.route("**/frame.js", route_frame_js)
+        page_sponsor.route("**/Traffic/Index/*", route_traffic_js)
+        page_sponsor.route("**/traffic/index/*", route_traffic_js)
+
+        def on_sponsor_res(res):
+            nonlocal extracted_layma_code
+            if "/api/traffic/getcode" in res.url:
+                try:
+                    data = res.json()
+                    print(f"[+] /api/traffic/getcode response: {data}")
+                    c_val = data.get("html") if isinstance(data, dict) else data
+                    if c_val and "không hợp lệ" not in str(c_val) and "Chưa hoàn thành" not in str(c_val):
+                        extracted_layma_code = str(c_val).strip()
+                        print(f"🎉 SUCCESS! EXTRACTED LAYMA CODE: {extracted_layma_code}")
+                except Exception:
+                    pass
+        page_sponsor.on("response", on_sponsor_res)
+
+        print(f"[*] Step 2: Navigating to sponsor: https://{sponsor_domain} with Google Referer...")
+        page_sponsor.goto(
+            f"https://{sponsor_domain}",
+            referer="https://www.google.com/",
+            wait_until="domcontentloaded"
+        )
+        time.sleep(2)
+
+        # Click the LẤY MÃ button
+        time.sleep(1.0)
+        clicked = page_sponsor.evaluate(f"""() => {{
+            const el = document.getElementById('{traffic_key}');
+            if (el) {{
+                const sp = el.querySelector('span') || el;
+                sp.click();
+                return true;
+            }}
+            return false;
+        }}""")
+        if clicked:
+            print("⚡ Kích hoạt nút LẤY MÃ thành công! Bắt đầu đếm ngược 60s...")
+        else:
+            print("[!] Thử query selector click nút lấy mã...")
+            page_sponsor.evaluate("() => { const b = document.querySelector('[class*=\"Ran\"], button[id], div[id*=\"4Az\"]'); if (b) b.click(); }")
+
+        # Wait 60 seconds with scrolling to keep session active
+        dir_w = 1
+        for sec in range(65, 0, -1):
+            time.sleep(1.0)
+            if sec % 10 == 0:
+                print(f"  ⌛ Đang chờ máy chủ xác nhận thời gian on-site: còn {sec}s...")
+                dir_w = -dir_w
+                try: page_sponsor.mouse.wheel(0, 150 * dir_w)
+                except Exception: pass
+
+        print("[*] Hết thời gian chờ (60s+)! Mở modal xác thực QCaptcha...")
+        page_sponsor.evaluate("() => { if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick(4); }")
+
+        try:
+            frame_el = page_sponsor.wait_for_selector('iframe[src*="sslip.io"], iframe[src*="frame.html"]', timeout=30000)
+            cf = frame_el.content_frame()
+            cf.wait_for_selector('#box', timeout=30000)
+            time.sleep(1)
+            print("[*] Nhấn checkbox xác thực 'Tôi là con người'...")
+            cf.click('#box', force=True)
+        except Exception as e:
+            print(f"[!] Warning waiting for frame/box: {e}")
+
+        def get_qc_frame():
+            for f in page_sponsor.frames:
+                if any(k in f.url for k in ['sslip.io', 'frame.html']):
+                    if not f.is_detached():
+                        return f
+            return None
+
+        last_cid = None
+
+        # Solve QCaptcha loop
+        print("[*] Bắt đầu tự động giải QCaptcha challenge...")
+        for round_idx in range(30):
+            time.sleep(1.0)
+
+            token = page_sponsor.evaluate('''() => {
+                const api = window.hcaptcha || window.qcaptcha;
+                return api && typeof api.getResponse === 'function' ? api.getResponse() : null;
+            }''')
+            if token:
+                print(f"[🎉] QCaptcha Token Verified: {token[:40]}...")
+                print("[*] Gửi token lên máy chủ lấy mã...")
+                page_sponsor.evaluate('''([tok, key]) => {
+                    const el = document.getElementById(key);
+                    if (typeof window.__submitGetCode === 'function') {
+                        window.__submitGetCode(el, '0', { qCaptchaToken: tok });
+                    }
+                    for (const b of document.querySelectorAll('#qcaptcha-modal-content button, button')) {
+                        if (b.innerText.includes('Xác thực và lấy mã')) {
+                            b.click();
+                            break;
+                        }
+                    }
+                }''', [token, traffic_key])
+                break
+
+            cur_cf = get_qc_frame()
+            if not cur_cf:
+                continue
+
+            ch_info = cur_cf.evaluate('''() => {
+                if (window.__qc_state && window.__qc_state.challenge) {
+                    const ch = window.__qc_state.challenge;
+                    return {
+                        cid: ch.cid,
+                        type: ch.type,
+                        spec: ch.spec,
+                        assets: (ch.assets || []).map(a => a.url)
+                    };
+                }
+                return null;
+            }''')
+
+            if not ch_info:
+                continue
+
+            if ch_info['cid'] == last_cid:
+                time.sleep(1.0)
+                continue
+
+            c_type = ch_info['type']
+            assets = ch_info['assets']
+            spec = ch_info['spec'] or {}
+            q_text = (spec.get('questionKey') or spec.get('question', {}).get('vi', '') or '').lower()
+            last_cid = ch_info['cid']
+            print(f"[+] Nhận dạng Challenge: {c_type} ('{q_text}')")
+
+            if c_type in ['grid3x3', 'oddoneout', 'relational']:
+                args_list = [(i, u) for i, u in enumerate(assets)]
+                features = list(executor.map(analyze_tile_url, args_list))
+                features.sort(key=lambda x: x[0])
+
+                target = []
+                if 'khác nhóm' in q_text or 'khác' in q_text or c_type == 'oddoneout':
+                    v_counts = [f[1] for f in features]
+                    for i, v in enumerate(v_counts):
+                        if v_counts.count(v) == 1:
+                            target = [i]
+                            break
+                    if not target:
+                        circs = [round(f[2], 1) for f in features]
+                        for i, c in enumerate(circs):
+                            if circs.count(c) == 1:
+                                target = [i]
+                                break
+                elif 'tam giác' in q_text or 'triangle' in q_text:
+                    target = [f[0] for f in features if f[1] == 3]
+                elif 'vuông' in q_text or 'square' in q_text or 'chữ nhật' in q_text or 'rectangle' in q_text:
+                    target = [f[0] for f in features if f[1] == 4]
+                elif 'ngũ giác' in q_text or 'pentagon' in q_text:
+                    target = [f[0] for f in features if f[1] == 5]
+                elif 'lục giác' in q_text or 'hexagon' in q_text:
+                    target = [f[0] for f in features if f[1] == 6]
+                elif 'tròn' in q_text or 'circle' in q_text:
+                    target = [f[0] for f in features if f[2] > 0.75]
                 else:
-                    # Fallback skip if no matching shape found
-                    current_challenge.clear()
-                    try:
-                        await frame.evaluate("() => { const b = document.getElementById('qc-skip'); if (b && !b.disabled) b.click(); }")
-                    except:
-                        pass
-                    await asyncio.sleep(0.015)
+                    v_counts = [f[1] for f in features]
+                    for i, v in enumerate(v_counts):
+                        if v_counts.count(v) == 1:
+                            target = [i]
+                            break
+
+                if not target:
+                    target = [0]
+
+                print(f"   ➔ Đáp án chọn: {target}")
+                cur_cf.evaluate('''(ans) => {
+                    if (typeof window.__qc_submit === 'function') {
+                        window.__qc_submit(ans);
+                    }
+                }''', target)
+                time.sleep(0.6)
+
+            elif c_type == 'order':
+                args_list = [(i, u) for i, u in enumerate(assets)]
+                features = list(executor.map(analyze_tile_url, args_list))
+                features.sort(key=lambda x: x[0])
+                direction = spec.get('direction', 'desc')
+                if 'nhỏ đến lớn' in q_text or direction == 'asc':
+                    sorted_by_area = sorted(features, key=lambda x: x[3])
+                else:
+                    sorted_by_area = sorted(features, key=lambda x: x[3], reverse=True)
+                target = [f[0] for f in sorted_by_area]
+                print(f"   ➔ Thứ tự sắp xếp: {target}")
+                cur_cf.evaluate('''(ans) => {
+                    if (typeof window.__qc_submit === 'function') {
+                        window.__qc_submit(ans);
+                    }
+                }''', target)
+                time.sleep(0.6)
 
             else:
-                # Fast skip siêu tốc ở cấp độ microsecond (0.01s)
-                current_challenge.clear()
+                print(f"   ➔ Đổi dạng challenge ({c_type})...")
+                cur_cf.evaluate('''() => {
+                    if (typeof window.__qc_skip === 'function') {
+                        window.__qc_skip();
+                    }
+                }''')
+                time.sleep(0.4)
+
+        # Wait for extracted code (turbo loop)
+        for _ in range(25):
+            if extracted_layma_code:
+                break
+            c_dom = page_sponsor.evaluate(f'''() => {{
+                const el = document.getElementById('{traffic_key}');
+                if (el) {{
+                    const m = (el.innerText || '').match(/([A-Za-z0-9_\\-]{{4,20}})/);
+                    if (m && !/lay|ma|click|link|sau|kiem/i.test(m[1])) return m[1];
+                }}
+                const cb = document.getElementById('trackingMessageContainer');
+                if (cb) {{
+                    const m = (cb.innerText || '').match(/([A-Za-z0-9_\\-]{{4,20}})/);
+                    if (m && !/lay|ma|click|link|sau|kiem/i.test(m[1])) return m[1];
+                }}
+                return null;
+            }}''')
+            if c_dom and "Chưa hoàn thành" not in str(c_dom):
+                extracted_layma_code = c_dom
+                break
+            time.sleep(0.25)
+
+        if not extracted_layma_code:
+            print("[!] Không lấy được mã LayMa. Kết thúc.")
+            browser.close()
+            return
+
+        with open(CODE_FILE, "w", encoding="utf-8") as f_c:
+            f_c.write(extracted_layma_code)
+
+        # 3. Submit Code to LayMa
+        print(f"\n[*] Step 3: Nhập mã '{extracted_layma_code}' vào form LayMa: {target_url}...")
+        page_layma.bring_to_front()
+        time.sleep(0.3)
+
+        page_layma.evaluate('''(code) => {
+            // Hook window.open and resolveCheckCodeRedirect to skip 3s countdown
+            window.open = function(u) {
+                if (u && typeof u === 'string') window.location.href = u;
+            };
+            const oldResolve = window.resolveCheckCodeRedirect;
+            window.resolveCheckCodeRedirect = function(res) {
+                const u = oldResolve ? oldResolve(res) : (typeof res === 'string' ? res : (res && res.redirectUrl));
+                if (u && typeof u === 'string') {
+                    window.location.href = u;
+                }
+                return u;
+            };
+
+            const inp = document.getElementById('codeInput') || document.querySelector('input[name="code"]');
+            if (inp) {
+                inp.value = code;
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            if (typeof redeemCode === 'function') {
+                redeemCode();
+            } else {
+                const btn = document.getElementById('btn-xac-nhan') || document.querySelector('button[onclick*="submitCode"]');
+                if (btn) btn.click();
+            }
+        }''', extracted_layma_code)
+        print("✔ Đã gửi xác nhận mã trên LayMa!")
+
+        # Wait for redirect or resolve direct_redirect_url instantly
+        for wait_i in range(80):
+            if direct_redirect_url:
+                print(f"[*] Xử lý chuyển hướng ngay từ direct_redirect_url: {direct_redirect_url}...")
                 try:
-                    await frame.evaluate("() => { const b = document.getElementById('qc-skip'); if (b && !b.disabled) b.click(); }")
-                except:
+                    r_redir = http_session.get(direct_redirect_url, allow_redirects=True, timeout=8)
+                    if r_redir.url and "layma.net" not in r_redir.url:
+                        final_destination_url = r_redir.url
+                        break
+                except Exception as ex:
                     pass
-                await asyncio.sleep(0.015)
 
-            if verified_token: break
+            if final_destination_url and "layma.net" not in final_destination_url:
+                break
+            time.sleep(0.1)
+            curr = page_layma.url
+            if curr and curr.startswith("http") and "layma.net" not in curr:
+                final_destination_url = curr
+                break
 
-        for _ in range(20):
-            if verified_token: break
-            await asyncio.sleep(0.03)
-            t = await page.evaluate("() => window.__qcaptcha_token")
-            if t: verified_token = t; break
+        if final_destination_url:
+            print("\n" + "=" * 70)
+            print(f"🎉🎉🎉 FINAL DESTINATION URL: {final_destination_url}")
+            print("=" * 70 + "\n")
+            with open(DEST_FILE, "w", encoding="utf-8") as f_d:
+                f_d.write(final_destination_url)
+        else:
+            print("[!] Đang kiểm tra DOM phản hồi của LayMa...")
+            dom_status = page_layma.evaluate('''() => {
+                const th = document.getElementById('thongbao');
+                const cd = document.getElementById('countRedirect');
+                return {
+                    thongbao: th ? th.innerText : null,
+                    countRedirect: cd ? cd.innerText : null,
+                    url: window.location.href
+                };
+            }''')
+            print(f"[!] DOM status: {dom_status}")
 
-        await browser.close()
-        return verified_token
-
-async def async_main():
-    t_start = time.time()
-    print("="*60)
-    print("  LAYMA.NET EXTREME AUTOMATED BYPASS (TARGET SUB-5S)")
-    print("="*60)
-
-    # 1. Khởi tạo Session LayMa & QCaptcha Solver đồng thời trong async pipeline
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    }
-
-    loop = asyncio.get_event_loop()
-
-    def fetch_layma_campaign():
-        r_sess = http_session.post('https://api.layma.net/api/traffic/session', json={'keyToken': 'DrDltuyGD'}, headers={
-            **headers, 'Referer': 'https://smileitsolutions.co.in/vi-vn'
-        })
-        sess_token = r_sess.json().get('sessionToken')
-
-        r_camp = http_session.get(f'https://api.layma.net/api/admin/campain?keytoken=DrDltuyGD&flatform=google&waitMode=1&requiredPageVisits=1&sessionToken={sess_token}', headers={
-            **headers, 'Referer': 'https://smileitsolutions.co.in/vi-vn'
-        })
-        camp = r_camp.json()
-        traffic_id = camp.get('id')
-        traffic_session_token = camp.get('trafficSessionToken')
-        visit_ticket = camp.get('visitTicket')
-        
-        widget_headers = {
-            **headers,
-            'Referer': 'https://smileitsolutions.co.in/vi-vn',
-            'X-Traffic-Session': sess_token
-        }
-
-        # Đăng ký visit ban đầu
-        http_session.post('https://api.layma.net/api/traffic/visit', json={
-            'trafficSessionToken': traffic_session_token,
-            'visitTicket': visit_ticket,
-            'trafficId': traffic_id
-        }, headers=widget_headers)
-        
-        return sess_token, traffic_id, traffic_session_token, visit_ticket, widget_headers
-
-    # Chạy song song QCaptcha solver và LayMa Campaign fetch
-    print("\n[+] Đang kích hoạt pipeline bẻ khóa song song...")
-    task_campaign = loop.run_in_executor(None, fetch_layma_campaign)
-    task_qcaptcha = solve_qcaptcha_extreme()
-
-    (sess_token, traffic_id, traffic_session_token, visit_ticket, widget_headers), qc_token = await asyncio.gather(
-        task_campaign, task_qcaptcha
-    )
-
-    if not qc_token:
-        print("[-] Không lấy được QCaptcha token!")
-        return
-
-    print(f"[+] QCAPTCHA TOKEN SUCCESS ({time.time()-t_start:.2f}s)!")
-
-    # Ping visit hoàn tất
-    http_session.post('https://api.layma.net/api/traffic/visit', json={
-        'trafficSessionToken': traffic_session_token,
-        'visitTicket': visit_ticket,
-        'trafficId': traffic_id
-    }, headers=widget_headers)
-
-    # 2. Gửi Token lấy Mã Code ngay lập tức
-    uuid_str = f"b{int(time.time()*1000)}-4a2e-89cd-123456789abc"
-    payload = {
-        "uuid": uuid_str,
-        "browser": "Chrome",
-        "browserVersion": "122.0.0.0",
-        "browserMajorVersion": 122,
-        "cookies": True,
-        "mobile": False,
-        "os": "Windows 10",
-        "osVersion": "10",
-        "screen": "1366 x 768",
-        "referrer": "https://www.google.com/",
-        "trafficId": traffic_id,
-        "trafficSessionToken": traffic_session_token,
-        "solution": "0",
-        "qCaptchaToken": qc_token
-    }
-
-    r_code = http_session.post('https://api.layma.net/api/traffic/getcode', json=payload, headers=widget_headers)
-    try:
-        res_code = r_code.json()
-        code_val = res_code.get("html") if isinstance(res_code, dict) else res_code
-    except Exception:
-        code_val = r_code.text
-
-    if not code_val or "không hợp lệ" in str(code_val):
-        print(f"[-] Lỗi mã: {code_val}")
-        return
-
-    print(f"\n[>>>] MÃ UNLOCK LẤY ĐƯỢC: {code_val} (Thời gian: {time.time()-t_start:.2f}s)")
-
-    # 3. Submit Checkcode & Follow Redirect
-    r_vis = http_session.post('https://api.layma.net/api/traffic/visitor', json={
-        'browser': 'Chrome', 'browserVersion': '122.0.0.0', 'browserMajorVersion': 122,
-        'cookies': True, 'mobile': False, 'os': 'Windows 10', 'osVersion': '10',
-        'screen': '1366 x 768', 'token': 'Kd1onyItr', 'uuid': uuid_str
-    }, headers={**headers, 'Referer': 'https://layma.net/Kd1onyItr'})
-
-    layma_sess = r_vis.json().get('sessionToken') if r_vis.status_code == 200 else None
-
-    check_hdr = {**headers, 'Referer': 'https://layma.net/Kd1onyItr'}
-    if layma_sess:
-        check_hdr['X-Traffic-Session'] = layma_sess
-
-    check_body = {
-        "Code": str(code_val).strip(),
-        "Token": "Kd1onyItr",
-        "CampainId": traffic_id,
-        "UserAgent": headers['User-Agent'],
-        "DeviceScreen": "1366 x 768",
-        "FingerprintData": "",
-        "HCaptchaToken": ""
-    }
-
-    r_check = http_session.post('https://api.layma.net/api/traffic/checkcode', json=check_body, headers=check_hdr)
-    try:
-        check_json = r_check.json()
-        redirect_url = check_json if isinstance(check_json, str) else (check_json.get('redirectUrl') or check_json.get('RedirectUrl'))
-    except Exception:
-        redirect_url = r_check.text
-
-    if redirect_url:
-        if not redirect_url.startswith("http"):
-            redirect_url = "https://api.layma.net" + redirect_url
-        final_resp = http_session.get(redirect_url, headers=headers, allow_redirects=True)
-        final_url = final_resp.url
-        t_total = time.time() - t_start
-        print("\n" + "="*70)
-        print(f"    >>> BẺ KHÓA THÀNH CÔNG SIÊU TỐC TRONG {t_total:.2f} GIÂY <<<")
-        print(f"    DESTINATION URL: {final_url}")
-        print("="*70 + "\n")
-        with open("DESTINATION_FINAL_URL.txt", "w", encoding="utf-8") as f:
-            f.write(final_url)
+        time.sleep(2)
+        browser.close()
 
 if __name__ == "__main__":
-    asyncio.run(async_main())
+    main()
