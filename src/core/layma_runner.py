@@ -1,111 +1,85 @@
 import sys
-import os
-import time
 import json
-import random
+import urllib.parse
 import asyncio
 import io
+import time
+import random
 import requests
 import cv2
 import numpy as np
 from PIL import Image
+from concurrent.futures import ThreadPoolExecutor
 from playwright.async_api import async_playwright
 
-from config import CHROME_PATH, ROOT_DIR, DEST_FILE, CODE_FILE, log, copy_to_clipboard
+sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
 
-# Configure stdout UTF-8
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+# Thread pool để fetch 9 tiles song song siêu tốc
+executor = ThreadPoolExecutor(max_workers=9)
 
-def find_oddoneout_index_hsv(asset_urls):
-    tile_features = []
-    for i, u in enumerate(asset_urls):
-        try:
-            r = requests.get(u, timeout=10)
-            im = Image.open(io.BytesIO(r.content)).convert("RGB")
-            arr = np.array(im)
-            hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+def fetch_single_tile(args):
+    idx, url = args
+    try:
+        r = requests.get(url, timeout=3)
+        im = Image.open(io.BytesIO(r.content)).convert('RGB')
+        arr = np.array(im)
+        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+        mask = (hsv[:, :, 1] > 50) | (hsv[:, :, 2] < 120)
+        mask_u8 = mask.astype(np.uint8) * 255
+        contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return (idx, 0, 0, 0)
+        c = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(c)
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.04 * peri, True)
+        num_v = len(approx)
+        circ = 4 * np.pi * area / (peri * peri) if peri > 0 else 0
+        return (idx, num_v, round(circ, 2), round(area, 1))
+    except Exception:
+        return (idx, 0, 0, 0)
 
-            # Mask out background: shape is colored or dark
-            mask = (hsv[:, :, 1] > 50) | (hsv[:, :, 2] < 120)
-            mask_u8 = mask.astype(np.uint8) * 255
-
-            contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not contours:
-                tile_features.append((i, 0, 0, 0))
-                continue
-
-            c = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(c)
-            peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.04 * peri, True)
-            num_v = len(approx)
-            circ = 4 * np.pi * area / (peri * peri) if peri > 0 else 0
-            tile_features.append((i, num_v, round(circ, 2), round(area, 1)))
-        except Exception as e:
-            log(f"[!] Error inspecting tile {i}: {e}")
-            tile_features.append((i, 0, 0, 0))
-
-    log(f"[*] Shape Analysis: {len(tile_features)} tiles extracted")
-    for f in tile_features:
-        log(f"    Tile {f[0]}: Vertices={f[1]}, Circ={f[2]}, Area={f[3]}")
-
+def find_oddoneout_index_hsv_fast(asset_urls):
+    t0 = time.time()
+    args_list = [(i, u) for i, u in enumerate(asset_urls)]
+    tile_features = list(executor.map(fetch_single_tile, args_list))
+    tile_features.sort(key=lambda x: x[0])
+    
+    print(f"[*] Fast Shape Analysis ({time.time()-t0:.3f}s): {[f[1] for f in tile_features]}")
     from collections import Counter
-    v_counts = Counter([f[1] for f in tile_features if f[1] > 0])
-    log(f"[*] Vertex distribution: {v_counts}")
-
+    v_counts = Counter([f[1] for f in tile_features])
+    
     if len(v_counts) > 1:
         odd_v = min(v_counts.keys(), key=lambda k: v_counts[k])
         for f in tile_features:
             if f[1] == odd_v:
-                log(f">>> IDENTIFIED ODD TILE: {f[0]} (Vertices={f[1]}) <<<")
+                print(f">>> IDENTIFIED ODD TILE: {f[0]} (Vertices={f[1]}) <<<")
                 return f[0]
-
-    # Fallback to circularity outlier
+                
     circs = [f[2] for f in tile_features]
-    med_c = np.median(circs) if circs else 0
+    med_c = np.median(circs)
     diffs = [abs(c - med_c) for c in circs]
-    best_idx = int(np.argmax(diffs)) if diffs else 0
-    log(f">>> FALLBACK TO CIRCULARITY: Tile {best_idx} <<<")
+    best_idx = int(np.argmax(diffs))
+    print(f">>> FALLBACK CIRCULARITY TILE: {best_idx} <<<")
     return best_idx
 
-def analyze_spatial_option(img_bytes):
-    im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    arr = np.array(im)
-    is_shape = (arr[:, :, 0] < 100) & (arr[:, :, 1] < 100) & (arr[:, :, 2] < 120)
-    y_idx, x_idx = np.where(is_shape)
-    if len(y_idx) == 0:
-        return {"area": 0, "fill": 0, "corners": {}}
-    h = y_idx.max() - y_idx.min() + 1
-    w = x_idx.max() - x_idx.min() + 1
-    area = len(y_idx)
-    fill = area / float(h * w)
-    sub = is_shape[y_idx.min():y_idx.max()+1, x_idx.min():x_idx.max()+1]
-    h_q = max(1, h // 4)
-    w_q = max(1, w // 4)
-    tl = float(np.mean(sub[:h_q, :w_q])) if sub[:h_q, :w_q].size > 0 else 0.0
-    tr = float(np.mean(sub[:h_q, -w_q:])) if sub[:h_q, -w_q:].size > 0 else 0.0
-    bl = float(np.mean(sub[-h_q:, :w_q])) if sub[-h_q:, :w_q].size > 0 else 0.0
-    br = float(np.mean(sub[-h_q:, -w_q:])) if sub[-h_q:, -w_q:].size > 0 else 0.0
-    return {"area": area, "fill": fill, "corners": {"tl": tl, "tr": tr, "bl": bl, "br": br}}
-
-async def human_move(page, x1, y1, x2, y2, steps=6):
+async def human_move_fast(page, x1, y1, x2, y2, steps=6):
     for i in range(1, steps + 1):
         p = i / float(steps)
-        cur_x = x1 + (x2 - x1) * p + random.uniform(-1.5, 1.5)
-        cur_y = y1 + (y2 - y1) * p + random.uniform(-1.5, 1.5)
+        cur_x = x1 + (x2 - x1) * p
+        cur_y = y1 + (y2 - y1) * p
         await page.mouse.move(cur_x, cur_y)
-        await asyncio.sleep(random.uniform(0.008, 0.018))
+        await asyncio.sleep(0.01)
     await page.mouse.move(x2, y2)
 
-async def solve_qcaptcha_to_token(headless: bool = True):
+async def solve_qcaptcha_to_token_fast():
     parent_html = """<!DOCTYPE html>
 <html>
 <head>
-    <title>QCaptcha Verification</title>
+    <title>QCaptcha Fast Solver</title>
     <script src="https://js.103-141-140-153.sslip.io/api.js" async defer></script>
 </head>
-<body style="margin: 0; padding: 50px;">
-    <h2>LayMa QCaptcha Solver</h2>
+<body style="margin: 0; padding: 20px;">
     <div id="qcaptcha-box" class="q-captcha"
          data-sitekey="d0c97bcc-d88c-42d1-8a0c-1180bf53e2a1"
          data-callback="onQCaptchaSuccess"
@@ -120,24 +94,18 @@ async def solve_qcaptcha_to_token(headless: bool = True):
 </body>
 </html>
 """
+
     current_challenge = {}
     verified_token = None
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            executable_path=CHROME_PATH,
-            headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-infobars"
-            ]
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"]
         )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1366, "height": 768},
-            locale="vi-VN",
-            timezone_id="Asia/Ho_Chi_Minh"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1366, "height": 768}
         )
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
         page = await context.new_page()
@@ -164,17 +132,12 @@ async def solve_qcaptcha_to_token(headless: bool = True):
             )
             text = text.replace(
                 "solveMs: Math.round(performance.now() - state.startedAt),",
-                "solveMs: Math.max(4500, Math.round(performance.now() - state.startedAt)),"
+                "solveMs: Math.max(5000, Math.round(performance.now() - state.startedAt)),"
             )
             text = text.replace(
                 "mouseEvents: behavior.mouseEvents,",
-                "mouseEvents: Math.max(65, behavior.mouseEvents),"
+                "mouseEvents: Math.max(88, behavior.mouseEvents),"
             )
-            text = text.replace(
-                "const res = await api('/v1/solve', {",
-                "console.log('[DEBUG_SOLVE_REQ]', JSON.stringify({ sid: state.sid, cid: state.challenge.cid, answer: Array.isArray(override) ? override : [override], powNonce: state.challengePow })); const res = await api('/v1/solve', {"
-            )
-            log("[*] Stealth WebGL & automation patches successfully injected into QCaptcha frame.js")
             await route.fulfill(response=res, body=text)
 
         await page.route("**/frame.js", route_frame_js)
@@ -185,7 +148,7 @@ async def solve_qcaptcha_to_token(headless: bool = True):
                 try:
                     data = await res.json()
                     ep = res.url.split("/")[-1]
-                    log(f"[API {ep}] Response: action={data.get('action')}, type={data.get('type')}, ok={data.get('ok')}")
+                    print(f"[*] API {ep}: {json.dumps(data, ensure_ascii=False)}", flush=True)
                     if data.get("action") == "pass" or data.get("ok") is True:
                         t = data.get("token")
                         if t: verified_token = t
@@ -198,7 +161,7 @@ async def solve_qcaptcha_to_token(headless: bool = True):
                     elif data.get("action") == "challenge":
                         current_challenge.clear()
                         current_challenge.update(data)
-                except Exception:
+                except:
                     pass
 
         page.on("response", on_response)
@@ -207,284 +170,147 @@ async def solve_qcaptcha_to_token(headless: bool = True):
             status=200, content_type="text/html", body=parent_html
         ))
 
-        log("[*] Loading QCaptcha host context...")
-        await page.goto("https://smileitsolutions.co.in/solve-now", wait_until="load", timeout=30000)
+        print("[*] Navigating to host page...", flush=True)
+        await page.goto("https://smileitsolutions.co.in/solve-now", wait_until="load")
 
-        frame_el = await page.wait_for_selector("iframe[title='QCaptcha']", timeout=20000)
+        frame_el = await page.wait_for_selector("iframe[title='QCaptcha']", timeout=15000)
         frame = await frame_el.content_frame()
-        await frame.wait_for_selector("#box", timeout=15000)
+        await frame.wait_for_selector("#box", timeout=10000)
 
-        # Fast human mouse trajectory before clicking #box
-        log("[*] Simulating human mouse trajectory...")
-        cx, cy = 100, 100
-        for _ in range(3):
-            nx, ny = random.randint(200, 600), random.randint(150, 450)
-            await human_move(page, cx, cy, nx, ny, steps=5)
-            cx, cy = nx, ny
-            await asyncio.sleep(0.05)
-
-        log("[*] Triggering QCaptcha container (#box)...")
+        # Di chuyển chuột nhanh trước khi click
+        await human_move_fast(page, 100, 100, 250, 250, steps=4)
+        print("[*] Clicking #box...", flush=True)
         await frame.click("#box")
 
-        for attempt in range(1, 30):
-            for _ in range(50): # Fast poll loop
-                await asyncio.sleep(0.1)
+        for attempt in range(1, 50):
+            print(f"--- [ATTEMPT {attempt}] ---", flush=True)
+            for _ in range(30):
                 if verified_token: break
                 is_open = await frame.evaluate("() => document.getElementById('modal-host') && !document.getElementById('modal-host').hidden")
                 if is_open and current_challenge: break
+                await asyncio.sleep(0.1)
 
             if verified_token: break
 
             c_type = current_challenge.get("type")
-            log(f"[*] Challenge round {attempt}: Type '{c_type}'")
-
-            cx, cy = random.randint(200, 400), random.randint(200, 400)
-            for _ in range(2):
-                nx, ny = random.randint(300, 800), random.randint(200, 600)
-                await human_move(page, cx, cy, nx, ny, steps=4)
-                cx, cy = nx, ny
+            print(f"[*] Active Challenge: {c_type}", flush=True)
 
             if c_type == "oddoneout":
-                log("⚡ KÍCH HOẠT: Đã bắt được thử thách 'oddoneout' ➔ Khởi động HSV Contour Shape Analysis...")
+                print(f"[*] >>> SOLVING ODD-ONE-OUT <<<", flush=True)
                 assets = current_challenge.get("assets", [])
                 full_urls = ["https://frame.103-141-140-153.sslip.io" + a["url"] for a in assets]
-                odd_idx = find_oddoneout_index_hsv(full_urls)
+                odd_idx = find_oddoneout_index_hsv_fast(full_urls)
 
                 tile = frame.locator(f'.qc-tile[data-i="{odd_idx}"]')
-                await tile.wait_for(state="visible", timeout=10000)
+                await tile.wait_for(state="visible", timeout=5000)
 
                 tile_bb = await tile.bounding_box()
                 click_x = tile_bb['x'] + tile_bb['width'] / 2 + random.uniform(-3, 3)
                 click_y = tile_bb['y'] + tile_bb['height'] / 2 + random.uniform(-3, 3)
+                await human_move_fast(page, 250, 250, click_x, click_y, steps=5)
                 await page.mouse.click(click_x, click_y)
-                log(f"[+] Clicked odd tile {odd_idx}!")
+                print(f"[+] Clicked tile {odd_idx}!", flush=True)
 
                 await asyncio.sleep(0.2)
                 is_checked = await tile.get_attribute("aria-checked")
                 if is_checked != "true":
                     await tile.click(force=True)
 
-                # QCaptcha standard verification pause
-                await asyncio.sleep(2.5)
+                # Giữ delay 1.8s ổn định cho QCaptcha server chấp nhận
+                await asyncio.sleep(1.8)
 
                 submit_btn = frame.locator("#qc-submit")
                 submit_bb = await submit_btn.bounding_box()
                 sub_x = submit_bb['x'] + submit_bb['width'] / 2 + random.uniform(-3, 3)
                 sub_y = submit_bb['y'] + submit_bb['height'] / 2 + random.uniform(-3, 3)
+                await human_move_fast(page, click_x, click_y, sub_x, sub_y, steps=4)
                 await page.mouse.click(sub_x, sub_y)
-                log("[*] Clicked #qc-submit! Awaiting server verification token...")
-                await asyncio.sleep(1.5)
-
-            elif c_type == "spatial":
-                log("⚡ KÍCH HOẠT: Đã bắt được thử thách 'spatial' ➔ Phân tích hình học không gian...")
-                assets = current_challenge.get("assets", [])
-                if len(assets) >= 6:
-                    ref_url = "https://frame.103-141-140-153.sslip.io" + assets[0]["url"]
-                    r_ref = requests.get(ref_url, timeout=10)
-                    ref_shape = analyze_spatial_option(r_ref.content)
-
-                    options_analysis = []
-                    for i in range(1, len(assets)):
-                        opt_url = "https://frame.103-141-140-153.sslip.io" + assets[i]["url"]
-                        r_opt = requests.get(opt_url, timeout=10)
-                        res = analyze_spatial_option(r_opt.content)
-                        options_analysis.append((i - 1, res))
-
-                    tri_opts = [o for o in options_analysis if o[1]["fill"] < 0.60]
-                    if tri_opts:
-                        chosen = max(tri_opts, key=lambda x: x[1]["corners"].get("tl", 0))
-                        chosen_idx = chosen[0]
-                    else:
-                        chosen_idx = 0
-
-                    log(f"[+] Selected spatial option index: {chosen_idx}")
-                    tile = frame.locator(f'.qc-sp__opt[data-i="{chosen_idx}"]')
-                    await tile.wait_for(state="visible", timeout=10000)
-                    await tile.click()
-
-                    await asyncio.sleep(2.5)
-                    submit_btn = frame.locator("#qc-submit")
-                    await submit_btn.click()
-                    log("[*] Clicked #qc-submit for spatial challenge!")
-                    await asyncio.sleep(1.5)
-
-            elif c_type == "order":
-                log("⚡ KÍCH HOẠT: Đã bắt được thử thách 'order' ➔ Tự động sắp xếp thứ tự diện tích...")
-                direction = current_challenge.get("spec", {}).get("direction", "asc")
-                assets = current_challenge.get("assets", [])
-
-                measurements = []
-                for i, a in enumerate(assets):
-                    u = "https://frame.103-141-140-153.sslip.io" + a["url"]
-                    r = requests.get(u, timeout=10)
-                    info = analyze_spatial_option(r.content)
-                    measurements.append((i, info["area"]))
-
-                reverse = (direction == "desc")
-                sorted_by_area = sorted(measurements, key=lambda x: x[1], reverse=reverse)
-                order = [x[0] for x in sorted_by_area]
-                log(f"[+] Calculated Order: {order}")
-
-                await frame.wait_for_selector("#qc-list", timeout=10000)
-                await frame.evaluate(f"""(order) => {{
-                    const list = document.getElementById('qc-list');
-                    order.forEach(id => {{
-                        const item = list.querySelector(`[data-id="${{id}}"]`);
-                        if (item) list.appendChild(item);
-                    }});
-                }}""", order)
-
-                await asyncio.sleep(2.5)
-                submit_btn = frame.locator("#qc-submit")
-                await submit_btn.click()
-                log("[*] Clicked #qc-submit for order challenge!")
-                await asyncio.sleep(1.5)
+                print("[*] Clicked #qc-submit! Waiting verification...", flush=True)
+                await asyncio.sleep(1.2)
 
             else:
-                log(f"[*] Challenge is '{c_type}', fast skipping...")
+                print(f"[*] Skipping {c_type}...", flush=True)
                 current_challenge.clear()
                 try:
                     await frame.evaluate("() => { const b = document.getElementById('qc-skip'); if (b && !b.disabled) b.click(); }")
-                except Exception:
+                except:
                     pass
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.15)
 
             if verified_token: break
 
-        for _ in range(10):
+        for _ in range(15):
             if verified_token: break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
             t = await page.evaluate("() => window.__qcaptcha_token")
-            if t:
-                verified_token = t
-                break
+            if t: verified_token = t; break
 
         await browser.close()
         return verified_token
 
-def extract_layma_token(u: str) -> str:
-    if not u:
-        return "Kd1onyItr"
-    u = u.strip()
-    clean = u.split("?")[0].rstrip("/")
-    return clean.split("/")[-1]
-
-def run(target_url: str = None, headless: bool = False):
-    if not target_url:
-        target_url = sys.argv[1].strip() if len(sys.argv) > 1 and sys.argv[1].startswith("http") else "https://layma.net/Kd1onyItr"
-
-    if "--headless" in sys.argv or "-h" in sys.argv or os.environ.get("LAYMA_HEADLESS") == "1":
-        headless = True
-
-    shortlink_token = extract_layma_token(target_url)
-    log(f"[*] Target LayMa URL: {target_url}")
-    log(f"[*] Extracted Shortlink Token: {shortlink_token}")
-    log(f"[*] Initiating LayMa Autonomous Engine (Headless: {headless})...")
+def main():
+    t_start = time.time()
+    print("="*60)
+    print("  LAYMA.NET ULTRA-FAST EXTREME BYPASS (TARGET SUB-10S)")
+    print("="*60)
 
     session = requests.Session()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     }
 
-    # BƯỚC 1: Khởi tạo traffic session & lấy thông tin chiến dịch
-    log("\n[BƯỚC 1] Khởi tạo session & lấy thông tin chiến dịch...")
-    key_token = "DrDltuyGD"
-    pub_ref = "https://smileitsolutions.co.in/vi-vn"
+    # 1. Fetch Session & Campaign
+    r_sess = session.post('https://api.layma.net/api/traffic/session', json={'keyToken': 'DrDltuyGD'}, headers={
+        **headers, 'Referer': 'https://smileitsolutions.co.in/vi-vn'
+    })
+    sess_token = r_sess.json().get('sessionToken')
 
-    try:
-        r_sess = session.post("https://api.layma.net/api/traffic/session", json={"keyToken": key_token}, headers={
-            **headers, "Referer": pub_ref
-        }, timeout=15)
-        sess_token = r_sess.json().get("sessionToken")
-        log(f"[+] Traffic session token: {sess_token}")
-    except Exception as e:
-        log(f"[!] Warning on traffic session: {e}")
-        sess_token = None
-
-    camp = None
-    for retry in range(5):
-        try:
-            r_camp = session.get(f"https://api.layma.net/api/admin/campain?keytoken={key_token}&flatform=google&waitMode=1&requiredPageVisits=1&sessionToken={sess_token}", headers={
-                **headers, "Referer": pub_ref
-            }, timeout=15)
-            if r_camp.status_code == 200 and r_camp.text:
-                camp = r_camp.json()
-                if camp.get("id"):
-                    break
-        except Exception as e:
-            log(f"[*] Retrying campaign fetch: {e}")
-        time.sleep(1.5)
-
-    if not camp:
-        log("[!] Không lấy được thông tin chiến dịch từ LayMa API.")
-        return None
-
-    traffic_id = camp.get("id")
-    traffic_session_token = camp.get("trafficSessionToken")
-    visit_ticket = camp.get("visitTicket")
-    wait_seconds = camp.get("requiredWaitSeconds", 60)
-    log(f"[+] Campaign ID: {traffic_id}")
-    log(f"[+] Thời gian yêu cầu chờ: {wait_seconds}s")
-    log(f"[+] Visit Ticket: {visit_ticket}")
-
-    # BƯỚC 2 & 3: Song song hóa QCaptcha Solver & Visit Countdown
-    log("\n[BƯỚC 2 & 3] Chạy song song QCaptcha Solver và Visit Ticket Countdown...")
-    start_time = time.time()
+    r_camp = session.get(f'https://api.layma.net/api/admin/campain?keytoken=DrDltuyGD&flatform=google&waitMode=1&requiredPageVisits=1&sessionToken={sess_token}', headers={
+        **headers, 'Referer': 'https://smileitsolutions.co.in/vi-vn'
+    })
+    camp = r_camp.json()
+    traffic_id = camp.get('id')
+    traffic_session_token = camp.get('trafficSessionToken')
+    visit_ticket = camp.get('visitTicket')
+    print(f"[+] Campaign ID: {traffic_id} | Visit Ticket: {visit_ticket}")
 
     widget_headers = {
         **headers,
-        "Referer": pub_ref,
-        "X-Traffic-Session": sess_token
+        'Referer': 'https://smileitsolutions.co.in/vi-vn',
+        'X-Traffic-Session': sess_token
     }
 
     # Đăng ký visit ban đầu
-    try:
-        session.post("https://api.layma.net/api/traffic/visit", json={
-            "trafficSessionToken": traffic_session_token,
-            "visitTicket": visit_ticket,
-            "trafficId": traffic_id
-        }, headers=widget_headers, timeout=10)
-    except Exception:
-        pass
+    session.post('https://api.layma.net/api/traffic/visit', json={
+        'trafficSessionToken': traffic_session_token,
+        'visitTicket': visit_ticket,
+        'trafficId': traffic_id
+    }, headers=widget_headers)
 
-    # Giải mã QCaptcha
-    qc_token = asyncio.run(solve_qcaptcha_to_token(headless=headless))
+    # 2. Giải QCaptcha Siêu Tốc
+    print("\n[+] Đang giải mã QCaptcha siêu tốc...")
+    qc_token = asyncio.run(solve_qcaptcha_to_token_fast())
 
     if not qc_token:
-        log("[!] Không lấy được QCaptcha verification token.")
-        return None
+        print("[-] Không lấy được QCaptcha token!")
+        return
 
-    log(f"\n✔ QCAPTCHA PASS: Đã xác thực thành công QCaptcha token: {qc_token[:35]}...")
+    print(f"[+] QCAPTCHA TOKEN SUCCESS ({time.time()-t_start:.2f}s)!")
 
-    elapsed = time.time() - start_time
-    log(f"[*] Thời gian giải QCaptcha + khởi chạy: {elapsed:.2f}s")
+    # Ping visit hoàn tất
+    session.post('https://api.layma.net/api/traffic/visit', json={
+        'trafficSessionToken': traffic_session_token,
+        'visitTicket': visit_ticket,
+        'trafficId': traffic_id
+    }, headers=widget_headers)
 
-    # Gửi ping visit hoàn tất
-    try:
-        session.post("https://api.layma.net/api/traffic/visit", json={
-            "trafficSessionToken": traffic_session_token,
-            "visitTicket": visit_ticket,
-            "trafficId": traffic_id
-        }, headers=widget_headers, timeout=10)
-    except Exception:
-        pass
-
-    # Ép thời gian đếm ngược về mốc 25-30s cho server LayMa chấp nhận
-    if elapsed < 25:
-        to_sleep = 25 - elapsed
-        log(f"[*] Chờ thêm {to_sleep:.1f}s để đạt mốc thời gian tối thiểu (25s) của LayMa...")
-        time.sleep(to_sleep)
-
-    log("[+] Hoàn tất thời gian đếm ngược hợp lệ!")
-
-    # BƯỚC 4: Request unlock code
-    log("\n[BƯỚC 4] Gửi token lấy mã code giải phóng...")
+    # 3. Gửi Token lấy Mã Code ngay lập tức (KHÔNG CHỜ ĐẾM NGƯỢC!)
     uuid_str = f"b{int(time.time()*1000)}-4a2e-89cd-123456789abc"
     payload = {
         "uuid": uuid_str,
         "browser": "Chrome",
-        "browserVersion": "124.0.0.0",
-        "browserMajorVersion": 124,
+        "browserVersion": "122.0.0.0",
+        "browserMajorVersion": 122,
         "cookies": True,
         "mobile": False,
         "os": "Windows 10",
@@ -497,87 +323,61 @@ def run(target_url: str = None, headless: bool = False):
         "qCaptchaToken": qc_token
     }
 
-    code_val = None
+    r_code = session.post('https://api.layma.net/api/traffic/getcode', json=payload, headers=widget_headers)
     try:
-        r_code = session.post("https://api.layma.net/api/traffic/getcode", json=payload, headers=widget_headers, timeout=15)
-        log(f"[+] Phản hồi getcode: {r_code.text}")
         res_code = r_code.json()
         code_val = res_code.get("html") if isinstance(res_code, dict) else res_code
-    except Exception as e:
-        log(f"[!] Lỗi khi request code: {e}")
-        return None
+    except Exception:
+        code_val = r_code.text
 
     if not code_val or "không hợp lệ" in str(code_val):
-        log(f"[!] Mã nhận được không hợp lệ: {code_val}")
-        return None
+        print(f"[-] Lỗi mã: {code_val}")
+        return
 
-    code_str = str(code_val).strip()
-    log(f"\n💎 EXTRACTED LAYMA CODE: {code_str}\n")
-    try:
-        with open(CODE_FILE, "w", encoding="utf-8") as fc:
-            fc.write(code_str)
-    except Exception:
-        pass
+    print(f"\n[>>>] MÃ UNLOCK LẤY ĐƯỢC: {code_val} (Thời gian: {time.time()-t_start:.2f}s)")
 
-    # BƯỚC 5: Submit mã vào checkcode
-    log(f"[BƯỚC 5] Submit mã vào https://api.layma.net/api/traffic/checkcode...")
-    try:
-        r_vis = session.post("https://api.layma.net/api/traffic/visitor", json={
-            "browser": "Chrome", "browserVersion": "124.0.0.0", "browserMajorVersion": 124,
-            "cookies": True, "mobile": False, "os": "Windows 10", "osVersion": "10",
-            "screen": "1366 x 768", "token": shortlink_token, "uuid": uuid_str
-        }, headers={**headers, "Referer": f"https://layma.net/{shortlink_token}"}, timeout=15)
-        layma_sess = r_vis.json().get("sessionToken") if r_vis.status_code == 200 else None
-    except Exception:
-        layma_sess = None
+    # 4. Submit Checkcode & Follow Redirect
+    r_vis = session.post('https://api.layma.net/api/traffic/visitor', json={
+        'browser': 'Chrome', 'browserVersion': '122.0.0.0', 'browserMajorVersion': 122,
+        'cookies': True, 'mobile': False, 'os': 'Windows 10', 'osVersion': '10',
+        'screen': '1366 x 768', 'token': 'Kd1onyItr', 'uuid': uuid_str
+    }, headers={**headers, 'Referer': 'https://layma.net/Kd1onyItr'})
 
-    check_hdr = {**headers, "Referer": f"https://layma.net/{shortlink_token}"}
+    layma_sess = r_vis.json().get('sessionToken') if r_vis.status_code == 200 else None
+
+    check_hdr = {**headers, 'Referer': 'https://layma.net/Kd1onyItr'}
     if layma_sess:
-        check_hdr["X-Traffic-Session"] = layma_sess
+        check_hdr['X-Traffic-Session'] = layma_sess
 
     check_body = {
-        "Code": code_str,
-        "Token": shortlink_token,
+        "Code": str(code_val).strip(),
+        "Token": "Kd1onyItr",
         "CampainId": traffic_id,
-        "UserAgent": headers["User-Agent"],
+        "UserAgent": headers['User-Agent'],
         "DeviceScreen": "1366 x 768",
         "FingerprintData": "",
         "HCaptchaToken": ""
     }
 
+    r_check = session.post('https://api.layma.net/api/traffic/checkcode', json=check_body, headers=check_hdr)
     try:
-        r_check = session.post("https://api.layma.net/api/traffic/checkcode", json=check_body, headers=check_hdr, timeout=15)
-        log(f"[+] Phản hồi checkcode: HTTP {r_check.status_code} -> {r_check.text}")
         check_json = r_check.json()
-        redirect_url = check_json if isinstance(check_json, str) else (check_json.get("redirectUrl") or check_json.get("RedirectUrl"))
-    except Exception as e:
-        log(f"[!] Lỗi khi checkcode: {e}")
-        return None
-
-    if not redirect_url:
-        log("[!] Không nhận được link chuyển hướng từ checkcode.")
-        return None
-
-    if not redirect_url.startswith("http"):
-        redirect_url = "https://api.layma.net" + redirect_url
-
-    log(f"[+] Đang chuyển hướng qua: {redirect_url}...")
-    try:
-        final_resp = session.get(redirect_url, headers=headers, allow_redirects=True, timeout=20)
-        final_url = final_resp.url
-    except Exception as e:
-        log(f"[!] Lỗi khi follow redirect: {e}")
-        final_url = redirect_url
-
-    log(f"\nFINAL DESTINATION URL: {final_url}\n")
-    copy_to_clipboard(final_url)
-    try:
-        with open(DEST_FILE, "w", encoding="utf-8") as f:
-            f.write(final_url)
+        redirect_url = check_json if isinstance(check_json, str) else (check_json.get('redirectUrl') or check_json.get('RedirectUrl'))
     except Exception:
-        pass
+        redirect_url = r_check.text
 
-    return final_url
+    if redirect_url:
+        if not redirect_url.startswith("http"):
+            redirect_url = "https://api.layma.net" + redirect_url
+        final_resp = session.get(redirect_url, headers=headers, allow_redirects=True)
+        final_url = final_resp.url
+        t_total = time.time() - t_start
+        print("\n" + "="*70)
+        print(f"    >>> BẺ KHÓA THÀNH CÔNG SIÊU TỐC TRONG {t_total:.2f} GIÂY <<<")
+        print(f"    DESTINATION URL: {final_url}")
+        print("="*70 + "\n")
+        with open("DESTINATION_FINAL_URL.txt", "w", encoding="utf-8") as f:
+            f.write(final_url)
 
 if __name__ == "__main__":
-    run()
+    main()
