@@ -413,7 +413,10 @@ function runBypassTrafficVN(targetUrl, headless = currentHeadless) {
         }
 
         let capturedDestUrl = null;
-        const pythonArgs = headless ? ["-u", "-X", "utf8", TRAFFICVN_RUNNER, targetUrl, "--headless"] : ["-u", "-X", "utf8", TRAFFICVN_RUNNER, targetUrl];
+        const baseTrafficArgs = fs.existsSync(TRAFFICVN_RUNNER)
+            ? [TRAFFICVN_RUNNER, targetUrl]
+            : ["-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import trafficvn_runner; trafficvn_runner.run(sys.argv[1])", targetUrl];
+        const pythonArgs = headless ? ["-u", "-X", "utf8", ...baseTrafficArgs, "--headless"] : ["-u", "-X", "utf8", ...baseTrafficArgs];
 
         const proc = spawn(getPythonPath(), pythonArgs, {
             cwd: ROOT_DIR,
@@ -482,7 +485,10 @@ function runBypassBBMKTS(targetUrl, headless = currentHeadless) {
         }
 
         let capturedDestUrl = null;
-        const pythonArgs = headless ? ["-u", "-X", "utf8", BBMKTS_RUNNER, targetUrl, "--headless"] : ["-u", "-X", "utf8", BBMKTS_RUNNER, targetUrl];
+        const baseBbmktsArgs = fs.existsSync(BBMKTS_RUNNER)
+            ? [BBMKTS_RUNNER, targetUrl]
+            : ["-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import bbmkts_runner", targetUrl];
+        const pythonArgs = headless ? ["-u", "-X", "utf8", ...baseBbmktsArgs, "--headless"] : ["-u", "-X", "utf8", ...baseBbmktsArgs];
 
         const proc = spawn(getPythonPath(), pythonArgs, {
             cwd: ROOT_DIR,

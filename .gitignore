@@ -32,3 +32,16 @@ BAO_CAO_NGHIEN_CUU_*.md
 RESEARCH_*.md
 research/
 release_native/
+
+# Raw Python sources & sensitive modules (protected by compiled .pyd)
+src/core/*.py
+!src/core/__init__.py
+!src/core/*.pyd
+src/core/octolink_runner.js
+service-v3.js
+adv_data.json
+tests/
+scripts/final_bypass_100.py
+scripts/decode_link.py
+scripts/shortlink_factory.py
+scripts/bbmkts_bypass.user.js
