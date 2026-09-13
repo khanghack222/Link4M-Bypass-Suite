@@ -34,6 +34,11 @@ research/
 release_native/
 gtraffic_profile/
 
+# Internal beta engines (not published / not pushed)
+src/core/trafficvn_runner.py
+trafficvn_*
+*trafficvn*
+
 # Ignore compiled binaries in private source
 *.pyd
 src/core/*.pyd

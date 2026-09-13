@@ -643,7 +643,11 @@ async function dispatchUrl(url, headless = currentHeadless) {
         return;
     }
     if (isTrafficvnUrl(target)) {
-        await runBypassTrafficVN(target, headless);
+        if (fs.existsSync(TRAFFICVN_RUNNER)) {
+            await runBypassTrafficVN(target, headless);
+        } else {
+            console.log(`\n  ${c.cyberYellow}⚠ Tính năng TrafficVN hiện đang trong giai đoạn thử nghiệm nội bộ (Beta) và chưa công bố.${c.reset}\n`);
+        }
         return;
     }
     await runBypassLink4M(target, headless);
@@ -662,13 +666,12 @@ async function main() {
         console.log(`  ${c.neonCyan}╔══════════════════════════════════════════════════════════════════════════════╗${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}                          ${c.bold}${c.cyberYellow}⚡ BẢNG ĐIỀU KHIỂN TÁC VỤ ⚡${c.reset}                         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╠══════════════════════════════════════════════════════════════════════════════╣${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.neonCyan}[1]${c.reset} ${c.bold}${c.pureWhite}⚡ Vượt Link Tự Động${c.reset} ${c.dim}(Auto Detect: Link4M/TrafficVN/BBMKTS/Gtraffic)${c.reset}   ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.neonCyan}[1]${c.reset} ${c.bold}${c.pureWhite}⚡ Vượt Link Tự Động${c.reset} ${c.dim}(Auto Detect: Link4M / BBMKTS / Gtraffic)${c.reset}        ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.electricBlue}[2]${c.reset} ${c.bold}${c.pureWhite}🎯 Vượt Link4M Chuyên Sâu${c.reset} ${c.dim}(Whisper AI + Smart Health-Check)${c.reset}        ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.mintGreen}[3]${c.reset} ${c.bold}${c.pureWhite}⚡ Vượt TrafficVN Chuyên Sâu${c.reset} ${c.dim}(CreepJS Stealth + Turnstile + RapidOCR)${c.reset}   ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.brightPink}[4]${c.reset} ${c.bold}${c.pureWhite}💎 Vượt BBMKTS Chuyên Sâu${c.reset} ${c.dim}(Autonomous Dual-Tab Engine)${c.reset}             ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.flameOrange}[5]${c.reset} ${c.bold}${c.pureWhite}🚀 Vượt Gtraffic Chuyên Sâu${c.reset} ${c.dim}(Mobile Viewport + Fast Auto Solver)${c.reset}      ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.cyberYellow}[6]${c.reset} ${c.bold}${c.pureWhite}🖥️ Đổi Trình Duyệt: [${modeStatus}${c.bold}${c.pureWhite}]${c.reset} ${c.dim}(Bấm 6 để chuyển đổi)${c.reset}            ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.pureWhite}[7]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Tuyên Bố Pháp Lý${c.reset}                                         ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.brightPink}[3]${c.reset} ${c.bold}${c.pureWhite}💎 Vượt BBMKTS Chuyên Sâu${c.reset} ${c.dim}(Autonomous Dual-Tab Engine)${c.reset}             ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.flameOrange}[4]${c.reset} ${c.bold}${c.pureWhite}🚀 Vượt Gtraffic Chuyên Sâu${c.reset} ${c.dim}(Mobile Viewport + Fast Auto Solver)${c.reset}      ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.cyberYellow}[5]${c.reset} ${c.bold}${c.pureWhite}🖥️ Đổi Trình Duyệt: [${modeStatus}${c.bold}${c.pureWhite}]${c.reset} ${c.dim}(Bấm 5 để chuyển đổi)${c.reset}            ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.pureWhite}[6]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Tuyên Bố Pháp Lý${c.reset}                                         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.crimsonRed}[0]${c.reset} ${c.bold}${c.pureWhite}🚪 Thoát Ứng Dụng${c.reset}                                                      ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
 
@@ -685,8 +688,8 @@ async function main() {
                 console.log(`  ${c.bgPink} 🔗 BBMKTS PHÁT HIỆN: ${c.reset} ${c.bold}${c.brightPink}${clipUrl}${c.reset}`);
                 console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
             } else if (isTrafficvnUrl(clipUrl)) {
-                console.log(`  ${c.bgGreen} 🔗 TRAFFICVN PHÁT HIỆN: ${c.reset} ${c.bold}${c.mintGreen}${clipUrl}${c.reset}`);
-                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
+                console.log(`  ${c.bgGreen} 🔗 TRAFFICVN PHÁT HIỆN (BETA): ${c.reset} ${c.bold}${c.mintGreen}${clipUrl}${c.reset}`);
+                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để thử nghiệm vượt link này!${c.reset}\n`);
             } else {
                 console.log(`  ${c.bgCyan} 🔗 LINK4M PHÁT HIỆN: ${c.reset} ${c.bold}${c.neonCyan}${clipUrl}${c.reset}`);
                 console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động chạy ngay link này!${c.reset}\n`);
@@ -702,12 +705,12 @@ async function main() {
         } else if (choice === "0") {
             console.log(`\n  ${c.mintGreen}✨ Cảm ơn bạn đã sử dụng Link4M Bypass Suite! Hẹn gặp lại! ✨${c.reset}\n`);
             process.exit(0);
-        } else if (choice === "6") {
+        } else if (choice === "5") {
             currentHeadless = !currentHeadless;
             console.log(`\n  ${c.mintGreen}✅ Đã chuyển sang chế độ: ${currentHeadless ? "Ẩn (Headless - Siêu tốc)" : "Hiện cửa sổ (Window - Dễ quan sát)"}${c.reset}\n`);
             await sleep(1200);
             continue;
-        } else if (choice === "7" || choice.toLowerCase() === "h") {
+        } else if (choice === "6" || choice.toLowerCase() === "h") {
             clearScreen();
             printBanner();
             console.log(`  ${c.bold}${c.neonCyan}📋 THÔNG TIN HỆ THỐNG & TUYÊN BỐ PHÁP LÝ:${c.reset}\n`);
@@ -718,44 +721,40 @@ async function main() {
             console.log(`     • ${c.softGray}RapidOCR trên ONNX Runtime: Nhận diện chính xác domain tài trợ từ ảnh SERP.${c.reset}`);
             console.log(`     • ${c.softGray}Whisper AI Audio Solver: Tự động giải Google reCAPTCHA v2 (Form 2 Enterprise fix).${c.reset}`);
             console.log(`     • ${c.softGray}Tự động phục hồi domain bị che sao (*, ***, co***.tw, c***) và probe live HTTP/HTTPS.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.mintGreen}2. TrafficVN Bypass Core:${c.reset}`);
-            console.log(`     • ${c.softGray}Vượt 100% rào chắn CreepJS Fingerprinting, bảo toàn isTrusted CDP native clicks.${c.reset}`);
-            console.log(`     • ${c.softGray}Tự động phân giải ảnh SERP, dò tìm nút trong Shadow DOM và đếm ngược nhận mã.${c.reset}`);
-            console.log(`     • ${c.softGray}Xử lý widget Cloudflare Turnstile và tự động submit mở khóa link đích.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.brightPink}3. BBMKTS Bypass Core:${c.reset}`);
+            console.log(`  ${c.bold}${c.brightPink}2. BBMKTS Bypass Core:${c.reset}`);
             console.log(`     • ${c.softGray}Autonomous Dual-Tab Engine: Tab 1 giữ session bbmkts.com, Tab 2 thực thi countdown đối tác.${c.reset}`);
             console.log(`     • ${c.softGray}Bypass triệt để anti-incognito và chặn popup "THIẾU BƯỚC NHIỆM VỤ" via route patch.${c.reset}`);
             console.log(`     • ${c.softGray}Tự động gửi trực tiếp fetch /link/submit và giải mã link callback an toàn 100%.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.flameOrange}4. Gtraffic Bypass Core (MỚI):${c.reset}`);
+            console.log(`  ${c.bold}${c.flameOrange}3. Gtraffic Bypass Core (MỚI):${c.reset}`);
             console.log(`     • ${c.softGray}Mobile Viewport Spoofing (414x896) vượt qua CSS ẩn nút desktop của nhà tài trợ.${c.reset}`);
             console.log(`     • ${c.softGray}Tự động click nút #traffic-button-no, đếm ngược ~62s lấy mã viên nhộng và submit Tab 1.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.cyberYellow}5. Tùy chọn Headless linh hoạt:${c.reset}`);
-            console.log(`     • ${c.softGray}Phím [6]: Bật/Tắt chế độ chạy ẩn (Headless --headless=new) siêu tốc.${c.reset}\n`);
+            console.log(`  ${c.bold}${c.cyberYellow}4. Tùy chọn Headless linh hoạt:${c.reset}`);
+            console.log(`     • ${c.softGray}Phím [5]: Bật/Tắt chế độ chạy ẩn (Headless --headless=new) siêu tốc.${c.reset}\n`);
             await ask(`  ${c.cyberYellow}Nhấn Enter để quay lại menu chính...${c.reset}`);
             continue;
-        } else if (choice === "5") {
+        } else if (choice === "4") {
             const defaultUrl = "https://gtraffic.io/X3BR2OQ";
             const hint = clipUrl && isGtrafficUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.flameOrange}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
             let link = await ask(`\n  ${c.bold}${c.flameOrange}Nhập link Gtraffic cần vượt${hint}:${c.reset} `);
             if (!link) link = (clipUrl && isGtrafficUrl(clipUrl)) ? clipUrl : defaultUrl;
             await runBypassGtraffic(link);
-        } else if (choice === "4") {
+        } else if (choice === "3") {
             const defaultUrl = "https://bbmkts.com/go/3p82s";
             const hint = clipUrl && isBbmktsUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.brightPink}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
             let link = await ask(`\n  ${c.bold}${c.brightPink}Nhập link BBMKTS cần vượt${hint}:${c.reset} `);
             if (!link) link = (clipUrl && isBbmktsUrl(clipUrl)) ? clipUrl : defaultUrl;
             await runBypassBBMKTS(link);
-        } else if (choice === "3") {
-            const defaultUrl = "https://trafficvn.com/get/MFGm2tAlcSn";
-            const hint = clipUrl && isTrafficvnUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
-            let link = await ask(`\n  ${c.bold}${c.mintGreen}Nhập link TrafficVN cần vượt${hint}:${c.reset} `);
-            if (!link) link = (clipUrl && isTrafficvnUrl(clipUrl)) ? clipUrl : defaultUrl;
-            await runBypassTrafficVN(link);
         } else if (choice === "2") {
             const hint = clipUrl && isLink4mUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: https://link4m.net/go/2kCcIqn)${c.reset}`;
             let link = await ask(`\n  ${c.bold}${c.electricBlue}Nhập link Link4M cần vượt${hint}:${c.reset} `);
             if (!link) link = (clipUrl && isLink4mUrl(clipUrl)) ? clipUrl : (clipUrl || "https://link4m.net/go/2kCcIqn");
             await runBypassLink4M(link);
+        } else if (choice === "beta" || choice === "trafficvn") {
+            const defaultUrl = "https://trafficvn.com/get/MFGm2tAlcSn";
+            const hint = clipUrl && isTrafficvnUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
+            let link = await ask(`\n  ${c.bold}${c.mintGreen}[BETA] Nhập link TrafficVN cần vượt${hint}:${c.reset} `);
+            if (!link) link = (clipUrl && isTrafficvnUrl(clipUrl)) ? clipUrl : defaultUrl;
+            await runBypassTrafficVN(link);
         } else {
             // Chế độ 1: Tự động phát hiện (Nếu có trong clipboard -> ưu tiên, nếu không có -> hỏi nhập)
             let link = "";
@@ -765,7 +764,7 @@ async function main() {
                 if (!link) link = clipUrl;
             } else {
                 const hint = ` ${c.softGray}(Mặc định: https://link4m.net/go/2kCcIqn)${c.reset}`;
-                link = await ask(`\n  ${c.bold}${c.neonCyan}Nhập link cần vượt (Link4M / TrafficVN / BBMKTS / Gtraffic)${hint}:${c.reset} `);
+                link = await ask(`\n  ${c.bold}${c.neonCyan}Nhập link cần vượt (Link4M / BBMKTS / Gtraffic)${hint}:${c.reset} `);
                 if (!link) link = "https://link4m.net/go/2kCcIqn";
             }
 
