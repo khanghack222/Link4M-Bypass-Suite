@@ -1,4 +1,4 @@
-﻿# Gitignore for Link4M Bypass Suite
+# Gitignore for Link4M Bypass Suite
 *.log
 *.png
 *.html
@@ -11,3 +11,18 @@ build_dist/
 destination_url.txt
 extracted_code.txt
 .venv/
+trafficvn_profile/
+test_profile/
+data/
+*.jpg
+*.jpeg
+*.webp
+*.zip
+!Link4M_Native_Binary_Release.zip
+test_*.py
+click_handler.js
+decoded_handler.js
+simplified_handler.js
+tobruxaz.js
+redirect.obf.js
+trafficvn_*.js

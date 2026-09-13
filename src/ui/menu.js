@@ -5,6 +5,8 @@ const path = require("path");
 
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const SCRIPT_PATH = path.join(ROOT_DIR, "src", "core", "bypass.py");
+const TRAFFICVN_RUNNER = path.join(ROOT_DIR, "src", "core", "trafficvn_runner.py");
+const BBMKTS_RUNNER = path.join(ROOT_DIR, "src", "core", "bbmkts_runner.py");
 const DEST_FILE = path.join(ROOT_DIR, "destination_url.txt");
 const CODE_FILE = path.join(ROOT_DIR, "extracted_code.txt");
 const OCTO_RUNNER = path.join(ROOT_DIR, "src", "core", "octolink_runner.js");
@@ -214,6 +216,38 @@ function formatLogLine(rawLine) {
         return `  ${c.neonPurple}├───${c.reset} ${c.bgGreen} ✔ CAPTCHA PASS ${c.reset}  ${c.bold}${c.mintGreen}Google reCAPTCHA v2 đã được giải thành công!${c.reset}`;
     }
 
+    // BBMKTS Automation Logs
+    if (line.includes("[TAB 1]") || line.includes("[TAB 2]")) {
+        const tab = line.includes("[TAB 1]") ? "TAB 1" : "TAB 2";
+        const content = line.replace(/\[\d{2}:\d{2}:\d{2}\]\s*\[TAB [12]\]\s*/, "").replace(/\[TAB [12]\]\s*/, "");
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgBlue} 📑 ${tab} ${c.reset}  ${c.softGray}${content}${c.reset}`;
+    }
+    if (line.includes("[NHAN DIEN]")) {
+        const content = line.replace(/.*\[NHAN DIEN\]\s*/, "");
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgPink} 👁️ NHẬN DIỆN ${c.reset}  ${c.bold}${c.pureWhite}${content}${c.reset}`;
+    }
+    if (line.includes("[TARGET]")) {
+        const content = line.replace(/.*\[TARGET\]\s*/, "");
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgGreen} 🎯 ĐỐI TÁC ${c.reset}  ${c.bold}${c.mintGreen}${content}${c.reset}`;
+    }
+    if (line.includes("[PATCH]")) {
+        const content = line.replace(/.*\[PATCH\]\s*/, "");
+        return `  ${c.neonPurple}│    ${c.neonCyan}⚡ ${content}${c.reset}`;
+    }
+    if (line.includes("[Countdown") && line.includes("Trang thai nut:")) {
+        const m = line.match(/\[Countdown\s*(\d+)s\]\s*Trang thai nut:\s*['"]?(.*?)['"]?$/);
+        if (m) {
+            const sec = m[1];
+            const status = m[2];
+            return `  ${c.neonPurple}│    ${c.flameOrange}⌛ Đếm ngược (${sec}s):${c.reset} ${c.cyberYellow}${status}${c.reset}`;
+        }
+    }
+    if (line.includes("DA LAY DUOC MA THANH CONG:") || line.includes("Ma: >>>")) {
+        const m = line.match(/>>>\s*([A-Za-z0-9_\-]+)\s*<<</);
+        const code = m ? m[1] : line;
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgYellow} 💎 MÃ NHẬN ĐƯỢC ${c.reset}  ${c.bold}${c.cyberYellow}►► ${code} ◄◄${c.reset}`;
+    }
+
     // 9. Final Destination URL
     if (line.includes("FINAL DESTINATION URL:") || line.includes("DESTINATION URL INTERCEPTED FROM API:")) {
         const finalUrl = (line.split("FINAL DESTINATION URL:")[1] || line.split("FROM API:")[1] || "").trim();
@@ -359,6 +393,145 @@ async function runBypassOctolink(targetUrl, headless = currentHeadless) {
     }
 }
 
+function isTrafficvnUrl(u) {
+    if (!u) return false;
+    const lower = u.toLowerCase();
+    return lower.includes("trafficvn") || /trafficvn\.com/i.test(lower);
+}
+
+function runBypassTrafficVN(targetUrl, headless = currentHeadless) {
+    return new Promise((resolve) => {
+        clearScreen();
+        printBanner();
+
+        const startTime = Date.now();
+        console.log(`  ${c.bgGreen} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.mintGreen}TRAFFICVN ULTRA ENGINE (CREEPJS STEALTH + RAPIDOCR + TURNSTILE)${c.reset}`);
+        console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
+
+        if (fs.existsSync(DEST_FILE)) {
+            try { fs.unlinkSync(DEST_FILE); } catch (e) {}
+        }
+
+        let capturedDestUrl = null;
+        const pythonArgs = headless ? ["-u", "-X", "utf8", TRAFFICVN_RUNNER, targetUrl, "--headless"] : ["-u", "-X", "utf8", TRAFFICVN_RUNNER, targetUrl];
+
+        const proc = spawn(getPythonPath(), pythonArgs, {
+            cwd: ROOT_DIR,
+            stdio: ["inherit", "pipe", "pipe"],
+        });
+
+        proc.stdout.on("data", (data) => {
+            const lines = data.toString("utf-8").split(/\r?\n/);
+            for (const line of lines) {
+                if (line.includes("FINAL DESTINATION URL:")) {
+                    capturedDestUrl = line.split("FINAL DESTINATION URL:")[1].trim();
+                } else if (line.includes("DESTINATION URL INTERCEPTED FROM API:")) {
+                    capturedDestUrl = line.split("DESTINATION URL INTERCEPTED FROM API:")[1].trim();
+                }
+                const formatted = formatLogLine(line);
+                if (formatted) console.log(formatted);
+            }
+        });
+
+        proc.stderr.on("data", (data) => {
+            const errStr = data.toString("utf-8").trim();
+            if (errStr && !errStr.includes("DeprecationWarning")) {
+                console.log(`  ${c.neonPurple}│    ${c.crimsonRed}✖ [ERROR] ${errStr.slice(0, 110)}${c.reset}`);
+            }
+        });
+
+        proc.on("close", (code) => {
+            const durationSec = Math.round((Date.now() - startTime) / 1000);
+            const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
+
+            if (finalUrl && !finalUrl.includes("trafficvn")) {
+                copyToClipboard(finalUrl);
+                showResultCard(finalUrl, durationSec);
+            } else if (code === 0) {
+                console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
+            } else {
+                console.log(`\n  ${c.crimsonRed}❌ Tiến trình dừng lại (Exit Code: ${code})${c.reset}\n`);
+            }
+            resolve(code);
+        });
+
+        proc.on("error", (err) => {
+            console.error(`\n  ${c.crimsonRed}[Lỗi khi khởi chạy Python]: ${err.message}${c.reset}\n`);
+            resolve(-1);
+        });
+    });
+}
+
+function isBbmktsUrl(u) {
+    if (!u) return false;
+    const lower = u.toLowerCase();
+    return lower.includes("bbmkts") || /bbmkts\.com/i.test(lower);
+}
+
+function runBypassBBMKTS(targetUrl, headless = currentHeadless) {
+    return new Promise((resolve) => {
+        clearScreen();
+        printBanner();
+
+        const startTime = Date.now();
+        console.log(`  ${c.bgGreen} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.brightPink}BBMKTS ULTRA ENGINE (AUTONOMOUS DUAL-TAB + RAPIDOCR)${c.reset}`);
+        console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
+
+        if (fs.existsSync(DEST_FILE)) {
+            try { fs.unlinkSync(DEST_FILE); } catch (e) {}
+        }
+
+        let capturedDestUrl = null;
+        const pythonArgs = headless ? ["-u", "-X", "utf8", BBMKTS_RUNNER, targetUrl, "--headless"] : ["-u", "-X", "utf8", BBMKTS_RUNNER, targetUrl];
+
+        const proc = spawn(getPythonPath(), pythonArgs, {
+            cwd: ROOT_DIR,
+            stdio: ["inherit", "pipe", "pipe"],
+        });
+
+        proc.stdout.on("data", (data) => {
+            const lines = data.toString("utf-8").split(/\r?\n/);
+            for (const line of lines) {
+                if (line.includes("FINAL DESTINATION URL:")) {
+                    capturedDestUrl = line.split("FINAL DESTINATION URL:")[1].trim();
+                } else if (line.includes(">>> http")) {
+                    const m = line.match(/>>>\s*(https?:\/\/[^\s<]+)\s*<<</);
+                    if (m) capturedDestUrl = m[1].trim();
+                }
+                const formatted = formatLogLine(line);
+                if (formatted) console.log(formatted);
+            }
+        });
+
+        proc.stderr.on("data", (data) => {
+            const errStr = data.toString("utf-8").trim();
+            if (errStr && !errStr.includes("DeprecationWarning")) {
+                console.log(`  ${c.neonPurple}│    ${c.crimsonRed}✖ [ERROR] ${errStr.slice(0, 110)}${c.reset}`);
+            }
+        });
+
+        proc.on("close", (code) => {
+            const durationSec = Math.round((Date.now() - startTime) / 1000);
+            const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
+
+            if (finalUrl && !finalUrl.includes("bbmkts.com/go/")) {
+                copyToClipboard(finalUrl);
+                showResultCard(finalUrl, durationSec);
+            } else if (code === 0) {
+                console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
+            } else {
+                console.log(`\n  ${c.crimsonRed}❌ Tiến trình dừng lại (Exit Code: ${code})${c.reset}\n`);
+            }
+            resolve(code);
+        });
+
+        proc.on("error", (err) => {
+            console.error(`\n  ${c.crimsonRed}[Lỗi khi khởi chạy Python]: ${err.message}${c.reset}\n`);
+            resolve(-1);
+        });
+    });
+}
+
 function isOctolinkUrl(u) {
     if (!u) return false;
     const lower = u.toLowerCase();
@@ -379,6 +552,14 @@ async function dispatchUrl(url, headless = currentHeadless) {
         console.log(`  ${c.flameOrange}Dự án chính thức ngừng mọi hoạt động hỗ trợ Octolink để đảm bảo an toàn và tuân thủ pháp luật.${c.reset}\n`);
         return;
     }
+    if (isBbmktsUrl(target)) {
+        await runBypassBBMKTS(target, headless);
+        return;
+    }
+    if (isTrafficvnUrl(target)) {
+        await runBypassTrafficVN(target, headless);
+        return;
+    }
     await runBypassLink4M(target, headless);
 }
 
@@ -395,11 +576,12 @@ async function main() {
         console.log(`  ${c.neonCyan}╔══════════════════════════════════════════════════════════════════════════════╗${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}                          ${c.bold}${c.cyberYellow}⚡ BẢNG ĐIỀU KHIỂN TÁC VỤ ⚡${c.reset}                         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╠══════════════════════════════════════════════════════════════════════════════╣${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.neonCyan}[1]${c.reset} ${c.bold}${c.pureWhite}⚡ Vượt Link4M Tự Động${c.reset} ${c.dim}(Auto Detect: Whisper AI + RapidOCR Vision)${c.reset}        ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.electricBlue}[2]${c.reset} ${c.bold}${c.pureWhite}🎯 Vượt Link4M Chuyên Sâu${c.reset} ${c.dim}(Nhập link Link4M thủ công)${c.reset}                 ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.crimsonRed}[3]${c.reset} ${c.dim}${c.crimsonRed}⛔ Octolink (ĐÃ DỪNG HỖ TRỢ - A05 Chặn Vi Phạm Pháp Luật)${c.reset}                  ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.neonCyan}[1]${c.reset} ${c.bold}${c.pureWhite}⚡ Vượt Link Tự Động${c.reset} ${c.dim}(Auto Detect: Link4M / TrafficVN / BBMKTS)${c.reset}        ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.electricBlue}[2]${c.reset} ${c.bold}${c.pureWhite}🎯 Vượt Link4M Chuyên Sâu${c.reset} ${c.dim}(Whisper AI + RapidOCR Vision)${c.reset}                 ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.mintGreen}[3]${c.reset} ${c.bold}${c.pureWhite}⚡ Vượt TrafficVN Chuyên Sâu${c.reset} ${c.dim}(CreepJS Stealth + Turnstile + RapidOCR)${c.reset}   ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.brightPink}[4]${c.reset} ${c.bold}${c.pureWhite}💎 Vượt BBMKTS Chuyên Sâu${c.reset} ${c.dim}(Autonomous Dual-Tab Engine)${c.reset}             ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.cyberYellow}[5]${c.reset} ${c.bold}${c.pureWhite}🖥️ Đổi Trình Duyệt: [${modeStatus}${c.bold}${c.pureWhite}]${c.reset} ${c.dim}(Bấm 5 để chuyển đổi)${c.reset}            ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.mintGreen}[4]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Tuyên Bố Pháp Lý${c.reset}                                         ${c.neonCyan}║${c.reset}`);
+        console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.pureWhite}[6]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Tuyên Bố Pháp Lý${c.reset}                                         ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.crimsonRed}[0]${c.reset} ${c.bold}${c.pureWhite}🚪 Thoát Ứng Dụng${c.reset}                                                      ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
 
@@ -409,6 +591,12 @@ async function main() {
             if (isOcto) {
                 console.log(`  ${c.bgRed} ⛔ PHÁT HIỆN LINK OCTOLINK: ${c.reset} ${c.dim}${clipUrl}${c.reset}`);
                 console.log(`  ${c.crimsonRed}↳ Hệ thống từ chối xử lý link Octolink do đã bị Bộ Công An cấm.${c.reset}\n`);
+            } else if (isBbmktsUrl(clipUrl)) {
+                console.log(`  ${c.bgPink} 🔗 BBMKTS PHÁT HIỆN: ${c.reset} ${c.bold}${c.brightPink}${clipUrl}${c.reset}`);
+                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
+            } else if (isTrafficvnUrl(clipUrl)) {
+                console.log(`  ${c.bgGreen} 🔗 TRAFFICVN PHÁT HIỆN: ${c.reset} ${c.bold}${c.mintGreen}${clipUrl}${c.reset}`);
+                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
             } else {
                 console.log(`  ${c.bgCyan} 🔗 LINK4M PHÁT HIỆN: ${c.reset} ${c.bold}${c.neonCyan}${clipUrl}${c.reset}`);
                 console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động chạy ngay link này!${c.reset}\n`);
@@ -429,7 +617,7 @@ async function main() {
             console.log(`\n  ${c.mintGreen}✅ Đã chuyển sang chế độ: ${currentHeadless ? "Ẩn (Headless - Siêu tốc)" : "Hiện cửa sổ (Window - Dễ quan sát)"}${c.reset}\n`);
             await sleep(1200);
             continue;
-        } else if (choice === "4") {
+        } else if (choice === "6" || choice.toLowerCase() === "h") {
             clearScreen();
             printBanner();
             console.log(`  ${c.bold}${c.neonCyan}📋 THÔNG TIN HỆ THỐNG & TUYÊN BỐ PHÁP LÝ:${c.reset}\n`);
@@ -440,20 +628,30 @@ async function main() {
             console.log(`     • ${c.softGray}RapidOCR trên ONNX Runtime: Nhận diện chính xác domain tài trợ từ ảnh SERP.${c.reset}`);
             console.log(`     • ${c.softGray}Whisper AI Audio Solver: Giải quyết 100% Google reCAPTCHA v2 không tốn 1 xu.${c.reset}`);
             console.log(`     • ${c.softGray}Tự động phục hồi domain bị che sao (*, ***, co***.tw, c***) và probe live HTTP/HTTPS.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.cyberYellow}2. Tùy chọn Headless linh hoạt:${c.reset}`);
+            console.log(`  ${c.bold}${c.mintGreen}2. TrafficVN Bypass Core (MỚI):${c.reset}`);
+            console.log(`     • ${c.softGray}Vượt 100% rào chắn CreepJS Fingerprinting, bảo toàn isTrusted CDP native clicks.${c.reset}`);
+            console.log(`     • ${c.softGray}Tự động phân giải ảnh SERP, dò tìm nút trong Shadow DOM và đếm ngược nhận mã.${c.reset}`);
+            console.log(`     • ${c.softGray}Xử lý widget Cloudflare Turnstile và tự động submit mở khóa link đích.${c.reset}\n`);
+            console.log(`  ${c.bold}${c.brightPink}3. BBMKTS Bypass Core (MỚI):${c.reset}`);
+            console.log(`     • ${c.softGray}Autonomous Dual-Tab Engine: Tab 1 giữ session bbmkts.com, Tab 2 thực thi countdown đối tác.${c.reset}`);
+            console.log(`     • ${c.softGray}Bypass triệt để anti-incognito và chặn popup "THIẾU BƯỚC NHIỆM VỤ" via route patch.${c.reset}`);
+            console.log(`     • ${c.softGray}Tự động gửi trực tiếp fetch /link/submit và giải mã link callback an toàn 100%.${c.reset}\n`);
+            console.log(`  ${c.bold}${c.cyberYellow}4. Tùy chọn Headless linh hoạt:${c.reset}`);
             console.log(`     • ${c.softGray}Phím [5]: Bật/Tắt chế độ chạy ẩn (Headless --headless=new) siêu tốc.${c.reset}\n`);
-            console.log(`  ${c.bold}${c.mintGreen}3. Tương tác mượt mà:${c.reset}`);
-            console.log(`     • ${c.softGray}Tự động bắt link từ Clipboard khi vừa mở menu.${c.reset}`);
-            console.log(`     • ${c.softGray}Hỗ trợ dán URL trực tiếp ngay tại menu chính mà không cần chọn bước phụ.${c.reset}`);
-            console.log(`     • ${c.softGray}Tự động Copy kết quả link đích vào Clipboard ngay khi hoàn tất.${c.reset}\n`);
             await ask(`  ${c.cyberYellow}Nhấn Enter để quay lại menu chính...${c.reset}`);
             continue;
+        } else if (choice === "4") {
+            const defaultUrl = "https://bbmkts.com/go/3p82s";
+            const hint = clipUrl && isBbmktsUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.brightPink}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
+            let link = await ask(`\n  ${c.bold}${c.brightPink}Nhập link BBMKTS cần vượt${hint}:${c.reset} `);
+            if (!link) link = (clipUrl && isBbmktsUrl(clipUrl)) ? clipUrl : defaultUrl;
+            await runBypassBBMKTS(link);
         } else if (choice === "3") {
-            console.log(`\n  ${c.bgRed} ⛔ THÔNG BÁO TẠM NGỪNG HỖ TRỢ OCTOLINK ⛔ ${c.reset}`);
-            console.log(`  ${c.crimsonRed}Domain octolink.vip đã bị Cục An ninh mạng (A05 - Bộ Công An) ngăn chặn.${c.reset}`);
-            console.log(`  ${c.flameOrange}Mọi hoạt động vượt link liên quan đến Octolink đã được gỡ bỏ khỏi hệ thống theo quy định pháp luật.${c.reset}\n`);
-            await ask(`  ${c.cyberYellow}Nhấn Enter để quay lại menu chính...${c.reset}`);
-            continue;
+            const defaultUrl = "https://trafficvn.com/get/MFGm2tAlcSn";
+            const hint = clipUrl && isTrafficvnUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
+            let link = await ask(`\n  ${c.bold}${c.mintGreen}Nhập link TrafficVN cần vượt${hint}:${c.reset} `);
+            if (!link) link = (clipUrl && isTrafficvnUrl(clipUrl)) ? clipUrl : defaultUrl;
+            await runBypassTrafficVN(link);
         } else if (choice === "2") {
             const hint = clipUrl && isLink4mUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: https://link4m.net/go/2kCcIqn)${c.reset}`;
             let link = await ask(`\n  ${c.bold}${c.electricBlue}Nhập link Link4M cần vượt${hint}:${c.reset} `);
