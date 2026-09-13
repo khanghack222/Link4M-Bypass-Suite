@@ -126,20 +126,29 @@ def extract_domain_candidates(ocr_lines):
     candidates.sort(key=rank_c, reverse=True)
     return candidates
 
+from concurrent.futures import ThreadPoolExecutor
+
+def _probe_single_proto(proto_url: str) -> str:
+    try:
+        req = urllib.request.Request(
+            proto_url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        )
+        with urllib.request.urlopen(req, context=_SSL_CTX, timeout=1.5) as resp:
+            if resp.getcode() in (200, 301, 302):
+                return proto_url
+    except Exception:
+        pass
+    return ""
+
 def probe_domain_live(domain: str) -> str:
-    for proto in ['https://', 'http://']:
-        target_url = proto + domain
-        try:
-            req = urllib.request.Request(
-                target_url,
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            )
-            with urllib.request.urlopen(req, context=_SSL_CTX, timeout=3.5) as resp:
-                code = resp.getcode()
-                if code in (200, 301, 302):
-                    return target_url
-        except Exception:
-            pass
+    targets = [f"https://{domain}", f"http://{domain}"]
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = [ex.submit(_probe_single_proto, t) for t in targets]
+        for f in futures:
+            res = f.result()
+            if res:
+                return res
     return ""
 
 def detect_sponsor_domain(page_link):
@@ -162,7 +171,7 @@ def detect_sponsor_domain(page_link):
                 break
         if target_img:
             break
-        time.sleep(0.8)
+        time.sleep(0.15)
 
     if target_img:
         src = target_img.get_attribute("src") or ""
@@ -227,7 +236,41 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
     log(f"[*] Opening sponsor site via Google referrer: {sponsor_url}")
     page = context.new_page()
 
-    page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
+    def route_handler(route):
+        req = route.request
+        if req.resource_type in ["image", "media", "font"]:
+            route.abort()
+            return
+        u = req.url.lower()
+        if any(k in u for k in ["service", "widget", "traffic", "what-on", "yoads"]):
+            try:
+                res = route.fetch()
+                body = res.text()
+                # Fast countdown patches: 10s duration instead of 60s
+                body = re.sub(r'traffic_wait_time\s*=\s*\d+', 'traffic_wait_time = 10', body)
+                body = re.sub(r'traffic_step_2_wait_time\s*=\s*\d+', 'traffic_step_2_wait_time = 4', body)
+                body = body.replace('!mouse_scroll', 'false')
+                body = body.replace('mouse_scroll = !1', 'mouse_scroll = true')
+                body = body.replace('mouse_scroll = false', 'mouse_scroll = true')
+                body = body.replace('nsec-=100', 'nsec-=250')
+                route.fulfill(response=res, body=body)
+                return
+            except Exception:
+                pass
+        route.continue_()
+
+    page.route("**/*", route_handler)
+    page.add_init_script("""
+        window.mouse_scroll = true;
+        window.traffic_click = true;
+        setInterval(() => {
+            window.mouse_scroll = true;
+            document.querySelectorAll('[data-time]').forEach(el => {
+                let cur = parseFloat(el.dataset.time);
+                if (cur > 10) el.dataset.time = '10';
+            });
+        }, 150);
+    """)
 
     try:
         page.goto(sponsor_url, wait_until="domcontentloaded", referer="https://www.google.com/", timeout=40000)
@@ -236,7 +279,7 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
         try: page.close()
         except Exception: pass
         return None
-    time.sleep(1.5)
+    time.sleep(0.4)
 
     html = page.content()
     m_key = re.search(r'(?:what-on\.com|website-analytics\.net|traffic)[^"\']*?key=([a-zA-Z0-9]+)', html)
@@ -343,20 +386,19 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                 page.goto(article, wait_until="domcontentloaded", timeout=35000)
             except Exception:
                 pass
-            time.sleep(1.5)
+            time.sleep(0.4)
 
         prep()
-        time.sleep(1.2)
+        time.sleep(0.3)
 
         btn = page.locator(btn_sel).first
         if btn.count() == 0:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(1.2)
+            time.sleep(0.4)
             btn = page.locator(btn_sel).first
 
         if btn.count() == 0:
             log(f"[!] Step {step}: Button not found, skipping...")
-            # Nếu ngay ở Step 1 mà không có traffic_key và không thấy nút -> không phải trang tài trợ thật
             if step == 1 and not traffic_key:
                 log(f"[!] Bước 1 không có traffic_key và nút nhiệm vụ, dừng trang này để thử ứng viên khác.")
                 try: page.close()
@@ -369,23 +411,28 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
             btn.click(force=True)
         except Exception:
             btn.evaluate("el => el.click()")
-        time.sleep(1.5)
+        time.sleep(0.4)
 
-        sec_dur = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : 60; }}")
+        sec_dur = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : 10; }}")
         log(f"[*] Step {step}: Countdown duration = {sec_dur}s")
 
         dir_wheel = 1
-        for sec in range(1, int(sec_dur) + 25):
-            time.sleep(1)
-            dir_wheel = -dir_wheel if sec % 5 == 0 else dir_wheel
-            page.mouse.wheel(0, 120 * dir_wheel)
+        for tick in range(1, 35):
+            time.sleep(0.4)
+            if tick % 4 == 0:
+                dir_wheel = -dir_wheel
+                page.mouse.wheel(0, 100 * dir_wheel)
 
             rem = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : null; }}")
-            if sec % 5 == 0 or (rem is not None and rem <= 5):
-                log(f"  [Step {step} - {sec}s] Remaining: {rem}s")
+            if rem is not None:
+                if tick % 3 == 0 or rem <= 3:
+                    log(f"  [Step {step}] Remaining: {rem}s")
+                if rem <= 0:
+                    page.evaluate("() => { if (typeof checkButtonClick === 'function') checkButtonClick(); }")
+                    time.sleep(0.4)
+                    break
 
-            if code_found or (rem is not None and rem <= 0):
-                time.sleep(1.5)
+            if code_found:
                 break
 
     if not code_found:

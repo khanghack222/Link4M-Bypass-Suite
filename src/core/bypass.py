@@ -157,7 +157,7 @@ def run(target_url: str = None, headless: bool = False):
             page_link.goto(target_url, wait_until="domcontentloaded", timeout=40000)
         except Exception as e:
             log(f"[!] Warning on initial goto: {e}")
-        time.sleep(2.0)
+        time.sleep(0.3)
 
         has_recaptcha = page_link.locator(".g-recaptcha, iframe[src*='recaptcha']").count() > 0
         has_pwd = page_link.locator("input.password, input[name='password']").count() > 0
@@ -171,7 +171,7 @@ def run(target_url: str = None, headless: bool = False):
                 solver.solve_on_page(page_link)
             except Exception as e:
                 log(f"[!] AI solver note: {e}")
-            time.sleep(1.2)
+            time.sleep(0.4)
             page_link.evaluate("""() => {
                 if (typeof recaptcha_callback === 'function') recaptcha_callback();
                 else if (typeof checkCaptcha === 'function') checkCaptcha();
@@ -206,7 +206,7 @@ def run(target_url: str = None, headless: bool = False):
                 pass
 
             page_link.bring_to_front()
-            time.sleep(0.6)
+            time.sleep(0.2)
 
             page_link.evaluate("""(code) => {
                 document.querySelectorAll("input[name='password'], input.password, #password-2, [placeholder*='Nhập mã']").forEach(inp => {
@@ -223,7 +223,7 @@ def run(target_url: str = None, headless: bool = False):
             except Exception as e:
                 log(f"[!] AI solver note: {e}")
 
-            time.sleep(1.0)
+            time.sleep(0.3)
             if not final_destination_url:
                 page_link.evaluate("""() => {
                     document.querySelectorAll('.modal-backdrop, #ad_banner, [id*="google_ads"], [class*="overlay"]').forEach(el => el.remove());
@@ -251,7 +251,7 @@ def run(target_url: str = None, headless: bool = False):
                                     window.check_form = f1;
                                     checkPassword();
                                 }
-                            }, 1200);
+                            }, 500);
                         }
                     }
 
@@ -265,10 +265,10 @@ def run(target_url: str = None, headless: bool = False):
                 }""")
 
         log("[*] Waiting for destination URL unlock...")
-        for _ in range(25):
+        for _ in range(40):
             if is_valid_destination(final_destination_url):
                 break
-            time.sleep(1)
+            time.sleep(0.25)
             ready_url = page_link.evaluate("""() => {
                 const btn = document.querySelector('.get-link, a#get-link, a[href*="download"], #btn-get-link, .btn-success');
                 if (btn) {
