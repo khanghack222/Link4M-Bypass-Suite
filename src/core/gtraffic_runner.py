@@ -17,9 +17,18 @@ def is_valid_destination(u: str, sponsor_domain: str = None) -> bool:
     ignored = [
         "gtraffic.io", "client.gtraffic.io", "dr-client.gtraffic.io", "direct.gtraffic.io",
         "cdn.gtraffic.io", "about:blank", "google.com/recaptcha", "gstatic.com/recaptcha",
-        "doubleclick.net", "googlesyndication"
+        "doubleclick.net", "googlesyndication", "googleadservices", "adservice.google",
+        "facebook.com", "fb.com", "instagram.com", "twitter.com", "x.com", "telegram.org",
+        "t.me", "linkedin.com", "tiktok.com", "youtube.com", "zalo.me",
+        # Ad networks & popups
+        "quynhorange.com", "shopee.vn", "lazada.vn", "tiki.vn", "s.shopee.vn", "c.lazada.vn",
+        "adsterra", "propellerads", "popads", "onclickads", "adcash", "exoclick",
+        "histats.com", "cloudflare.com", "challenges.cloudflare.com", "traffic.pages.dev"
     ]
     if any(d in u_low for d in ignored):
+        return False
+    # Filter marketing/tracking query parameters that indicate affiliate redirect
+    if any(p in u_low for p in ["utm_campaign=direct-funnels", "utm_source=quynhorange", "utm_content=gifts"]):
         return False
     if sponsor_domain:
         try:
@@ -226,10 +235,19 @@ def run(target_url: str = None, headless: bool = True):
         def on_gtraffic_response(res):
             nonlocal final_destination
             u = res.url
-            # Capture campaign info
+            # Capture campaign info & Direct Link Leak
             if "api/url/get" in u or ("api/url" in u and "tracking" not in u and "done" not in u):
                 try:
                     data = res.json()
+                    # Check for Direct URL Leak (Campaign empty / budget exhausted)
+                    dl = data.get("data_link")
+                    if isinstance(dl, dict) and dl.get("url") and is_valid_destination(dl.get("url"), sponsor_domain):
+                        final_destination = dl.get("url")
+                        log(f"🎉 DIRECT URL LEAK DETECTED IN api/url/get: {final_destination}")
+                    elif isinstance(dl, str) and is_valid_destination(dl, sponsor_domain):
+                        final_destination = dl
+                        log(f"🎉 DIRECT URL LEAK DETECTED IN api/url/get: {final_destination}")
+
                     dk = data.get("data_keyword") or {}
                     kw_t = dk.get("keyword_text")
                     src_t = dk.get("source")
@@ -269,17 +287,6 @@ def run(target_url: str = None, headless: bool = True):
                     final_destination = u
                     log(f"🎉 DESTINATION URL INTERCEPTED FROM NAVIGATION: {final_destination}")
 
-        def on_popup_page(p):
-            def on_pop_nav(frame):
-                nonlocal final_destination
-                if frame == p.main_frame:
-                    u = frame.url
-                    if is_valid_destination(u, sponsor_domain):
-                        final_destination = u
-                        log(f"🎉 DESTINATION URL INTERCEPTED FROM POPUP: {final_destination}")
-            p.on("framenavigated", on_pop_nav)
-
-        context.on("page", on_popup_page)
         page1.on("framenavigated", on_page1_nav)
         page1.on("response", on_gtraffic_response)
 
@@ -288,6 +295,21 @@ def run(target_url: str = None, headless: bool = True):
             page1.goto(target_url, wait_until="domcontentloaded", timeout=25000)
         except Exception as e:
             log(f"[!] Warning on initial goto: {e}")
+        
+        # Check if direct link was already leaked
+        time.sleep(1)
+        if final_destination and is_valid_destination(final_destination):
+            log(f"🎉 Bypassed via Direct URL Leak without opening sponsor tab: {final_destination}")
+            try:
+                with open(DEST_FILE, "w", encoding="utf-8") as f:
+                    f.write(str(final_destination))
+                with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f:
+                    f.write(str(final_destination))
+            except Exception:
+                pass
+            copy_to_clipboard(str(final_destination))
+            browser.close()
+            return
         
         # Wait for page1's own API campaign info response
         for _ in range(50):
@@ -603,17 +625,47 @@ def run(target_url: str = None, headless: bool = True):
         # Fill code
         inp = page1.locator('input[placeholder*="Nhập mã xác nhận"], input[placeholder*="Nhập mã"], input[placeholder*="xác nhận"]').first
         if inp.count() > 0:
+            inp.scroll_into_view_if_needed()
             inp.click()
-            inp.fill(extracted_code)
+            inp.fill("")
+            time.sleep(0.2)
+            page1.keyboard.type(extracted_code, delay=40)
             inp.dispatch_event("input")
             inp.dispatch_event("change")
             log(f"[+] Filled code '{extracted_code}' into Gtraffic form!")
 
         time.sleep(1)
+        # Listen to popups strictly from page1 after code submission
+        def on_final_popup(p):
+            def on_pop_nav(frame):
+                nonlocal final_destination
+                if frame == p.main_frame:
+                    u = frame.url
+                    if is_valid_destination(u, sponsor_domain):
+                        final_destination = u
+                        log(f"🎉 DESTINATION URL INTERCEPTED FROM POPUP: {final_destination}")
+            p.on("framenavigated", on_pop_nav)
+            if is_valid_destination(p.url, sponsor_domain):
+                final_destination = p.url
+                log(f"🎉 DESTINATION URL INTERCEPTED FROM POPUP URL: {final_destination}")
+
+        context.on("page", on_final_popup)
+
         # Click submit button
         submit_btn = page1.locator('button:has-text("Nhập mã xác nhận"), button:has-text("NHẬP MÃ XÁC NHẬN"), button:has-text("XÁC NHẬN")').first
         if submit_btn.count() > 0:
+            submit_btn.scroll_into_view_if_needed()
             submit_btn.click()
+            page1.evaluate("""() => {
+                const btns = Array.from(document.querySelectorAll('button')).filter(b => 
+                    b.innerText && (b.innerText.includes('NHẬP MÃ') || b.innerText.includes('XÁC NHẬN') || b.innerText.includes('Nhập mã'))
+                );
+                for (const b of btns) {
+                    if (typeof b.onclick === 'function') b.onclick();
+                    b.click();
+                    b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                }
+            }""")
             log("[+] Clicked 'NHẬP MÃ XÁC NHẬN'!")
 
         # Wait for destination URL (listen to network response, DOM link reveal, or navigation)

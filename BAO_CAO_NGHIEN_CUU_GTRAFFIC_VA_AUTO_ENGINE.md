@@ -112,9 +112,45 @@ Trong quá trình thực nghiệm, một số link gặp lỗi phản hồi từ
 3. **Mã Xác Nhận Đối Tác Chưa Đồng Bộ Kịp Lên Server Trung Tâm**:
    - Kịch bản sponsor tạo mã PIN động nhưng backend API của sponsor chưa kịp đồng bộ khóa bí mật (secret hash) với server `client.gtraffic.io`.
 
-### 4.3. Biện Pháp Phòng Ngừa Của Engine
-- **Giữ phiên Tab 1 ổn định**: Chờ Tab 1 hoàn tất trọn vẹn cả `keyword_text` và `source` trước khi mở Tab 2, ngăn chặn tình trạng xoay token kép.
-- **Mô phỏng gõ phím chân thực**: Sử dụng `page1.keyboard.type(extracted_code, delay=40)` kết hợp `input` và `change` event để Vue/Nuxt bắt trọn vẹn reactive state `v-model`.
+### 4.4. LỖI BẮT NHẦM LINK TÙM LUM (POPUP & AD REDIRECT HIJACKING)
+
+Trong quá trình vượt link GTraffic, một lỗi nghiêm trọng thường gặp là **hệ thống bắt nhầm link đích thành link quảng cáo hoặc sàn thương mại điện tử** (ví dụ: link affiliate `quynhorange.com/otp?utm_campaign=direct-funnels...`, `shopee.vn`, `lazada.vn`, pop-under của bên thứ ba).
+
+#### A. Bản chất và cơ chế gây ra lỗi bắt nhầm link
+1. **Quảng cáo Pop-under / Click-jack trên website nhà tài trợ**:
+   - Khi Tab 2 truy cập website sponsor (ví dụ: `30ngay.com`, `ericly.net`), website này thường gắn các mạng lưới quảng cáo tự động (Adsterra, PropellerAds, PopAds).
+   - Khi bot mô phỏng hành vi cuộn chuột hoặc click nút `#trade-btn` / `#trade-btn-clf`, một script quảng cáo chạy ngầm sẽ kích hoạt lệnh `window.open(...)` để bật một popup/tab mới chứa link affiliate (như `quynhorange.com`, `shopee.vn`).
+2. **Cơ chế bắt sự kiện Popup quá sớm và trên toàn Context**:
+   - Trước đây, listener `context.on("page", on_popup_page)` được gắn trên toàn bộ browser context ngay từ lúc khởi tạo.
+   - Do đó, khi Tab 2 (Sponsor) bị kích nổ quảng cáo bật tab mới, Engine lại lầm tưởng tab popup đó là "link đích mà GTraffic vừa mở ra", dẫn đến việc ghi đè link quảng cáo rác làm link đích cuối cùng!
+3. **Bộ lọc domain đích (`is_valid_destination`) chưa đủ nghiêm ngặt**:
+   - Ban đầu, hàm kiểm tra link hợp lệ chỉ loại trừ các domain nội bộ (`gtraffic.io`, `google.com/recaptcha`, `doubleclick.net`).
+   - Các domain affiliate marketing ngụy trang dưới dạng link quà tặng/landing page (chứa tham số UTM rác) chưa bị chặn, dẫn đến việc lọt lưới vào kết quả đầu ra.
+
+#### B. Các biện pháp khắc phục triệt để đã triển khai
+1. **Cô lập phạm vi lắng nghe Popup (Strict Scoped Popup Listener)**:
+   - **Tuyệt đối không** bắt popup trong suốt quá trình Tab 2 đang đếm ngược.
+   - Chỉ kích hoạt listener `context.on("page", ...)` **SAU KHI** mã xác nhận đã được điền và nhấn nút `NHẬP MÃ XÁC NHẬN` trên Tab 1. Mọi popup sinh ra trước thời điểm này đều bị coi là rác quảng cáo và bị bỏ qua 100%.
+2. **Mở rộng Blacklist toàn diện cho `is_valid_destination`**:
+   - Chặn toàn bộ mạng lưới popup/ad-network: `quynhorange.com`, `shopee.vn`, `lazada.vn`, `tiki.vn`, `adsterra`, `propellerads`, `popads`, `onclickads`, `adcash`, `exoclick`, `histats.com`.
+   - Chặn các mạng xã hội và kênh chat: `facebook.com`, `instagram.com`, `twitter.com`, `x.com`, `telegram.org`, `t.me`, `tiktok.com`, `youtube.com`, `zalo.me`.
+   - Tự động nhận diện và loại bỏ các URL chứa chuỗi UTM marketing affiliate: `utm_campaign=direct-funnels`, `utm_source=quynhorange`, `utm_content=gifts`.
+3. **Ưu tiên nguồn dữ liệu gốc từ API**:
+   - Ưu tiên link đích trả về chính thức từ API payload `client.gtraffic.io/api/url/tracking-url` (`data.data_link.url` hoặc `data.redirect_url`), coi đây là nguồn chân lý (Source of Truth) thay vì vội vàng lấy URL từ các sự kiện chuyển trang ngẫu nhiên.
+
+---
+
+### 4.5. CÁC LỖ HỔNG "NO ONE KNOWS" VỪA ĐƯỢC TÍCH HỢP
+
+1. **BBMKTS Zero-Click Instant Base64 Extraction (`0.001s`)**:
+   - Đường dẫn `/go/file/<chuỗi_mã_hóa>` của BBMKTS mã hóa trực tiếp link đích gốc bằng Base64.
+   - `auto_bypass.py` và `bbmkts_runner.py` đã tích hợp bộ phân giải trực tiếp không cần mở trình duyệt, giải mã xong trong **0.001 giây**.
+2. **BBMKTS Hardcoded SEO Bypass**:
+   - Các chiến dịch SEO được server chấp nhận mã cố định `trafficseo2025` / `vietnam` mà không cần duyệt web sponsor.
+3. **GTraffic Direct Link Leak tại Hook Khởi Tạo (`api/url/get`)**:
+   - Khi chiến dịch không có keyword hoặc hết ngân sách, server trả về trực tiếp `data_link.url`. Runner sẽ bắt ngay lập tức tại bước 1 và kết thúc mà không mở Tab 2.
+4. **LayMa.net Client-side Timer Override**:
+   - Ghi đè hàm kiểm tra đếm ngược `window.isGetCodeWaitSatisfied = () => true` giúp kích hoạt QCaptcha tức thì, loại bỏ 60s - 120s chờ đợi.
 
 ---
 

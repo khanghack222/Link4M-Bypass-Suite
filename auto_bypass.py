@@ -184,6 +184,25 @@ def execute_bypass(target_url: str, headless: bool = True) -> str:
 
     start_time = time.time()
 
+    # 0. Instant Zero-Click BBMKTS /go/file/ Base64 Decoder (0.001s)
+    if "bbmkts.com/go/file/" in target_url:
+        print(f"\n  {BG_PINK} ⚡ PHÁT HIỆN LINK FILE BBMKTS TRỰC TIẾP ⚡ {C_RESET}")
+        encoded_part = target_url.split("/go/file/")[-1].split("?")[0].split("#")[0]
+        import base64, urllib.parse
+        for dec_fn in [
+            lambda s: base64.b64decode(s + "===").decode("utf-8", errors="ignore"),
+            lambda s: urllib.parse.unquote(s)
+        ]:
+            try:
+                dec = dec_fn(encoded_part)
+                if dec.startswith("http"):
+                    print(f"  {C_GREEN}✔ Giải mã Base64 tức thì trong 0.001s: {dec}{C_RESET}")
+                    save_destination_url(dec)
+                    show_result_card(dec, 0, "BBMKTS INSTANT BASE64")
+                    return dec
+            except Exception:
+                pass
+
     if category == "OCTOLINK":
         print(f"\n  {BG_RED} ⛔ THÔNG BÁO TẠM NGỪNG DỰ ÁN OCTOLINK ⛔ {C_RESET}")
         print(f"  {C_RED}Website octolink.vip đã bị Cục An ninh mạng (A05 - Bộ Công An) chặn do có dấu hiệu vi phạm Điều 321, 322 BLHS.{C_RESET}")

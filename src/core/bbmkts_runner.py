@@ -35,6 +35,25 @@ def run(target_link: str = None, headless: bool = None):
     if headless is None:
         headless = False if ("--head" in sys.argv or "-w" in sys.argv or "--window" in sys.argv) else True
 
+    # 0. Instant Zero-Click Base64 Decoder
+    if "bbmkts.com/go/file/" in target_link:
+        encoded_part = target_link.split("/go/file/")[-1].split("?")[0].split("#")[0]
+        for dec_fn in [
+            lambda s: base64.b64decode(s + "===").decode("utf-8", errors="ignore"),
+            lambda s: urllib.parse.unquote(s)
+        ]:
+            try:
+                dec = dec_fn(encoded_part)
+                if dec.startswith("http"):
+                    log(f"🎉 [ZERO-CLICK] Giai ma Base64 truc tiep tu link /go/file/: {dec}")
+                    with open(DEST_FILE, "w", encoding="utf-8") as f:
+                        f.write(dec)
+                    with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f:
+                        f.write(dec)
+                    return
+            except Exception:
+                pass
+
     final_destination = None
 
     with sync_playwright() as p:
