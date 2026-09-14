@@ -5,6 +5,7 @@ import time
 import json
 import re
 import urllib.request
+import urllib.parse
 from playwright.sync_api import sync_playwright
 
 from config import CHROME_PATH, ROOT_DIR, DEST_FILE, CODE_FILE, log, copy_to_clipboard
@@ -206,6 +207,51 @@ def run(target_url: str = None, headless: bool = True):
     log(f"[*] Target Gtraffic URL: {target_url}")
     log(f"[*] Starting Gtraffic Autonomous Engine (Headless: {headless})...")
 
+    initial_sponsor = None
+    try:
+        is_direct = "direct.gtraffic.io" in target_url or "dr-client" in target_url
+        slug = target_url.split("?")[0].split("#")[0].strip().rstrip("/").split("/")[-1]
+        probe_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Referer": target_url,
+            "Content-Type": "application/json"
+        }
+        if is_direct:
+            api_url = f"https://dr-client.gtraffic.io/api/url/get?id={slug}&deviceType=desktop"
+        else:
+            api_url = f"https://client.gtraffic.io/api/url/get?id={slug}&deviceType=desktop"
+
+        d_req = urllib.request.Request(api_url, headers=probe_headers)
+        with urllib.request.urlopen(d_req, timeout=4) as d_res:
+            g_data = json.loads(d_res.read().decode("utf-8", errors="ignore"))
+
+        if g_data:
+            dl = g_data.get("data_link")
+            if isinstance(dl, dict) and dl.get("url") and "gtraffic.io" not in dl.get("url"):
+                final_leak = dl.get("url")
+                log(f"🎉 FAST ZERO-WAIT DIRECT LEAK DETECTED: {final_leak}")
+                try:
+                    with open(DEST_FILE, "w", encoding="utf-8") as f:
+                        f.write(str(final_leak))
+                    with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f:
+                        f.write(str(final_leak))
+                except Exception:
+                    pass
+                copy_to_clipboard(str(final_leak))
+                return
+            if g_data.get("url_dr"):
+                initial_sponsor = g_data.get("url_dr")
+                log(f"[+] Direct GTraffic Sponsor pre-resolved via API url_dr: {initial_sponsor}")
+            elif g_data.get("data_keyword"):
+                kw_t = g_data["data_keyword"].get("keyword_text")
+                src_t = g_data["data_keyword"].get("source")
+                if kw_t:
+                    initial_sponsor = resolve_sponsor_domain(kw_t, src_t)
+                    if initial_sponsor:
+                        log(f"[+] GTraffic Sponsor pre-resolved via API keyword: {initial_sponsor}")
+    except Exception as e:
+        log(f"[*] Pre-probe note: {e}")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             executable_path=CHROME_PATH,
@@ -225,12 +271,33 @@ def run(target_url: str = None, headless: bool = True):
             ignore_https_errors=True
         )
 
+        # AD-BLOCKER ROUTE: Abort all clickjack, popunder and affiliate network scripts immediately
+        ADS_PATTERNS = [
+            "quynhorange", "adsterra", "propellerads", "popads", "onclickads",
+            "adcash", "exoclick", "histats", "shopee.vn", "lazada.vn", "tiki.vn",
+            "traffic.pages.dev/pop", "doubleclick.net", "googlesyndication", "googleadservices"
+        ]
+        def route_filter(route):
+            req_url = route.request.url.lower()
+            if any(p in req_url for p in ADS_PATTERNS):
+                try:
+                    route.abort()
+                    return
+                except Exception:
+                    pass
+            try:
+                route.continue_()
+            except Exception:
+                pass
+
+        context.route("**/*", route_filter)
+
         final_destination = None
 
         # TAB 1: Gtraffic Page
         page1 = context.new_page()
         campaign_info = {}
-        sponsor_domain = None
+        sponsor_domain = initial_sponsor
 
         def on_gtraffic_response(res):
             nonlocal final_destination
@@ -255,7 +322,21 @@ def run(target_url: str = None, headless: bool = True):
                         campaign_info["keyword_text"] = kw_t
                     if src_t is not None:
                         campaign_info["source"] = src_t
-                    log(f"[TAB 1] Active Campaign: '{campaign_info.get('keyword_text')}' | Image: {campaign_info.get('source')}")
+                    
+                    dr_url = data.get("url_dr")
+                    if dr_url and isinstance(dr_url, str) and dr_url.startswith("http"):
+                        campaign_info["url_dr"] = dr_url
+                        sponsor_domain = dr_url
+                        log(f"[TAB 1] 💎 Direct Gtraffic Sponsor URL in API: {sponsor_domain}")
+                    elif kw_t and not sponsor_domain:
+                        # Direct GTraffic might return domain in keyword_text (e.g. designkids.info)
+                        direct_cand = resolve_sponsor_domain(kw_t, src_t)
+                        if direct_cand:
+                            sponsor_domain = direct_cand
+                            campaign_info["url_dr"] = direct_cand
+                            log(f"[TAB 1] 💎 Direct Gtraffic Sponsor resolved from keyword_text: {sponsor_domain}")
+
+                    log(f"[TAB 1] Active Campaign: '{campaign_info.get('keyword_text')}' | Image: {campaign_info.get('source')} | DR: {campaign_info.get('url_dr')}")
                 except Exception:
                     pass
             # Capture final tracking URL
@@ -313,29 +394,35 @@ def run(target_url: str = None, headless: bool = True):
         
         # Wait for page1's own API campaign info response
         for _ in range(50):
-            if campaign_info.get("keyword_text") and len(str(campaign_info.get("keyword_text")).strip()) > 0:
+            if (campaign_info.get("keyword_text") and len(str(campaign_info.get("keyword_text")).strip()) > 0) or campaign_info.get("url_dr") or sponsor_domain:
                 break
             time.sleep(0.1)
 
-        if not campaign_info.get("keyword_text") or not campaign_info.get("source"):
-            try:
-                dom_camp = page1.evaluate("""() => {
-                    const img = document.querySelector('img[src*="cdn.gtraffic.io"]')?.src || '';
-                    const kw = document.querySelector('.keyword-text, [class*="keyword"]')?.innerText || '';
-                    return { img, kw };
-                }""")
-                if dom_camp.get("img") and not campaign_info.get("source"):
-                    campaign_info["source"] = dom_camp["img"]
-                if dom_camp.get("kw") and not campaign_info.get("keyword_text"):
-                    campaign_info["keyword_text"] = dom_camp["kw"].strip()
-            except Exception:
-                pass
+        if not campaign_info.get("url_dr") and not sponsor_domain:
+            if not campaign_info.get("keyword_text") or not campaign_info.get("source"):
+                try:
+                    dom_camp = page1.evaluate("""() => {
+                        const img = document.querySelector('img[src*="cdn.gtraffic.io"]')?.src || '';
+                        const kw = document.querySelector('.keyword-text, [class*="keyword"]')?.innerText || '';
+                        return { img, kw };
+                    }""")
+                    if dom_camp.get("img") and not campaign_info.get("source"):
+                        campaign_info["source"] = dom_camp["img"]
+                    if dom_camp.get("kw") and not campaign_info.get("keyword_text"):
+                        campaign_info["keyword_text"] = dom_camp["kw"].strip()
+                except Exception:
+                    pass
 
         # Resolve sponsor domain
-        kw = campaign_info.get("keyword_text", "")
-        img = campaign_info.get("source", "")
-        log(f"[TAB 1] Active Campaign: '{kw}' | Image: {img}")
-        sponsor_domain = resolve_sponsor_domain(kw, img)
+        if not sponsor_domain:
+            if campaign_info.get("url_dr"):
+                sponsor_domain = campaign_info.get("url_dr")
+                log(f"[+] Using Direct Gtraffic sponsor URL: {sponsor_domain}")
+            else:
+                kw = campaign_info.get("keyword_text", "")
+                img = campaign_info.get("source", "")
+                log(f"[TAB 1] Active Campaign: '{kw}' | Image: {img}")
+                sponsor_domain = resolve_sponsor_domain(kw, img)
 
         if not sponsor_domain:
             log("[!] Could not determine sponsor website. Halting.")

@@ -4,6 +4,7 @@ import time
 import json
 import base64
 import re
+import shutil
 import urllib.request
 import urllib.parse
 from playwright.sync_api import sync_playwright
@@ -58,20 +59,46 @@ def run(target_link: str = None, headless: bool = None):
 
     with sync_playwright() as p:
         log("[1/4] Khoi dong trinh duyet Chromium...")
-        browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        from config import get_chrome_path
+        c_path = get_chrome_path()
+        
+        ext_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'extensions', 'turnstile_patch'))
+        user_data_dir = os.path.join(TEMP_DIR, "chrome_bbmkts_profile")
+        if os.path.exists(user_data_dir):
+            shutil.rmtree(user_data_dir, ignore_errors=True)
+
+        args = [
+            '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding'
+        ]
+        if os.path.exists(ext_dir):
+            args.extend([
+                f"--disable-extensions-except={ext_dir}",
+                f"--load-extension={ext_dir}"
+            ])
+
+        # Headed is required for extension injection and Cloudflare Turnstile verification
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            executable_path=c_path if c_path and os.path.exists(c_path) else None,
+            headless=False,
+            args=args,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 800}
         )
+        browser = context
 
-        # Chan cac script tracker, chan incognito popup
-        context.route("**/api.js*", lambda r: r.abort())
+        # Chan cac script tracker, chan incognito popup (KHONG duoc chan api.js vi can Cloudflare Turnstile)
         context.route("**/apiip.js*", lambda r: r.abort())
         context.route("**/sweetalert2*", lambda r: r.abort())
         context.route("**/firebase*", lambda r: r.abort())
 
         # TAB 1: KET NOI VA PHAN TICH TRANG BBMKTS
-        page1 = context.new_page()
+        page1 = context.pages[0] if context.pages else context.new_page()
 
         def handle_submit_response(resp):
             nonlocal final_destination
@@ -88,6 +115,7 @@ def run(target_link: str = None, headless: bool = None):
 
         # Vong lap thu nhiem vu (Toi da 3 lan thu/reroll)
         final_code = None
+        turnstile_token = ""
         for attempt in range(1, 4):
             log(f"\n--- [LAN THU {attempt}/3] Load nhiem vu tai {target_link} ---")
             try:
@@ -99,16 +127,46 @@ def run(target_link: str = None, headless: bool = None):
             html1 = page1.content()
             log(f"[TAB 1] Da tai DOM ({len(html1)} bytes).")
 
+            # Giai quyet Cloudflare Turnstile ngay khi Tab 1 vua load
+            log("[TAB 1] Kiem tra va giai quyet Cloudflare Turnstile ngay khi khoi tao...")
+            for sec in range(1, 16):
+                turnstile_token = page1.evaluate("""() => {
+                    try {
+                        if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
+                            const t = turnstile.getResponse();
+                            if (t && String(t).length > 20) return String(t);
+                        }
+                    } catch (e) {}
+                    const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+                    for (const inp of inputs) {
+                        if (inp.value && inp.value.length > 20) return inp.value;
+                    }
+                    return '';
+                }""")
+                if turnstile_token and len(turnstile_token) > 20:
+                    log(f"[TAB 1] Turnstile da xac thuc ngay khi load! Token len: {len(turnstile_token)}")
+                    break
+                if sec % 3 == 0:
+                    log(f"  [Turnstile {sec}s] Dang cho xac thuc...")
+                try:
+                    ts = page1.query_selector('.cf-turnstile')
+                    if ts:
+                        ts.click()
+                except Exception:
+                    pass
+                for f in page1.frames:
+                    if 'challenges' in f.url:
+                        try:
+                            f.click("body", timeout=1000)
+                        except Exception:
+                            pass
+                time.sleep(1)
+
             final_code = None
 
             # -------------------------------------------------------------
             # KIEM TRA CHIEN DICH LOAI B (CANVAS / MA TRUC TIEP / ANH STATIC)
             # -------------------------------------------------------------
-            lower_html = html1.lower()
-            if any(k in lower_html for k in ['không phải chờ 200', 'không phải code chờ giây', 'tra...25', 'he thong seo']):
-                final_code = "trafficseo2025"
-                log(f"[NHAN DIEN HEURISTIC] Phat hien chien dich SEO Static Guide! Ma mac dinh: >>> {final_code} <<<")
-
             canvas_script = None
             for s in re.findall(r'<script[^>]*>(.*?)</script>', html1, re.S):
                 if 'imgCanvas' in s or 'canvas' in s:
@@ -134,10 +192,7 @@ def run(target_link: str = None, headless: bool = None):
                         all_text = ' '.join([l[1] for l in (lines or [])])
                         log(f"[OCR CANVAS] {all_text}")
 
-                        if 'Tra' in all_text and '25' in all_text:
-                            final_code = "trafficseo2025"
-                            log(f"[NHAN DIEN] Chien dich Dang anh Huong dan SEO! Ma mac dinh: >>> {final_code} <<<")
-                        elif im.size[0] < 500 and im.size[1] < 150:
+                        if im.size[0] < 500 and im.size[1] < 150:
                             if lines:
                                 sorted_lines = sorted(lines, key=lambda x: x[0][0][0])
                                 code_cand = re.sub(r'[^0-9a-zA-Z]', '', ''.join([l[1] for l in sorted_lines]))
@@ -146,28 +201,6 @@ def run(target_link: str = None, headless: bool = None):
                                     log(f"[NHAN DIEN] Chien dich Co san ma tren anh! Ma: >>> {final_code} <<<")
                     except Exception as e:
                         log(f"[WARN] Loi xu ly anh canvas: {e}")
-
-            # Kiem tra tat ca anh trong uploads/ neu van chua tim ra ma
-            if not final_code:
-                upload_imgs = re.findall(r'https?://[^\s"\'<>]+/uploads/[^\s"\'<>]+\.(?:png|jpg|jpeg|webp)', html1)
-                for img_u in upload_imgs:
-                    if 'icon' in img_u.lower() or 'logo' in img_u.lower():
-                        continue
-                    tmp_img = os.path.join(TEMP_DIR, "guide_detect_" + os.path.basename(img_u.split('?')[0]))
-                    try:
-                        urllib.request.urlretrieve(img_u, tmp_img)
-                        lines, _ = get_ocr()(tmp_img)
-                        all_text = ' '.join([l[1] for l in (lines or [])])
-                        if 'Tra' in all_text and '25' in all_text:
-                            final_code = "trafficseo2025"
-                            log(f"[NHAN DIEN OCR UPLOAD] Anh {os.path.basename(img_u)} chua ma SEO! >>> {final_code} <<<")
-                            break
-                        elif 'vietnam' in all_text.lower():
-                            final_code = "vietnam"
-                            log(f"[NHAN DIEN OCR UPLOAD] Anh {os.path.basename(img_u)} chua ma VietNam! >>> {final_code} <<<")
-                            break
-                    except Exception as e:
-                        pass
 
             # -------------------------------------------------------------
             # KIEM TRA CHIEN DICH LOAI A (LINK NGOAI / WEBSITE DOI TAC)
@@ -255,8 +288,11 @@ def run(target_link: str = None, headless: bool = None):
                             if m_u:
                                 dom = m_u.group(1).lower().strip('.')
                                 if not any(k in dom for k in ['google', 'youtube', 'facebook', 'bbmkts', 'imgur', 'aimos']):
-                                    slug = m_u.group(2).strip('/')
-                                    target_url = f"https://{dom}/{slug}/"
+                                    slug = m_u.group(2).strip('./')
+                                    if slug:
+                                        target_url = f"https://{dom}/{slug}/"
+                                    else:
+                                        target_url = f"https://{dom}/"
                                     break
                         if not target_url:
                             for t in texts:
@@ -384,7 +420,10 @@ def run(target_link: str = None, headless: bool = None):
                 log("[TAB 2] Click button bat dau dem nguoc...")
                 bb.scroll_into_view_if_needed()
                 time.sleep(1)
-                bb.click()
+                try:
+                    bb.click()
+                except Exception:
+                    pass
 
                 for i in range(95):
                     time.sleep(1)
@@ -400,6 +439,18 @@ def run(target_link: str = None, headless: bool = None):
                     txt = bb.inner_text().strip().replace('\n', ' ')
                     if i % 10 == 0 or 'ĐỢI' not in txt:
                         log(f"  [Countdown {i}s] Trang thai nut: '{txt}'")
+
+                    # Neu nut chua dem nguoc sau vai giay, kich hoat click truc tiep
+                    if i in [3, 6, 9] and 'LẤY MÃ' in txt:
+                        try:
+                            bb.evaluate("el => { el.click(); el.dispatchEvent(new MouseEvent('click', {bubbles: true})); }")
+                        except Exception:
+                            pass
+
+                    # Neu sau 15s nut van khong he dem nguoc, thoat de thu trang khac
+                    if i >= 15 and not abx_code and 'LẤY MÃ' in txt and not any(k in txt for k in ['ĐỢI', 's', 'giây', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']):
+                        log("[TAB 2] Button khong dem nguoc tren web nay, chuyen sang thu web khac...")
+                        break
 
                     # Kiem tra neu trang doi tac yeu cau chuyen sang Buoc 2 (2-in-1)
                     if 'Nhấn vào đây' in txt or 'tiếp tục' in txt:
@@ -448,24 +499,99 @@ def run(target_link: str = None, headless: bool = None):
         log(f"[3/4] [TAB 1] Quay lai trang BBMKTS de mo khoa va nhap ma...")
         page1.bring_to_front()
 
-        link_el = page1.query_selector('#link')
-        if link_el:
-            log("[TAB 1] Click vao link quang cao de kich hoat session...")
-            try:
-                link_el.click(timeout=3000)
-            except Exception:
-                pass
-            time.sleep(2)
+        # Kich hoat click gia lap link quang cao ma khong mo popup ngoai y muon
+        try:
+            page1.evaluate("""() => {
+                let l = document.getElementById('link');
+                if (l) {
+                    l.removeAttribute('target');
+                    l.removeAttribute('href');
+                    l.click();
+                }
+            }""")
+        except Exception:
+            pass
+        time.sleep(1)
 
         inp = page1.query_selector('#input-field') or page1.query_selector('input[name="code"]')
         if inp:
             log(f"[TAB 1] Dien ma '{final_code}' vao o nhap lieu...")
             inp.fill(final_code)
+            inp.dispatch_event("input")
+            inp.dispatch_event("change")
+
+        # -------------------------------------------------------------
+        # CLOUDFLARE TURNSTILE TOKEN SYNC & VERIFY
+        # -------------------------------------------------------------
+        log("[TAB 1] Kiem tra va dong bo Cloudflare Turnstile token...")
+        current_ts = page1.evaluate("""() => {
+            try {
+                if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
+                    const t = turnstile.getResponse();
+                    if (t && String(t).length > 20) return String(t);
+                }
+            } catch (e) {}
+            const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+            for (const inp of inputs) {
+                if (inp.value && inp.value.length > 20) return inp.value;
+            }
+            return '';
+        }""")
+        if current_ts and len(current_ts) > 20:
+            turnstile_token = current_ts
+            log(f"[TAB 1] Turnstile san sang tren DOM! Token len: {len(turnstile_token)}")
+        elif turnstile_token:
+            log(f"[TAB 1] Su dung token Turnstile da lay tu Buoc 1! Token len: {len(turnstile_token)}")
+        else:
+            log("[TAB 1] Cho Turnstile xac thuc bo sung...")
+            for sec in range(1, 15):
+                turnstile_token = page1.evaluate("""() => {
+                    try {
+                        if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
+                            const t = turnstile.getResponse();
+                            if (t && String(t).length > 20) return String(t);
+                        }
+                    } catch (e) {}
+                    const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+                    for (const inp of inputs) {
+                        if (inp.value && inp.value.length > 20) return inp.value;
+                    }
+                    return '';
+                }""")
+                if turnstile_token and len(turnstile_token) > 20:
+                    log(f"[TAB 1] Turnstile xac thuc thanh cong! Token len: {len(turnstile_token)}")
+                    break
+                try:
+                    ts_widget = page1.query_selector('.cf-turnstile')
+                    if ts_widget:
+                        ts_widget.click(timeout=1000)
+                except Exception:
+                    pass
+                for f in page1.frames:
+                    if 'challenges' in f.url:
+                        try:
+                            f.click("body", timeout=1000)
+                        except Exception:
+                            pass
+                time.sleep(1)
+
+        cf_solved_token = turnstile_token or ""
+        # Dong bo token da lay vao toan bo cac the input cf-turnstile-response tren DOM
+        if cf_solved_token:
+            page1.evaluate("""(tok) => {
+                document.querySelectorAll('input[name="cf-turnstile-response"]').forEach(i => {
+                    i.value = tok;
+                });
+                let btn = document.getElementById('formgetlink');
+                if (btn) {
+                    btn.disabled = false;
+                }
+            }""", cf_solved_token)
 
         time.sleep(1)
 
         log(f"[TAB 1] Gui request submit ma '{final_code}' truc tiep qua fetch...")
-        res = page1.evaluate("""async (code) => {
+        res = page1.evaluate("""async ({code, forcedToken}) => {
             let token = '';
             let type = '';
             let tokenInp = document.querySelector('input[name="token"]');
@@ -493,6 +619,25 @@ def run(target_link: str = None, headless: bool = None):
                         }
                     }
                 }
+                
+                let cfToken = forcedToken || '';
+                if (!cfToken) {
+                    try {
+                        if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
+                            cfToken = turnstile.getResponse() || '';
+                        }
+                    } catch(e) {}
+                }
+                if (!cfToken) {
+                    let cfInputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+                    for (let inp of cfInputs) {
+                        if (inp.value) { cfToken = inp.value; break; }
+                    }
+                }
+                if (cfToken) {
+                    body.set('cf-turnstile-response', cfToken);
+                }
+
                 let r = await fetch('https://bbmkts.com/link/submit', {
                     method: 'POST',
                     headers: {
@@ -514,7 +659,7 @@ def run(target_link: str = None, headless: bool = None):
             } catch (e) {
                 return { ok: false, error: e.toString() };
             }
-        }""", final_code)
+        }""", {"code": final_code, "forcedToken": cf_solved_token})
         log(f"[TAB 1] Ket qua submit: {res}")
         if res and res.get('ok') and isinstance(res.get('data'), dict) and res['data'].get('url'):
             final_destination = res['data']['url']

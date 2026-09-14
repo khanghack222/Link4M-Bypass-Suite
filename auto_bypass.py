@@ -115,17 +115,17 @@ def copy_to_clipboard(text: str):
 def classify_url(url: str) -> str:
     """Accurately classifies the target URL to select the corresponding engine."""
     u = url.strip().lower()
-    if "octolink" in u or "linkhuongdan" in u:
+    if any(k in u for k in ["octolink", "linkhuongdan"]):
         return "OCTOLINK"
-    if "gtraffic.io" in u or "direct.gtraffic.io" in u or "dr-client.gtraffic.io" in u or "client.gtraffic.io" in u:
+    if any(k in u for k in ["gtraffic.io", "direct.gtraffic.io", "dr-client.gtraffic.io", "client.gtraffic.io", "gtraffic"]):
         return "GTRAFFIC"
-    if "bbmkts.com" in u or "yeumoney.com" in u:
+    if any(k in u for k in ["bbmkts.com", "bbmkt", "yeumoney.com", "yeumoney"]):
         return "BBMKTS"
-    if "layma.net" in u:
+    if any(k in u for k in ["layma.net", "layma"]):
         return "LAYMA"
-    if "trafficvn.com" in u:
+    if any(k in u for k in ["trafficvn.net", "trafficvn.com", "trafficvn"]):
         return "TRAFFICVN"
-    if "link4m." in u or "link4" in u:
+    if any(k in u for k in ["link4m.", "link4m", "link4"]):
         return "LINK4M"
     return "GENERIC"
 
@@ -155,6 +155,11 @@ def save_destination_url(final_url: str):
     except Exception:
         pass
     copy_to_clipboard(final_url)
+    try:
+        import winsound
+        winsound.MessageBeep(-1)
+    except Exception:
+        pass
 
 
 def read_captured_destination() -> str:
@@ -185,7 +190,7 @@ def execute_bypass(target_url: str, headless: bool = True) -> str:
     start_time = time.time()
 
     # 0. Instant Zero-Click BBMKTS /go/file/ Base64 Decoder (0.001s)
-    if "bbmkts.com/go/file/" in target_url:
+    if "/go/file/" in target_url and any(k in target_url.lower() for k in ["bbmkts", "bbmkt", "yeumoney"]):
         print(f"\n  {BG_PINK} ⚡ PHÁT HIỆN LINK FILE BBMKTS TRỰC TIẾP ⚡ {C_RESET}")
         encoded_part = target_url.split("/go/file/")[-1].split("?")[0].split("#")[0]
         import base64, urllib.parse
@@ -210,6 +215,41 @@ def execute_bypass(target_url: str, headless: bool = True) -> str:
         return ""
 
     if category == "GTRAFFIC":
+        # 0.1. Zero-Click Fast API Probe for GTraffic Direct Link Leak (0.2s)
+        try:
+            import urllib.request, json
+            is_direct = "direct.gtraffic.io" in target_url or "dr-client" in target_url
+            slug = target_url.split("?")[0].split("#")[0].strip().rstrip("/").split("/")[-1]
+            probe_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Referer": target_url,
+                "Content-Type": "application/json"
+            }
+            if is_direct:
+                api_url = f"https://dr-client.gtraffic.io/api/url/get?id={slug}&deviceType=desktop"
+            else:
+                api_url = f"https://client.gtraffic.io/api/url/get?id={slug}&deviceType=desktop"
+
+            d_req = urllib.request.Request(api_url, headers=probe_headers)
+            with urllib.request.urlopen(d_req, timeout=4) as d_res:
+                get_data = json.loads(d_res.read().decode("utf-8", errors="ignore"))
+
+            if get_data:
+                dl = get_data.get("data_link")
+                direct_leak = None
+                if isinstance(dl, dict) and dl.get("url"):
+                    direct_leak = dl.get("url")
+                elif isinstance(dl, str) and dl.startswith("http"):
+                    direct_leak = dl
+                if direct_leak and "gtraffic.io" not in direct_leak:
+                    print(f"\n  {BG_GREEN} ⚡ PHÁT HIỆN LINK ĐÍCH TRỰC TIẾP TỪ GTRAFFIC API LEAK ⚡ {C_RESET}")
+                    print(f"  {C_GREEN}✔ Lấy link thành công trong 0.2s không cần mở trình duyệt: {direct_leak}{C_RESET}")
+                    save_destination_url(direct_leak)
+                    show_result_card(direct_leak, 0, "GTRAFFIC ZERO-WAIT LEAK")
+                    return direct_leak
+        except Exception:
+            pass
+
         print(f"  {BG_ORANGE} ▶ KHỞI CHẠY {C_RESET}  {C_BOLD}{C_ORANGE}GTRAFFIC & DIRECT GTRAFFIC AUTONOMOUS ENGINE{C_RESET}")
         print(f"  {C_DIM}{C_GRAY}Mục tiêu: {target_url} | Headless: {headless}{C_RESET}\n")
         import gtraffic_runner

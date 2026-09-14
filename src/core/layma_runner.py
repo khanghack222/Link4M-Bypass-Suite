@@ -6,10 +6,18 @@ from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 from playwright.sync_api import sync_playwright
 
-BASE_DIR = r"C:\Users\XUAN\.gemini\antigravity\scratch\Link4M_Bypass_Suite"
+CORE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.abspath(os.path.join(CORE_DIR, "..", ".."))
 ROOT_DIR = BASE_DIR
-DEST_FILE = os.path.join(BASE_DIR, "DESTINATION_FINAL_URL.txt")
+DEST_FILE = os.path.join(BASE_DIR, "destination_url.txt")
+FINAL_DEST_FILE = os.path.join(BASE_DIR, "DESTINATION_FINAL_URL.txt")
 CODE_FILE = os.path.join(BASE_DIR, "extracted_code.txt")
+
+try:
+    from config import get_chrome_path, copy_to_clipboard
+except ImportError:
+    def get_chrome_path(): return None
+    def copy_to_clipboard(t): pass
 
 executor = ThreadPoolExecutor(max_workers=9)
 http_session = requests.Session()
@@ -53,7 +61,9 @@ def run(target_url: str = None, headless: bool = None):
     print(f"[*] Target LayMa URL: {target_url}")
 
     with sync_playwright() as p:
+        c_path = get_chrome_path()
         browser = p.chromium.launch(
+            executable_path=c_path if c_path and os.path.exists(c_path) else None,
             headless=headless,
             args=[
                 '--disable-blink-features=AutomationControlled',
@@ -129,6 +139,10 @@ def run(target_url: str = None, headless: bool = None):
 
         camp_id = page_layma.locator("#campainId").inner_text().strip() if page_layma.locator("#campainId").count() > 0 else ""
         print(f"[+] Campaign ID on LayMa: {camp_id}")
+        if not camp_id or camp_id == "00000000-0000-0000-0000-000000000000":
+            print(f"⚠ [LayMa] Link này hiện không có chiến dịch hoạt động hoặc đã hết lượt (Campaign ID: {camp_id}).")
+            browser.close()
+            return None
 
         SPONSOR_KEYS = {
             "agilafc.com": "4AzF9IZh9",
@@ -139,6 +153,18 @@ def run(target_url: str = None, headless: bool = None):
         DEAD_SPONSORS = ["go88yt", "go88", "sunwin", "qo88", "lo88", "88yt", "smileitsolutions"]
 
         def detect_layma_sponsor():
+            # Check text in #linkWeb or #linkNoidung first!
+            for txt_sel in ['#linkWeb', '#linkNoidung', 'a[href*="http"]']:
+                loc = page_layma.locator(txt_sel)
+                if loc.count() > 0:
+                    try:
+                        t = loc.first.inner_text().strip()
+                        m = re.search(r'([a-zA-Z0-9\-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', t)
+                        if m and not any(k in m.group(1).lower() for k in ['layma', 'google', 'facebook', 'youtube']):
+                            return m.group(1)
+                    except Exception:
+                        pass
+
             selectors = ['#linkWeb', '#hinh_nv', 'img.url-hint-image', 'img[src*="/posts/"]', '.box-linkFB-wrap img']
             for sel in selectors:
                 loc = page_layma.locator(sel)
@@ -151,15 +177,26 @@ def run(target_url: str = None, headless: bool = None):
                         lines, _ = RapidOCR()(tmp_ocr)
                         if lines:
                             all_texts = [l[1].strip().lower() for l in lines]
-                            joined = ' '.join(all_texts)
-                            if any(d in joined for d in DEAD_SPONSORS):
-                                for d in DEAD_SPONSORS:
-                                    if d in joined:
-                                        return f"dead_{d}"
+                            detected = None
+                            # Find domain pattern in OCR lines
                             for t in all_texts:
                                 m = re.search(r'([a-zA-Z0-9\-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', t)
                                 if m and not any(k in m.group(1) for k in ['layma', 'google', 'facebook', 'youtube']):
-                                    return m.group(1)
+                                    detected = m.group(1)
+                                    break
+                            if not detected:
+                                for t in all_texts:
+                                    m2 = re.search(r'([a-zA-Z0-9\-]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', t)
+                                    if m2 and len(m2.group(1)) > 4 and not any(k in m2.group(1) for k in ['layma', 'google', 'facebook']):
+                                        detected = m2.group(1)
+                                        break
+                            if detected:
+                                # Check if detected domain itself is dead
+                                if any(d in detected for d in DEAD_SPONSORS):
+                                    return f"dead_{detected}"
+                                return detected
+
+                            joined = ' '.join(all_texts)
                             if any(k in joined for k in ['go88', 'qo88', 'lo88']):
                                 return "go88yt.com"
                             return all_texts[0]
@@ -171,7 +208,7 @@ def run(target_url: str = None, headless: bool = None):
         print(f"[*] OCR detected sponsor domain on page: '{detected_sponsor}'")
 
         for sw_attempt in range(3):
-            if detected_sponsor and any(d in detected_sponsor for d in DEAD_SPONSORS):
+            if detected_sponsor and detected_sponsor.startswith("dead_"):
                 print(f"[!] Sponsor '{detected_sponsor}' không khả dụng / Cloudflare (Lần {sw_attempt + 1}). Tự động đổi nhiệm vụ (#btn-baoloi)...")
                 btn_baoloi = page_layma.locator("#btn-baoloi")
                 if btn_baoloi.count() > 0:
@@ -433,7 +470,7 @@ def run(target_url: str = None, headless: bool = None):
             last_cid = ch_info['cid']
             print(f"[+] Nhận dạng Challenge: {c_type} ('{q_text}')")
 
-            if c_type in ['grid3x3', 'oddoneout', 'relational']:
+            if c_type in ['grid3x3', 'oddoneout'] and 'chạm' not in q_text:
                 args_list = [(i, u) for i, u in enumerate(assets)]
                 features = list(executor.map(analyze_tile_url, args_list))
                 features.sort(key=lambda x: x[0])
@@ -542,6 +579,14 @@ def run(target_url: str = None, headless: bool = None):
         time.sleep(0.3)
 
         page_layma.evaluate('''(code) => {
+            // Hook window.open to redirect immediately in same window
+            window.open = function(u, target) {
+                if (u && typeof u === 'string') {
+                    window.location.href = u;
+                }
+                return null;
+            };
+
             // Hook resolveCheckCodeRedirect to navigate immediately without waiting
             const oldResolve = window.resolveCheckCodeRedirect;
             window.resolveCheckCodeRedirect = function(res) {
@@ -550,11 +595,6 @@ def run(target_url: str = None, headless: bool = None):
                     window.location.href = u;
                 }
                 return u;
-            };
-            // Neutering window.open so the subsequent 3s countdown setInterval does NOT trigger a second OTP call
-            window.open = function(u, target) {
-                console.log('Ignored duplicate window.open redirect call:', u);
-                return null;
             };
 
             const inp = document.getElementById('codeInput') || document.querySelector('input[name="code"]');
@@ -574,8 +614,8 @@ def run(target_url: str = None, headless: bool = None):
 
         # Wait for redirect to final destination url
         print("[*] Đang chờ trình duyệt chuyển hướng đến link đích cuối cùng...")
-        for wait_i in range(50):
-            if final_destination_url and "layma.net" not in final_destination_url:
+        for wait_i in range(80):
+            if final_destination_url and "layma.net" not in final_destination_url and "/api/traffic/go/" not in final_destination_url:
                 break
 
             curr = page_layma.url
@@ -583,38 +623,66 @@ def run(target_url: str = None, headless: bool = None):
                 final_destination_url = curr
                 break
 
-            time.sleep(0.4)
+            time.sleep(0.5)
 
         # Fallback only if still on layma and direct_redirect_url was captured
         if (not final_destination_url or "layma.net" in final_destination_url) and direct_redirect_url:
             try:
                 print(f"[*] Fallback: Điều hướng trực tiếp tới {direct_redirect_url}...")
-                page_layma.goto(direct_redirect_url, wait_until="domcontentloaded", timeout=12000)
-                time.sleep(1)
+                page_layma.goto(direct_redirect_url, wait_until="domcontentloaded", timeout=15000)
+                time.sleep(2)
                 curr = page_layma.url
-                if curr and "layma.net" not in curr:
+                if curr and "layma.net" not in curr and "/api/traffic/go/" not in curr:
                     final_destination_url = curr
             except Exception as e:
                 print(f"[!] Fallback goto error: {e}")
 
-        if final_destination_url:
+        # Check DOM status if still on layma
+        if not final_destination_url or "layma.net" in final_destination_url:
+            print("[!] Đang kiểm tra DOM phản hồi của LayMa...")
+            try:
+                dom_status = page_layma.evaluate('''() => {
+                    const th = document.getElementById('thongbao');
+                    const cd = document.getElementById('countRedirect');
+                    return {
+                        thongbao: th ? th.innerText : null,
+                        countRedirect: cd ? cd.innerText : null,
+                        url: window.location.href
+                    };
+                }''')
+                print(f"[!] DOM status: {dom_status}")
+                if dom_status and dom_status.get('url') and "layma.net" not in dom_status['url'] and "/api/traffic/go/" not in dom_status['url']:
+                    final_destination_url = dom_status['url']
+            except Exception:
+                pass
+
+        # Final check of page_layma.url
+        curr = page_layma.url
+        if curr and curr.startswith("http") and "layma.net" not in curr and "/api/traffic/go/" not in curr:
+            final_destination_url = curr
+
+        if final_destination_url and "layma.net" not in final_destination_url and "/api/traffic/go/" not in final_destination_url:
             print("\n" + "=" * 70)
             print(f"🎉🎉🎉 FINAL DESTINATION URL: {final_destination_url}")
             print("=" * 70 + "\n")
-            with open(DEST_FILE, "w", encoding="utf-8") as f_d:
-                f_d.write(final_destination_url)
+            try:
+                with open(DEST_FILE, "w", encoding="utf-8") as f_d:
+                    f_d.write(final_destination_url.strip())
+                with open(FINAL_DEST_FILE, "w", encoding="utf-8") as f_d:
+                    f_d.write(final_destination_url.strip())
+                desk_dest = os.path.expanduser(r"~\Desktop\destination_url.txt")
+                with open(desk_dest, "w", encoding="utf-8") as f_d:
+                    f_d.write(final_destination_url.strip())
+            except Exception:
+                pass
+            copy_to_clipboard(final_destination_url)
+            try:
+                import winsound
+                winsound.MessageBeep(-1)
+            except Exception:
+                pass
         else:
-            print("[!] Đang kiểm tra DOM phản hồi của LayMa...")
-            dom_status = page_layma.evaluate('''() => {
-                const th = document.getElementById('thongbao');
-                const cd = document.getElementById('countRedirect');
-                return {
-                    thongbao: th ? th.innerText : null,
-                    countRedirect: cd ? cd.innerText : null,
-                    url: window.location.href
-                };
-            }''')
-            print(f"[!] DOM status: {dom_status}")
+            print("[!] Không lấy được link đích cuối cùng.")
 
         time.sleep(2)
         browser.close()
