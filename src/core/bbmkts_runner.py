@@ -1,5 +1,23 @@
 import sys
 import os
+import subprocess
+
+# Auto-detect and switch to Python 3.11 if current interpreter lacks playwright
+try:
+    import playwright
+except ImportError:
+    candidates = [
+        r"C:\Users\XUAN\AppData\Local\Programs\Python\Python311\python.exe",
+        os.path.expanduser(r"~\AppData\Local\Programs\Python\Python311\python.exe"),
+        os.path.expanduser(r"~\AppData\Local\Programs\Python\Python312\python.exe"),
+        r"C:\Python311\python.exe",
+        r"C:\Python312\python.exe"
+    ]
+    for p in candidates:
+        if os.path.exists(p) and p != sys.executable:
+            ret = subprocess.run([p] + sys.argv)
+            sys.exit(ret.returncode)
+
 import time
 import json
 import base64
@@ -7,7 +25,12 @@ import re
 import shutil
 import urllib.request
 import urllib.parse
-from playwright.sync_api import sync_playwright
+try:
+    from patchright.sync_api import sync_playwright
+    PATCHRIGHT_AVAILABLE = True
+except ImportError:
+    from playwright.sync_api import sync_playwright
+    PATCHRIGHT_AVAILABLE = False
 from rapidocr_onnxruntime import RapidOCR
 
 # Cau hinh stdout UTF-8 cho terminal Windows
@@ -162,45 +185,135 @@ def run(target_link: str = None, headless: bool = None):
                             pass
                 time.sleep(1)
 
+            if not turnstile_token or len(turnstile_token) < 20:
+                try:
+                    from turnstile_solver import get_turnstile_token
+                    sitekey = page1.evaluate("""() => {
+                        let el = document.querySelector('.cf-turnstile') || document.querySelector('[data-sitekey]');
+                        return el ? el.getAttribute('data-sitekey') : '0x4AAAAAAEzmJdRW__FHO9pu';
+                    }""") or "0x4AAAAAAEzmJdRW__FHO9pu"
+                    log(f"[TAB 1] Khoi chay Turnstile Solver (Theyka Patchright) ngay o buoc khoi tao...")
+                    ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=False, headless=False)
+                    if ts_res.get('status') == 'success' and ts_res.get('turnstile_value'):
+                        turnstile_token = ts_res['turnstile_value']
+                        log(f"[TAB 1] Turnstile da xac thuc thanh cong qua Patchright! Token len: {len(turnstile_token)}")
+                        page1.evaluate("""(tok) => {
+                            document.querySelectorAll('input[name="cf-turnstile-response"]').forEach(i => i.value = tok);
+                        }""", turnstile_token)
+                except Exception as e:
+                    log(f"[TAB 1] Warning Turnstile solver at init: {e}")
+
             final_code = None
+            time.sleep(1)
+            html1 = page1.content()
 
             # -------------------------------------------------------------
-            # KIEM TRA CHIEN DICH LOAI B (CANVAS / MA TRUC TIEP / ANH STATIC)
+            # KIEM TRA CHIEN DICH LOAI B (CANVAS / MA TRUC TIEP / ANH STATIC / VUOT THANG)
             # -------------------------------------------------------------
-            canvas_script = None
-            for s in re.findall(r'<script[^>]*>(.*?)</script>', html1, re.S):
-                if 'imgCanvas' in s or 'canvas' in s:
-                    canvas_script = s
-                    break
+            # 0. Kiem tra truc tiep noi dung van ban DOM (Chien dich Vuot Thang TrafficSEO "Khong phai cho")
+            if any(k in html1.lower() for k in ['không phải chờ 200', 'không phải chờ', 'không phải code chờ giây', 'mã code theo hướng dẫn trong ảnh ở bước 4']):
+                final_code = "trafficseo2025"
+                log(f"[NHAN DIEN] Chien dich VUOT THANG tu van ban DOM Buoc 5! Ma mac dinh: >>> {final_code} <<<")
 
-            if not final_code and canvas_script:
-                m_img = re.search(r'[\'"](https?://[^\'"]*uploads/[^\'"]+)[\'"]', canvas_script)
-                if not m_img:
-                    m_img = re.search(r'[\'"](/uploads/[^\'"]+)[\'"]', canvas_script)
+            img_u = None
+            # 1. Tìm trực tiếp URL ảnh canvas hoặc ảnh hướng dẫn bước 4 qua evaluate trên page1
+            try:
+                img_u = page1.evaluate("""() => {
+                    for (let s of document.querySelectorAll('script')) {
+                        let txt = s.textContent || s.innerHTML || '';
+                        if (txt.includes('imgCanvas') || txt.includes('canvas')) {
+                            let m = txt.match(/['"](https?:\/\/[^'"]*uploads\/[^'"]+)['"]/);
+                            if (!m) m = txt.match(/['"](\/uploads\/[^'"]+)['"]/);
+                            if (m) return m[1];
+                        }
+                    }
+                    let imgs = Array.from(document.querySelectorAll('img[src*="uploads/img_"]'));
+                    for (let img of imgs) {
+                        let src = img.getAttribute('src') || img.src;
+                        if (src) return src;
+                    }
+                    return null;
+                }""")
+            except Exception:
+                pass
+
+            # 2. Fallback tìm qua regex trong html1
+            if not img_u:
+                for s in re.findall(r'<script[^>]*>(.*?)</script>', html1, re.S):
+                    if 'imgCanvas' in s or 'canvas' in s:
+                        m = re.search(r'[\'"](https?://[^\'"]*uploads/[^\'"]+)[\'"]', s)
+                        if not m:
+                            m = re.search(r'[\'"](/uploads/[^\'"]+)[\'"]', s)
+                        if m:
+                            img_u = m.group(1)
+                            break
+            if not img_u:
+                all_step_imgs = re.findall(r'[\'"](https?://[^\'"]*uploads/img_[^\'"]+)[\'"]', html1)
+                if all_step_imgs:
+                    img_u = all_step_imgs[-1]
+
+            if not final_code and img_u:
+                if not img_u.startswith('http'):
+                    img_u = 'https://bbmkts.com' + img_u
                 
-                if m_img:
-                    img_u = m_img.group(1)
-                    if not img_u.startswith('http'):
-                        img_u = 'https://bbmkts.com' + img_u
-                    
-                    tmp_img = os.path.join(TEMP_DIR, "canvas_test.png")
-                    try:
-                        urllib.request.urlretrieve(img_u, tmp_img)
-                        from PIL import Image
-                        im = Image.open(tmp_img)
-                        lines, _ = get_ocr()(tmp_img)
-                        all_text = ' '.join([l[1] for l in (lines or [])])
-                        log(f"[OCR CANVAS] {all_text}")
+                log(f"[TAB 1] Phat hien anh huong dan/Canvas truc tiep tu server: {img_u}")
+                tmp_img = os.path.join(TEMP_DIR, "canvas_test.png")
+                try:
+                    urllib.request.urlretrieve(img_u, tmp_img)
+                    from PIL import Image
+                    im = Image.open(tmp_img)
+                    lines, _ = get_ocr()(tmp_img)
+                    all_text = ' '.join([l[1] for l in (lines or [])])
+                    log(f"[OCR CANVAS] {all_text}")
 
-                        if im.size[0] < 500 and im.size[1] < 150:
-                            if lines:
-                                sorted_lines = sorted(lines, key=lambda x: x[0][0][0])
-                                code_cand = re.sub(r'[^0-9a-zA-Z]', '', ''.join([l[1] for l in sorted_lines]))
-                                if 5 <= len(code_cand) <= 15 and code_cand.isdigit():
-                                    final_code = code_cand
-                                    log(f"[NHAN DIEN] Chien dich Co san ma tren anh! Ma: >>> {final_code} <<<")
-                    except Exception as e:
-                        log(f"[WARN] Loi xu ly anh canvas: {e}")
+                    # 1. Bóc tách chiến dịch Vượt thẳng TrafficSEO ("Tra...25" / "Hệ thống SEO" / "không phải code chờ giây")
+                    if ('Tra' in all_text and '25' in all_text) or any(k in all_text.lower() for k in ['trafficseo', 'he thong seo', 'khong phai code cho giay', 'khong phai ma cho giay', 'o mau vang']) or any(k in html1.lower() for k in ['không phải chờ', 'không phải code chờ giây']):
+                        m_yr = re.search(r'Tra[^\d]*(\d{2,4})', all_text, re.I)
+                        if m_yr:
+                            yr = m_yr.group(1)
+                            if len(yr) == 2: yr = '20' + yr
+                            final_code = f"trafficseo{yr}"
+                        else:
+                            final_code = "trafficseo2025"
+                        log(f"[NHAN DIEN] Chien dich VUOT THANG (TrafficSEO)! Ma: >>> {final_code} <<<")
+
+                    # 2. Bóc tách MST / Mã số thuế / Code từ all_text
+                    if not final_code:
+                        m_mst = re.search(r'(?:MST|MÃ\s*SỐ\s*THUẾ|MÃ|CODE)[:\s]*([0-9A-Za-z]+)', all_text, re.I)
+                        if m_mst and len(m_mst.group(1).strip()) >= 5:
+                            cand = m_mst.group(1).strip()
+                            if cand.lower() not in ['code', 'nhap', 'dung', 'sai']:
+                                final_code = cand.lower()
+                                log(f"[NHAN DIEN] Chien dich Co san ma tren anh (MST/Code)! Ma: >>> {final_code} <<<")
+
+                    # 3. Bóc tách chuỗi số 8-14 ký tự (ví dụ: mã số thuế 0311949753)
+                    if not final_code:
+                        m_num = re.search(r'\b\d{8,14}\b', all_text)
+                        if m_num:
+                            final_code = m_num.group(0).strip()
+                            log(f"[NHAN DIEN] Chien dich Co san ma tren anh (Chuoi so MST)! Ma: >>> {final_code} <<<")
+
+                    # 4. Bóc tách theo bounding box của từng dòng
+                    if not final_code and lines:
+                        for l in lines:
+                            txt_raw = l[1].strip()
+                            m_sub = re.search(r'(?:MST[:\s]*)?([0-9]{8,12})', txt_raw, re.I)
+                            if m_sub:
+                                final_code = m_sub.group(1).strip()
+                                log(f"[NHAN DIEN] Phat hien ma tu dong OCR: >>> {final_code} <<<")
+                                break
+
+                    # 5. Fallback code_cand
+                    if not final_code and im.size[0] < 500 and im.size[1] < 150:
+                        if lines:
+                            sorted_lines = sorted(lines, key=lambda x: x[0][0][0])
+                            code_cand = re.sub(r'[^0-9a-zA-Z]', '', ''.join([l[1] for l in sorted_lines]))
+                            code_cand = re.sub(r'^MST', '', code_cand, flags=re.I)
+                            if 5 <= len(code_cand) <= 15:
+                                final_code = code_cand.lower()
+                                log(f"[NHAN DIEN] Chien dich Co san ma tren anh (Fallback)! Ma: >>> {final_code} <<<")
+                except Exception as e:
+                    log(f"[WARN] Loi xu ly anh canvas: {e}")
 
             # -------------------------------------------------------------
             # KIEM TRA CHIEN DICH LOAI A (LINK NGOAI / WEBSITE DOI TAC)
@@ -437,18 +550,58 @@ def run(target_link: str = None, headless: bool = None):
                         break
 
                     txt = bb.inner_text().strip().replace('\n', ' ')
-                    if i % 10 == 0 or 'ĐỢI' not in txt:
+                    txt_upper = txt.upper()
+                    if i % 10 == 0 or not any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'S']):
                         log(f"  [Countdown {i}s] Trang thai nut: '{txt}'")
 
+                    # Kiem tra ngay trong DOM page2 xem co chua script TrafficSEO khong
+                    if not final_code:
+                        try:
+                            cand_dom = page2.evaluate("""() => {
+                                for (let s of document.querySelectorAll('script')) {
+                                    let m = (s.textContent || s.innerHTML || '').match(/TrafficSEO\\d*/i);
+                                    if (m) return m[0].toLowerCase();
+                                }
+                                return null;
+                            }""")
+                            if cand_dom:
+                                final_code = cand_dom
+                                log(f"\n==================================================")
+                                log(f"   [TAB 2] PHAT HIEN MA TRUC TIEP TRONG DOM: >>> {final_code} <<<")
+                                log(f"==================================================\n")
+                                break
+                        except Exception:
+                            pass
+
+                    # Kiem tra xem tren button co xuat hien ma code ngay lap tuc khong (Chien dich vuot thang)
+                    m_seo = re.search(r'(?:Hệ\s*thống\s*SEO|TrafficSEO)\s*([A-Za-z0-9_]+)', txt, re.I)
+                    if m_seo:
+                        final_code = m_seo.group(1).strip().lower()
+                        log(f"\n==================================================")
+                        log(f"   [TAB 2] DA LAY DUOC MA SEO TRUC TIEP TREN NUT (0s): >>> {final_code} <<<")
+                        log(f"==================================================\n")
+                        break
+
+                    m_btn_code = re.search(r'\b[A-Za-z0-9]{6,15}\b', txt)
+                    if m_btn_code:
+                        cand = m_btn_code.group(0).strip()
+                        if cand.upper() not in ['HETHONG', 'HETHONGSEO', 'KHONGPHAI', 'TRONGO', 'BUTTON', 'SUBMIT'] and not (cand.isdigit() and len(cand) <= 3):
+                            if len(cand) >= 8 or (any(c.isalpha() for c in cand) and any(c.isdigit() for c in cand)):
+                                final_code = cand.lower()
+                                log(f"\n==================================================")
+                                log(f"   [TAB 2] DA LAY DUOC MA TRUC TIEP TREN NUT (0s): >>> {final_code} <<<")
+                                log(f"==================================================\n")
+                                break
+
                     # Neu nut chua dem nguoc sau vai giay, kich hoat click truc tiep
-                    if i in [3, 6, 9] and 'LẤY MÃ' in txt:
+                    if i in [3, 6, 9] and txt.strip() == 'LẤY MÃ':
                         try:
                             bb.evaluate("el => { el.click(); el.dispatchEvent(new MouseEvent('click', {bubbles: true})); }")
                         except Exception:
                             pass
 
-                    # Neu sau 15s nut van khong he dem nguoc, thoat de thu trang khac
-                    if i >= 15 and not abx_code and 'LẤY MÃ' in txt and not any(k in txt for k in ['ĐỢI', 's', 'giây', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']):
+                    # Neu sau 15s nut van giu nguyen chu 'LAY MA' (khong he thay doi text), moi thoat
+                    if i >= 15 and not abx_code and txt.strip() == 'LẤY MÃ' and not any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'S', 'GIÂY']):
                         log("[TAB 2] Button khong dem nguoc tren web nay, chuyen sang thu web khac...")
                         break
 
@@ -475,7 +628,7 @@ def run(target_link: str = None, headless: bool = None):
                             continue
 
                     # Kiem tra ma tren button
-                    if 'ĐỢI' not in txt and 'LẤY MÃ' not in txt and len(txt) >= 4:
+                    if not any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'S', 'GIÂY']) and txt.strip() != 'LẤY MÃ' and len(txt) >= 4:
                         final_code = txt
                         log(f"\n==================================================")
                         log(f"   [TAB 2] DA LAY DUOC MA THANH CONG: >>> {final_code} <<<")
@@ -575,6 +728,22 @@ def run(target_link: str = None, headless: bool = None):
                             pass
                 time.sleep(1)
 
+        # Neu van chua co token, kich hoat engine giai doc lap Turnstile Solver (Theyka / Patchright)
+        if not turnstile_token or len(turnstile_token) < 20:
+            log("[TAB 1] Turnstile chua xac thuc tren trang live. Kich hoat Turnstile Solver doc lap (Theyka / Patchright)...")
+            try:
+                from turnstile_solver import get_turnstile_token
+                sitekey = page1.evaluate("""() => {
+                    let el = document.querySelector('.cf-turnstile') || document.querySelector('[data-sitekey]');
+                    return el ? el.getAttribute('data-sitekey') : '0x4AAAAAAEzmJdRW__FHO9pu';
+                }""") or "0x4AAAAAAEzmJdRW__FHO9pu"
+                ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=True, headless=False)
+                if ts_res.get('status') == 'success' and ts_res.get('turnstile_value'):
+                    turnstile_token = ts_res['turnstile_value']
+                    log(f"[TAB 1] Turnstile Solver thanh cong! Token len: {len(turnstile_token)}")
+            except Exception as e:
+                log(f"[TAB 1] Warning Turnstile Solver fallback: {e}")
+
         cf_solved_token = turnstile_token or ""
         # Dong bo token da lay vao toan bo cac the input cf-turnstile-response tren DOM
         if cf_solved_token:
@@ -590,6 +759,7 @@ def run(target_link: str = None, headless: bool = None):
 
         time.sleep(1)
 
+        final_code = final_code.strip().lower()
         log(f"[TAB 1] Gui request submit ma '{final_code}' truc tiep qua fetch...")
         res = page1.evaluate("""async ({code, forcedToken}) => {
             let token = '';
@@ -597,7 +767,7 @@ def run(target_link: str = None, headless: bool = None):
             let tokenInp = document.querySelector('input[name="token"]');
             if (tokenInp) token = tokenInp.value;
             
-            let scripts = Array.from(document.querySelectorAll('script')).map(s => s.innerText);
+            let scripts = Array.from(document.querySelectorAll('script')).map(s => s.textContent || s.innerHTML || '');
             for (let s of scripts) {
                 let m = s.match(/token:\\s*['"]([A-Za-z0-9._=-]+)['"]/);
                 if (m) {
@@ -606,10 +776,19 @@ def run(target_link: str = None, headless: bool = None):
                     break;
                 }
             }
+
+            // Điền trực tiếp vào ô input trên giao diện DOM
+            let codeInp = document.querySelector('input[name="code"]');
+            if (codeInp) {
+                codeInp.value = code;
+                codeInp.dispatchEvent(new Event('input', { bubbles: true }));
+                codeInp.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
             let fm = document.getElementById('fm');
             let sendCode = async (c) => {
                 let body = new URLSearchParams();
-                body.append('code', c.trim());
+                body.append('code', c.trim().toLowerCase());
                 if (token) body.append('token', token);
                 if (type) body.append('type', type);
                 if (fm) {
@@ -652,9 +831,6 @@ def run(target_link: str = None, headless: bool = None):
 
             try {
                 let res = await sendCode(code);
-                if (res.status !== 200 && code.toLowerCase() !== code) {
-                    res = await sendCode(code.toLowerCase());
-                }
                 return res;
             } catch (e) {
                 return { ok: false, error: e.toString() };

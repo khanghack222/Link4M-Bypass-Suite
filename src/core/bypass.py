@@ -1,7 +1,16 @@
-import sys
+import sys, os
 sys.stdout.reconfigure(encoding="utf-8")
-import os
+
+# Tu dong chuyen sang Python 3.11 neu dang chay o Python khac ma thieu thu vien
+PYTHON_311 = r"C:\Users\XUAN\AppData\Local\Programs\Python\Python311\python.exe"
+if os.path.exists(PYTHON_311) and sys.executable.lower() != PYTHON_311.lower():
+    import subprocess
+    cmd = [PYTHON_311] + sys.argv
+    res = subprocess.run(cmd)
+    sys.exit(res.returncode)
+
 import time
+import re
 from playwright.sync_api import sync_playwright
 
 from config import CHROME_PATH, BASE_DIR, LOG_FILE, DEST_FILE, CODE_FILE, log, copy_to_clipboard
@@ -161,7 +170,7 @@ def run(target_url: str = None, headless: bool = True):
         # ⚡ TẦNG 1: TURBO DIRECT CAPTCHA EXPLOIT (Nhảy cóc 3s)
         def route_adv(route):
             log("⚡ [TURBO EXPLOIT] Chặn /api/campaign/get-advertise -> Ép Link4M kích hoạt Cổng Captcha Trực Tiếp!")
-            route.abort()
+            route.fulfill(status=200, content_type='application/json', body='{}')
 
         page_link.route("**/api/campaign/get-advertise", route_adv)
 
@@ -173,13 +182,20 @@ def run(target_url: str = None, headless: bool = True):
 
         # Chờ Cổng Captcha Trực Tiếp render đầy đủ (tối đa 6s)
         for _ in range(12):
-            if page_link.locator("h4").filter(has_text="Vui lòng check captcha").count() > 0 or \
-               page_link.locator("#recaptcha iframe, .g-recaptcha iframe").count() > 0:
+            has_captcha_text = page_link.locator("h4, h3, h2, div, p").filter(has_text="CHECK CAPTCHA").count() > 0 or \
+                               page_link.locator("h4, h3, h2, div, p").filter(has_text="check captcha").count() > 0 or \
+                               page_link.locator("h4, h3, h2, div, p").filter(has_text="Check Captcha").count() > 0
+            has_captcha_frame = page_link.locator("#recaptcha iframe, .g-recaptcha iframe, iframe[src*='recaptcha'], .g-recaptcha, #recaptcha").count() > 0
+            if has_captcha_text or has_captcha_frame:
                 break
             time.sleep(0.5)
 
         # Kiểm tra xem Cổng Captcha Trực Tiếp đã được kích hoạt thành công chưa
-        is_direct_gate = page_link.locator("h4").filter(has_text="Vui lòng check captcha").count() > 0 or \
+        has_captcha_text = page_link.locator("h4, h3, h2, div, p").filter(has_text="CHECK CAPTCHA").count() > 0 or \
+                           page_link.locator("h4, h3, h2, div, p").filter(has_text="check captcha").count() > 0 or \
+                           page_link.locator("h4, h3, h2, div, p").filter(has_text="Check Captcha").count() > 0
+        has_captcha_frame = page_link.locator("#recaptcha iframe, .g-recaptcha iframe, iframe[src*='recaptcha']").count() > 0
+        is_direct_gate = has_captcha_text or has_captcha_frame or \
                          (page_link.locator("#advertise-html-wrapper").count() == 0 and page_link.locator(".g-recaptcha, #recaptcha").count() > 0)
 
         if is_direct_gate:

@@ -1,5 +1,15 @@
-import sys, os, time, re, io, json, requests
+import sys, os
 sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+
+# Tu dong chuyen sang Python 3.11 neu dang chay o Python khac ma thieu thu vien
+PYTHON_311 = r"C:\Users\XUAN\AppData\Local\Programs\Python\Python311\python.exe"
+if os.path.exists(PYTHON_311) and sys.executable.lower() != PYTHON_311.lower():
+    import subprocess
+    cmd = [PYTHON_311] + sys.argv
+    res = subprocess.run(cmd)
+    sys.exit(res.returncode)
+
+import time, re, io, json, requests
 import cv2
 import numpy as np
 from PIL import Image
@@ -356,7 +366,15 @@ def run(target_url: str = None, headless: bool = None):
                 }}
             }}
             if (!el) {{
-                el = document.querySelector('[class*="Ran"], button[id*="Az"], div[id*="Az"], div[id*="Jkf"], div[id*="DrD"], div[id]');
+                el = document.querySelector('[class*="Ran"], button[id*="Az"], div[id*="Az"], div[id*="Jkf"], div[id*="DrD"], [id*="traffic"], .btn-layma, [id*="layma"], .whatoncode');
+                if (el && el.id) foundKey = el.id;
+            }}
+            if (!el) {{
+                const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+                el = allBtns.find(b => {{
+                    const t = (b.innerText || '').toUpperCase();
+                    return t.includes('LẤY MÃ') || t.includes('LAY MA') || t.includes('GET CODE');
+                }});
                 if (el && el.id) foundKey = el.id;
             }}
             if (el) {{
@@ -372,7 +390,7 @@ def run(target_url: str = None, headless: bool = None):
             print(f"⚡ Kích hoạt nút LẤY MÃ thành công (Key: {traffic_key})! Bắt đầu đếm ngược 60s...")
         else:
             print("[!] Thử query selector click nút lấy mã...")
-            page_sponsor.evaluate("() => { const b = document.querySelector('[class*=\"Ran\"], button[id], div[id*=\"Az\"], div[id*=\"Jkf\"], div[id*=\"DrD\"]'); if (b) b.click(); }")
+            page_sponsor.evaluate("() => { const b = document.querySelector('[class*=\"Ran\"], button[id], div[id*=\"Az\"], div[id*=\"Jkf\"], div[id*=\"DrD\"], button:has-text(\"LẤY MÃ\"), a:has-text(\"LẤY MÃ\")'); if (b) b.click(); }")
 
         # Wait 60 seconds with scrolling to keep session active
         dir_w = 1
@@ -385,15 +403,51 @@ def run(target_url: str = None, headless: bool = None):
                 except Exception: pass
 
         print("[*] Hết thời gian chờ (60s+)! Mở modal xác thực QCaptcha...")
-        page_sponsor.evaluate("() => { if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick(4); }")
+        page_sponsor.evaluate("""() => {
+            const btns = Array.from(document.querySelectorAll('#xacthucButton, #xacthuc, [class*="xacthuc"], [id*="xacthuc"], button, a, [role="button"]'));
+            for (let b of btns) {
+                let t = (b.innerText || '').toUpperCase();
+                if (t.includes('XÁC THỰC') || t.includes('LẤY MÃ') || t.includes('LAY MA') || t.includes('CHECK') || t.includes('XACTHUC')) {
+                    try { b.style.display = 'block'; b.click(); } catch (e) {}
+                }
+            }
+            if (typeof window.__checkButtonClick === 'function') {
+                try { window.__checkButtonClick(4); } catch (e) {}
+            }
+            document.querySelectorAll('#qcaptcha-modal, [id*="qcaptcha"], [class*="qcaptcha"]').forEach(el => {
+                el.style.display = 'block';
+                el.style.visibility = 'visible';
+                el.style.opacity = '1';
+            });
+        }""")
 
+        cf = None
         try:
-            frame_el = page_sponsor.wait_for_selector('iframe[src*="sslip.io"], iframe[src*="frame.html"]', timeout=30000)
-            cf = frame_el.content_frame()
-            cf.wait_for_selector('#box', timeout=30000)
-            time.sleep(1)
-            print("[*] Nhấn checkbox xác thực 'Tôi là con người'...")
-            cf.click('#box', force=True)
+            for _ in range(20):
+                for f in page_sponsor.frames:
+                    if any(k in f.url for k in ['sslip.io', 'frame.html']):
+                        if not f.is_detached():
+                            cf = f
+                            break
+                if cf:
+                    break
+                time.sleep(0.5)
+
+            if not cf:
+                frame_el = page_sponsor.wait_for_selector('iframe[src*="sslip.io"], iframe[src*="frame.html"]', state="attached", timeout=10000)
+                if frame_el:
+                    cf = frame_el.content_frame()
+
+            if cf:
+                try:
+                    cf.wait_for_selector('#box', state="attached", timeout=10000)
+                    time.sleep(1)
+                    print("[*] Nhấn checkbox xác thực 'Tôi là con người'...")
+                    cf.evaluate("() => { const b = document.getElementById('box'); if (b) b.click(); }")
+                    try: cf.click('#box', force=True, timeout=2000)
+                    except Exception: pass
+                except Exception as e_box:
+                    print(f"[!] Warning clicking #box: {e_box}")
         except Exception as e:
             print(f"[!] Warning waiting for frame/box: {e}")
 
@@ -544,26 +598,33 @@ def run(target_url: str = None, headless: bool = None):
                 time.sleep(0.4)
 
         # Wait for extracted code (turbo loop)
-        for _ in range(25):
+        for _ in range(35):
             if extracted_layma_code:
                 break
             c_dom = page_sponsor.evaluate(f'''() => {{
                 const el = document.getElementById('{traffic_key}');
                 if (el) {{
                     const m = (el.innerText || '').match(/([A-Za-z0-9_\\-]{{4,20}})/);
-                    if (m && !/lay|ma|click|link|sau|kiem/i.test(m[1])) return m[1];
+                    if (m && !/lay|ma|click|link|sau|kiem|doi|cho/i.test(m[1])) return m[1];
                 }}
                 const cb = document.getElementById('trackingMessageContainer');
                 if (cb) {{
                     const m = (cb.innerText || '').match(/([A-Za-z0-9_\\-]{{4,20}})/);
-                    if (m && !/lay|ma|click|link|sau|kiem/i.test(m[1])) return m[1];
+                    if (m && !/lay|ma|click|link|sau|kiem|doi|cho/i.test(m[1])) return m[1];
+                }}
+                // Quét qua các thẻ hiển thị code phổ biến
+                const candidates = document.querySelectorAll('.copy-code, span[class*="code"], [id*="code"], [class*="code"], .whatoncode, #box, #trackingMessageContainer');
+                for (let cand of candidates) {{
+                    const txt = (cand.innerText || '').trim();
+                    const m = txt.match(/([A-Za-z0-9_\\-]{{4,20}})/);
+                    if (m && !/lay|ma|click|link|sau|kiem|doi|cho|giay/i.test(m[1])) return m[1];
                 }}
                 return null;
             }}''')
-            if c_dom and "Chưa hoàn thành" not in str(c_dom):
+            if c_dom and "Chưa hoàn thành" not in str(c_dom) and "không hợp lệ" not in str(c_dom):
                 extracted_layma_code = c_dom
                 break
-            time.sleep(0.25)
+            time.sleep(0.3)
 
         if not extracted_layma_code:
             print("[!] Không lấy được mã LayMa. Kết thúc.")
