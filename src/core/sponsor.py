@@ -405,7 +405,15 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
         return None
     time.sleep(0.4)
 
-    html = page.content()
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=10000)
+        html = page.content()
+    except Exception:
+        try:
+            time.sleep(1)
+            html = page.content()
+        except Exception:
+            html = ""
     m_key = re.search(r'(?:what-on\.com|website-analytics\.net|traffic)[^"\']*?key=([a-zA-Z0-9]+)', html)
     traffic_key = m_key.group(1) if m_key else None
     if not traffic_key:
