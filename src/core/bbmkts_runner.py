@@ -541,11 +541,12 @@ def run(target_link: str = None, headless: bool = None):
                 for i in range(95):
                     time.sleep(1)
 
-                    # Neu server da tra ma qua API 00abx va timer tren 60s
-                    if abx_code and i >= 60:
+                    # Neu timer da hoan tat (khong con text dem nguoc)
+                    is_counting = any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'GIÂY']) or re.search(r'\b\d+s\b', txt, re.I)
+                    if abx_code and not is_counting and i >= 30:
                         final_code = abx_code
                         log(f"\n==================================================")
-                        log(f"   [TAB 2] DA LAY DUOC MA (QUA API 00ABX): >>> {final_code} <<<")
+                        log(f"   [TAB 2] DA HOAN TAT DEM NGUOC VA LAY MA: >>> {final_code} <<<")
                         log(f"==================================================\n")
                         break
 
