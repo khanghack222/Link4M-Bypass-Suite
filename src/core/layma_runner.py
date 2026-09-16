@@ -9,7 +9,7 @@ if os.path.exists(PYTHON_311) and sys.executable.lower() != PYTHON_311.lower():
     res = subprocess.run(cmd)
     sys.exit(res.returncode)
 
-import time, re, io, json, requests
+import time, re, io, json, requests, socket
 import cv2
 import numpy as np
 from PIL import Image
@@ -22,6 +22,63 @@ ROOT_DIR = BASE_DIR
 DEST_FILE = os.path.join(BASE_DIR, "destination_url.txt")
 FINAL_DEST_FILE = os.path.join(BASE_DIR, "DESTINATION_FINAL_URL.txt")
 CODE_FILE = os.path.join(BASE_DIR, "extracted_code.txt")
+DEAD_DOMAINS_FILE = os.path.join(BASE_DIR, "data", "dead_domains.json")
+
+# Persistent Blacklist for Dead DNS Domains
+DEFAULT_DEAD_DOMAINS = [
+    "go88yt.com", "go88gh.com", "sunwinkt.com", "go88en.com",
+    "sunwinvv.com", "qo88.com", "lo88.com", "88yt.com", "smileitsolutions.com"
+]
+
+def load_dead_domains() -> set:
+    os.makedirs(os.path.dirname(DEAD_DOMAINS_FILE), exist_ok=True)
+    if os.path.exists(DEAD_DOMAINS_FILE):
+        try:
+            with open(DEAD_DOMAINS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return set(d.lower() for d in data)
+        except Exception:
+            pass
+    try:
+        with open(DEAD_DOMAINS_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(list(DEFAULT_DEAD_DOMAINS)), f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+    return set(DEFAULT_DEAD_DOMAINS)
+
+def save_dead_domains(domain_set: set):
+    try:
+        os.makedirs(os.path.dirname(DEAD_DOMAINS_FILE), exist_ok=True)
+        with open(DEAD_DOMAINS_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(list(domain_set)), f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+DEAD_DOMAINS_CACHE = load_dead_domains()
+
+def add_to_dead_domains(domain: str):
+    if not domain:
+        return
+    clean = re.sub(r'^(?:https?://)?(?:www\.)?', '', domain).strip('/').split('/')[0].split(':')[0].lower()
+    if clean and clean not in DEAD_DOMAINS_CACHE:
+        DEAD_DOMAINS_CACHE.add(clean)
+        save_dead_domains(DEAD_DOMAINS_CACHE)
+        print(f"🚫 [Blacklist] Đã ghi nhận domain chết vào Blacklist: {clean}")
+
+def is_domain_live(domain: str) -> bool:
+    if not domain:
+        return False
+    clean = re.sub(r'^(?:https?://)?(?:www\.)?', '', domain).strip('/').split('/')[0].split(':')[0].lower()
+    if clean in DEAD_DOMAINS_CACHE:
+        print(f"[-] Domain '{clean}' nằm trong Blacklist DNS chết -> bỏ qua tức thì (Zero Check)!")
+        return False
+    try:
+        socket.gethostbyname(clean)
+        return True
+    except Exception:
+        add_to_dead_domains(clean)
+        return False
 
 try:
     from config import get_chrome_path, copy_to_clipboard
@@ -187,8 +244,6 @@ def run(target_url: str = None, headless: bool = None):
                     if m_dom:
                         detected_raw = m_dom.group(1).lower()
                         print(f"[+] Lấy trực tiếp sponsor domain từ url-copy: {detected_raw}")
-                        if any(d in detected_raw for d in DEAD_SPONSORS):
-                            return f"dead_{detected_raw}"
                         return detected_raw
             except Exception as e_copy:
                 pass
@@ -218,7 +273,6 @@ def run(target_url: str = None, headless: bool = None):
                         if lines:
                             all_texts = [l[1].strip().lower() for l in lines]
                             detected = None
-                            # Find domain pattern in OCR lines
                             for t in all_texts:
                                 m = re.search(r'([a-zA-Z0-9\-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', t)
                                 if m and not any(k in m.group(1) for k in ['layma', 'google', 'facebook', 'youtube']):
@@ -231,9 +285,6 @@ def run(target_url: str = None, headless: bool = None):
                                         detected = m2.group(1)
                                         break
                             if detected:
-                                # Check if detected domain itself is dead
-                                if any(d in detected for d in DEAD_SPONSORS):
-                                    return f"dead_{detected}"
                                 return detected
 
                             joined = ' '.join(all_texts)
@@ -245,26 +296,35 @@ def run(target_url: str = None, headless: bool = None):
             return None
 
         detected_sponsor = detect_layma_sponsor()
-        print(f"[*] OCR detected sponsor domain on page: '{detected_sponsor}'")
+        print(f"[*] Detected sponsor domain on page: '{detected_sponsor}'")
 
-        for sw_attempt in range(3):
-            if detected_sponsor and detected_sponsor.startswith("dead_"):
-                print(f"[!] Sponsor '{detected_sponsor}' không khả dụng / Cloudflare (Lần {sw_attempt + 1}). Tự động đổi nhiệm vụ (#btn-baoloi)...")
+        for sw_attempt in range(8):
+            if not detected_sponsor or not is_domain_live(detected_sponsor):
+                print(f"[!] Sponsor '{detected_sponsor}' không khả dụng / chết DNS (Lần {sw_attempt + 1}/8). Tự động đổi nhiệm vụ (#btn-baoloi)...")
+                old_camp = camp_id
                 btn_baoloi = page_layma.locator("#btn-baoloi")
                 if btn_baoloi.count() > 0:
                     btn_baoloi.click()
-                    time.sleep(1)
+                    time.sleep(0.5)
                     btn_confirm = page_layma.locator("#btnXacNhanDoiNhiemVu")
                     if btn_confirm.count() > 0:
                         btn_confirm.click()
-                        print("[*] Đã nhấn xác nhận đổi nhiệm vụ, đợi 8s tải lại campaign mới...")
-                        time.sleep(8)
-                        page_layma.wait_for_load_state("domcontentloaded")
-                        camp_id = page_layma.locator("#campainId").inner_text().strip() if page_layma.locator("#campainId").count() > 0 else ""
+                        print("[*] Đã nhấn xác nhận đổi nhiệm vụ, đợi tải campaign mới...")
+                        for _ in range(12):
+                            time.sleep(1)
+                            new_camp = page_layma.locator("#campainId").inner_text().strip() if page_layma.locator("#campainId").count() > 0 else ""
+                            if new_camp and new_camp != old_camp:
+                                camp_id = new_camp
+                                break
                         detected_sponsor = detect_layma_sponsor()
                         print(f"[+] Sau khi đổi: Campaign ID: {camp_id}, Sponsor: '{detected_sponsor}'")
             else:
                 break
+
+        if not detected_sponsor or not is_domain_live(detected_sponsor):
+            print(f"❌ [LayMa] Đã thử đổi nhiệm vụ 8 lần nhưng tất cả chiến dịch hiện tại đều chết DNS: '{detected_sponsor}'.")
+            browser.close()
+            return None
 
         sponsor_domain = "agilafc.com"
         traffic_key = "4AzF9IZh9"
