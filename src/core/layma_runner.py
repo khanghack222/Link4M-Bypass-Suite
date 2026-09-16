@@ -87,7 +87,7 @@ def run(target_url: str = None, headless: bool = None):
         )
         context = browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            viewport={'width': 1280, 'height': 720}
+            viewport={'width': 800, 'height': 900}
         )
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -95,6 +95,16 @@ def run(target_url: str = None, headless: bool = None):
                 Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
                 Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
                 window.hasFocus = () => true;
+            } catch (e) {}
+            try {
+                const origTx = IDBDatabase.prototype.transaction;
+                IDBDatabase.prototype.transaction = function(storeNames, mode, options) {
+                    const tx = origTx.apply(this, arguments);
+                    if (options && options.durability === 'strict') {
+                        Object.defineProperty(tx, 'durability', { value: 'relaxed', configurable: true });
+                    }
+                    return tx;
+                };
             } catch (e) {}
         """)
 
@@ -163,6 +173,26 @@ def run(target_url: str = None, headless: bool = None):
         DEAD_SPONSORS = ["go88yt", "go88", "sunwin", "qo88", "lo88", "88yt", "smileitsolutions"]
 
         def detect_layma_sponsor():
+            # Method 0: Direct fetch from /{tokenId}/url-copy
+            token_id = target_url.strip().rstrip("/").split("/")[-1]
+            try:
+                domain_copy = page_layma.evaluate("""(tokenId) => {
+                    return fetch('/' + encodeURIComponent(tokenId) + '/url-copy', {
+                        method: 'POST',
+                        headers: (typeof trafficSessionToken !== 'undefined' && trafficSessionToken) ? { 'X-Traffic-Session': trafficSessionToken } : {}
+                    }).then(res => res.ok ? res.text() : '').catch(() => '');
+                }""", token_id)
+                if domain_copy and "." in domain_copy and not any(k in domain_copy.lower() for k in ['layma', 'google', 'facebook']):
+                    m_dom = re.search(r'([a-zA-Z0-9\-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', domain_copy.strip())
+                    if m_dom:
+                        detected_raw = m_dom.group(1).lower()
+                        print(f"[+] Lấy trực tiếp sponsor domain từ url-copy: {detected_raw}")
+                        if any(d in detected_raw for d in DEAD_SPONSORS):
+                            return f"dead_{detected_raw}"
+                        return detected_raw
+            except Exception as e_copy:
+                pass
+
             # Check text in #linkWeb or #linkNoidung first!
             for txt_sel in ['#linkWeb', '#linkNoidung', 'a[href*="http"]']:
                 loc = page_layma.locator(txt_sel)
@@ -311,6 +341,8 @@ def run(target_url: str = None, headless: bool = None):
         page_sponsor.route("**/frame.js", route_frame_js)
         page_sponsor.route("**/Traffic/Index/*", route_traffic_js)
         page_sponsor.route("**/traffic/index/*", route_traffic_js)
+        page_sponsor.route("**/best-traffic.pages.dev/traffic.js", route_traffic_js)
+        page_sponsor.route("**/traffic.js", route_traffic_js)
 
         def on_sponsor_res(res):
             nonlocal extracted_layma_code
@@ -378,8 +410,11 @@ def run(target_url: str = None, headless: bool = None):
                 if (el && el.id) foundKey = el.id;
             }}
             if (el) {{
+                try {{ el.scrollIntoView({{ behavior: 'instant', block: 'center' }}); }} catch (e) {{}}
                 const sp = el.querySelector('span') || el;
-                sp.click();
+                try {{ sp.dispatchEvent(new Event('touchstart', {{ bubbles: true }})); }} catch (e) {{}}
+                try {{ sp.dispatchEvent(new Event('click', {{ bubbles: true }})); }} catch (e) {{}}
+                try {{ sp.click(); }} catch (e) {{}}
                 return {{ success: true, key: foundKey }};
             }}
             return {{ success: false, key: foundKey }};

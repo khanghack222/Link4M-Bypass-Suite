@@ -150,12 +150,15 @@ def run(target_url: str = None, headless: bool = True):
                 pass
         context.on("page", on_new_page)
 
+        api_rejected_captcha = False
         def handle_resp(res):
-            nonlocal final_destination_url
+            nonlocal final_destination_url, api_rejected_captcha
             if any(ep in res.url for ep in ["/links/get-link-info", "/links/check-captcha", "/links/go", "/links/verify"]):
                 try:
                     data = res.json()
                     log(f"[+] Intercepted Link4M API response: {data}")
+                    if data.get("success") is False:
+                        api_rejected_captcha = True
                     u = data.get("url") or data.get("return") or data.get("link")
                     if u and is_valid_destination(u):
                         final_destination_url = u
@@ -200,35 +203,28 @@ def run(target_url: str = None, headless: bool = True):
 
         if is_direct_gate:
             log("🚀 [TURBO EXPLOIT] Đã kích hoạt thành công Cổng Captcha Trực Tiếp (Bỏ qua 100% nhiệm vụ tìm web)!")
-            for turbo_try in range(1, 3):
-                try:
-                    if turbo_try > 1:
-                        log(f"[*] Thử lại giải Captcha Cổng Trực Tiếp (Lần {turbo_try})...")
-                        page_link.reload(wait_until="domcontentloaded", timeout=20000)
-                        time.sleep(2)
-                    res_solve = solver.solve_on_page(page_link, timeout_sec=25)
-                    log(f"[+] Turbo solver result: {res_solve}")
-                    if res_solve.get("success"):
-                        time.sleep(0.5)
-                        page_link.evaluate("""() => {
-                            if (typeof recaptcha_callback === 'function') recaptcha_callback();
-                            else if (typeof checkCaptcha === 'function') checkCaptcha();
-                        }""")
-                        for _ in range(20):
-                            if is_valid_destination(final_destination_url):
+            try:
+                res_solve = solver.solve_on_page(page_link, timeout_sec=25)
+                log(f"[+] Turbo solver result: {res_solve}")
+                if res_solve.get("success"):
+                    time.sleep(0.5)
+                    page_link.evaluate("""() => {
+                        if (typeof recaptcha_callback === 'function') recaptcha_callback();
+                        else if (typeof checkCaptcha === 'function') checkCaptcha();
+                    }""")
+                    for _ in range(12):
+                        if is_valid_destination(final_destination_url) or api_rejected_captcha:
+                            break
+                        btn = page_link.locator(".get-link, a[class*='get-link']")
+                        if btn.count() > 0:
+                            href = btn.first.get_attribute("href")
+                            if href and is_valid_destination(href):
+                                final_destination_url = href
+                                log(f"🎉 DESTINATION URL CAPTURED FROM BUTTON: {final_destination_url}")
                                 break
-                            btn = page_link.locator(".get-link, a[class*='get-link']")
-                            if btn.count() > 0:
-                                href = btn.first.get_attribute("href")
-                                if href and is_valid_destination(href):
-                                    final_destination_url = href
-                                    log(f"🎉 DESTINATION URL CAPTURED FROM BUTTON: {final_destination_url}")
-                                    break
-                            time.sleep(0.5)
-                    if is_valid_destination(final_destination_url):
-                        break
-                except Exception as e:
-                    log(f"[!] Turbo solver note: {e}")
+                        time.sleep(0.5)
+            except Exception as e:
+                log(f"[!] Turbo solver note: {e}")
 
         # Nếu Turbo Exploit đã lấy được link đích -> Hoàn tất!
         if is_valid_destination(final_destination_url):
@@ -238,19 +234,39 @@ def run(target_url: str = None, headless: bool = True):
             log("[*] Chuyển tiếp sang Tầng 2: Vượt bằng luồng Web tài trợ (Sponsor Quest)...")
             try:
                 page_link.unroute("**/api/campaign/get-advertise")
-                page_link.reload(wait_until="domcontentloaded", timeout=30000)
-                time.sleep(3)
-            except Exception as e:
-                log(f"[!] Reload error: {e}")
+            except Exception:
+                pass
+            try:
+                page_link.reload(wait_until="networkidle", timeout=30000)
+            except Exception:
+                try:
+                    page_link.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                except Exception as e:
+                    log(f"[!] Reload error: {e}")
 
-            sponsor_url = detect_sponsor_domain(page_link)
-            if not sponsor_url:
+            # Chờ ảnh nhiệm vụ render từ get-advertise
+            try:
+                page_link.wait_for_selector("#advertise-html-wrapper img, img[src^='data:image'], img[src*='uploads/advertiser']", timeout=12000)
+            except Exception:
+                pass
+            time.sleep(2)
+
+            sponsor_candidates = detect_sponsor_domain(page_link)
+            if not sponsor_candidates:
                 log("[!] Could not auto-detect sponsor domain. Halting.")
                 browser.close()
                 return
 
-            log(f"🎉 TARGET SPONSOR WEBSITE FOR THIS MISSION: {sponsor_url}")
-            code_found = solve_sponsor_quest(context, sponsor_url)
+            if isinstance(sponsor_candidates, str):
+                sponsor_candidates = [sponsor_candidates]
+
+            code_found = None
+            for sp_u in sponsor_candidates:
+                log(f"🎉 TARGET SPONSOR WEBSITE FOR THIS MISSION: {sp_u}")
+                code_found = solve_sponsor_quest(context, str(sp_u))
+                if code_found:
+                    break
+
             if not code_found:
                 log("[!] Could not extract mission code. Halting.")
                 browser.close()

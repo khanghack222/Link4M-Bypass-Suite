@@ -76,13 +76,9 @@ def extract_domain_candidates(ocr_lines):
     texts = []
     full_joined = ' '.join(raw_texts)
     raw_texts.append(full_joined)
-    # Remove all spaces between domain-like word tokens (e.g. bong com 686 -> bongcom686, https://bong com -> https://bong.com)
+    # Remove spaces around dots in domain names (e.g. google . com -> google.com)
     joined_domain_parts = re.sub(r'([a-zA-Z0-9\-]+)\s*\.\s*([a-zA-Z0-9\-]+)', r'\1.\2', full_joined)
     raw_texts.append(joined_domain_parts)
-    joined_space_dots = re.sub(r'([a-zA-Z0-9\-]+)\s+([a-zA-Z0-9\-]+)\s+(com|net|org|co|vn|io|686|88|win)', r'\1.\2.\3', full_joined)
-    raw_texts.append(joined_space_dots)
-    joined_direct_dots = re.sub(r'([a-zA-Z0-9\-]+)\s+(com|net|org|co|vn|io)\s+([a-zA-Z0-9]+)', r'\1.\2.\3', full_joined)
-    raw_texts.append(joined_direct_dots)
 
     for text in raw_texts:
         texts.append(text)
@@ -97,7 +93,7 @@ def extract_domain_candidates(ocr_lines):
 
     # Priority 0: Unmask any masked domains like shin-shih.co***.tw or dawnseeker. .com
     for text in texts:
-        if any(sym in text for sym in ['*', '★', '...']) or re.search(r'[a-zA-Z0-9\-]{3,}\.\s*(?:\.|\*+)?\s*(?:com|net|org|vn)', text):
+        if any(sym in text for sym in ['*', '★']) or re.search(r'[a-zA-Z0-9\-]{3,}\.\s*(?:\*+)\s*(?:com|net|org|vn)', text):
             for u in unmask_domain_candidates(text):
                 if 'link4m' not in u and u not in candidates:
                     candidates.append(u)
@@ -108,14 +104,9 @@ def extract_domain_candidates(ocr_lines):
             d = m.lower().rstrip('/')
             if 'link4m' not in d and d not in candidates:
                 candidates.append(d)
-        for m in re.finditer(r'(?:https?:\/\/)?([a-zA-Z0-9\-]+\.(?:com|net|org|co|vn|tw))\s*[\.\s_]*([a-zA-Z0-9]+)', text, re.IGNORECASE):
-            d = f"{m.group(1).lower()}.{m.group(2).lower()}" if m.group(2).isdigit() else f"{m.group(1).lower()}{m.group(2).lower()}"
-            if 'link4m' not in d and d not in candidates:
-                candidates.append(m.group(1).lower())
-                candidates.append(d)
 
-    # Priority 1.5: Stems without valid TLDs (e.g. https://phanvansantos or https://www.ok365)
-    EXPAND_TLDS = ['com', 'vn', 'net', 'org', 'info', 'com.vn', 'xyz', 'top', 'site', 'vip', 'io']
+    # Priority 1.5: Stems with explicit protocol (e.g. https://phanvansantos or https://www.ok365)
+    EXPAND_TLDS = ['com', 'vn', 'net', 'org', 'com.vn', 'top', 'vip', 'io']
     for text in texts:
         for m in re.finditer(r'https?:\/\/([a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+)*)', text, re.IGNORECASE):
             stem = m.group(1).lower().rstrip('/')
@@ -125,34 +116,23 @@ def extract_domain_candidates(ocr_lines):
                     base = parts[-1]
                     for t in EXPAND_TLDS:
                         c1 = f"{base}.{t}"
-                        c2 = f"www.{base}.{t}"
                         if c1 not in candidates: candidates.append(c1)
-                        if c2 not in candidates: candidates.append(c2)
-
-    # Priority 1.8: Alphanumeric tokens with digits in OCR (e.g. BongDa686 -> bongda686.com, ok365 -> ok365.com)
-    for text in texts:
-        for m in re.finditer(r'([a-zA-Z]{3,}[0-9]{1,4}|[a-zA-Z0-9]*[0-9]+[a-zA-Z0-9]*)', text):
-            tok = m.group(1).lower()
-            if 4 <= len(tok) <= 25 and not tok.isdigit():
-                for t in ['com', 'vn', 'net', 'org', 'com.vn', 'vip', 'io', 'top']:
-                    c1 = f"{tok}.{t}"
-                    if c1 not in candidates: candidates.append(c1)
 
     # Priority 2: Match strictly valid TLDs with word boundary (?![a-zA-Z0-9])
     for text in texts:
-        for m in re.finditer(rf'([a-zA-Z0-9\-]{{2,}})\.({TLD_REGEX})(?![a-zA-Z0-9])', text, re.IGNORECASE):
-            full_d = f"{m.group(1).lower()}.{m.group(2).lower()}"
+        for m in re.finditer(rf'\b([a-zA-Z0-9\-]{{2,}}\.(?:{TLD_REGEX}))(?![a-zA-Z0-9])', text, re.IGNORECASE):
+            full_d = m.group(1).lower()
             if 'link4m' not in full_d and len(full_d) >= 4 and full_d not in candidates:
                 candidates.append(full_d)
 
-    # Priority 3: Match any token with dot domain (letters/digits + dot + 2..10 letter TLD)
+    # Priority 3: Match any clean token with dot domain (letters/digits + dot + 2..10 letter TLD)
     for text in texts:
         cleaned = re.sub(r'[^a-zA-Z0-9\.\-\/]', ' ', text)
         for part in cleaned.split():
             part = part.strip('./-')
-            m = re.search(rf'(?:[a-zA-Z0-9\-]+\.)+({TLD_REGEX})', part, re.IGNORECASE)
+            m = re.search(rf'^([a-zA-Z0-9\-]+\.(?:{TLD_REGEX}))(?:\/.*)?$', part, re.IGNORECASE)
             if m:
-                d = part.lower().rstrip('/')
+                d = m.group(1).lower().rstrip('/')
                 if 'link4m' not in d and len(d) >= 4 and d not in candidates:
                     candidates.append(d)
 
@@ -223,9 +203,6 @@ def probe_domain_live(domain: str):
                     best_url = res_url
         if best_url:
             return (best_url, has_best_script)
-    ip = resolve_ip_google(domain)
-    if ip:
-        return (f"https://{domain}", False)
     return ("", False)
 
 def detect_sponsor_domain(page_link):
@@ -443,12 +420,15 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
         return bool(re.match(r'^[A-Za-z0-9_\-]{4,25}$', t))
 
     code_found = None
+    campaign_dead = False
     def on_resp(res):
-        nonlocal code_found
+        nonlocal code_found, campaign_dead
         if any(ep in res.url for ep in ["get_quest_code.html", "get_code", "ajax_code", "lay_ma", "process-site", "check-site", "iatum"]):
             try:
                 data = res.json()
                 log(f"[*] API Response raw from {res.url[:70]}: {data}")
+                if data.get("info") == "No Campaign" or data.get("code") == -1:
+                    campaign_dead = True
                 raw = data.get("html") or data.get("code") or data.get("data") or data.get("c")
                 if raw:
                     val = clean_code_str(raw)
@@ -495,7 +475,7 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
 
     visited = {sponsor_url.rstrip("/")}
     for step in range(1, 4):
-        if code_found:
+        if code_found or campaign_dead:
             break
         log(f"\n[*] EXECUTING STEP {step} ON SPONSOR SITE")
 
