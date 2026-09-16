@@ -16,21 +16,6 @@ import subprocess
 # Configure UTF-8 for Windows Terminal
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# Auto-detect and switch to Python 3.11 if current interpreter lacks playwright
-try:
-    import playwright
-except ImportError:
-    candidates = [
-        r"C:\Users\XUAN\AppData\Local\Programs\Python\Python311\python.exe",
-        os.path.expanduser(r"~\AppData\Local\Programs\Python\Python311\python.exe"),
-        os.path.expanduser(r"~\AppData\Local\Programs\Python\Python312\python.exe"),
-        r"C:\Python311\python.exe",
-        r"C:\Python312\python.exe"
-    ]
-    for p in candidates:
-        if os.path.exists(p) and p != sys.executable:
-            os.execv(p, [p] + sys.argv)
-
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 CORE_DIR = os.path.join(ROOT_DIR, "src", "core")
 if CORE_DIR not in sys.path:

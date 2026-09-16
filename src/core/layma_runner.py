@@ -635,42 +635,65 @@ def run(target_url: str = None, headless: bool = None):
             last_cid = ch_info['cid']
             print(f"[+] Nhận dạng Challenge: {c_type} ('{q_text}')")
 
-            if c_type in ['grid3x3', 'oddoneout'] and 'chạm' not in q_text:
-                target = []
-                
-                # Priority 0: Giải qua Cloud QCaptcha OpenCV Microservice
-                shape_map = {
-                    'tam giác': 'triangle', 'triangle': 'triangle',
-                    'vuông': 'rectangle', 'square': 'rectangle', 'chữ nhật': 'rectangle', 'rectangle': 'rectangle',
-                    'lục giác': 'hexagon', 'hexagon': 'hexagon',
-                    'ngôi sao': 'star', 'star': 'star',
-                    'tròn': 'circle', 'circle': 'circle',
-                    'chữ thập': 'cross', 'cross': 'cross'
-                }
-                detected_shape = None
-                for k_shape, s_name in shape_map.items():
-                    if k_shape in q_text:
-                        detected_shape = s_name
-                        break
-                
-                if detected_shape:
-                    try:
-                        from captcha_api_client import solve_qcaptcha
-                        full_asset_urls = ['https://frame.103-141-140-153.sslip.io' + u if u.startswith('/') else u for u in assets]
-                        cv_res = solve_qcaptcha(full_asset_urls, target_shape=detected_shape, min_confidence=0.60)
-                        if cv_res and cv_res.get('correct_indices'):
-                            target = cv_res['correct_indices']
-                            print(f"   [Cloud API CV] Đã nhận diện ô đáp án ({detected_shape}): {target} trong {cv_res.get('elapsed_ms', 0)}ms")
-                    except Exception as e:
-                        print(f"   [Cloud API CV] Fallback sang xử lý local: {e}")
+            shape_map = {
+                'tam giác': 'triangle', 'triangle': 'triangle',
+                'vuông': 'rectangle', 'square': 'rectangle', 'chữ nhật': 'rectangle', 'rectangle': 'rectangle',
+                'lục giác': 'hexagon', 'hexagon': 'hexagon',
+                'ngũ giác': 'pentagon', 'pentagon': 'pentagon',
+                'ngôi sao': 'star', 'star': 'star',
+                'tròn': 'circle', 'circle': 'circle',
+                'chữ thập': 'cross', 'cross': 'cross'
+            }
+            detected_shape = None
+            for k_shape, s_name in shape_map.items():
+                if k_shape in q_text:
+                    detected_shape = s_name
+                    break
 
-                # Priority 1: Xử lý cục bộ bằng lọc màu HSV + Bounding Contour
+            is_odd_one_out = (c_type == 'oddoneout' or 'khác nhóm' in q_text or 'khác' in q_text)
+            is_grid = (c_type in ['grid3x3', 'oddoneout', 'countshapes'] or 'chọn tất cả' in q_text or 'bấm vào' in q_text)
+
+            if is_grid:
+                target = []
+                full_asset_urls = ['https://frame.103-141-140-153.sslip.io' + u if u.startswith('/') else u for u in assets]
+
+                # Priority 0: Cloud Microservice OpenCV API
+                try:
+                    from captcha_api_client import solve_qcaptcha
+                    target_query_shape = detected_shape or "star"
+                    cv_res = solve_qcaptcha(full_asset_urls, target_shape=target_query_shape, min_confidence=0.55)
+                    if cv_res and cv_res.get('tiles'):
+                        tiles = cv_res['tiles']
+                        shapes = [t.get('shape', 'unknown') for t in tiles]
+
+                        if is_odd_one_out:
+                            # 1. Tìm ô có shape xuất hiện đúng 1 lần (singleton shape)
+                            singleton_indices = [t['idx'] for t in tiles if shapes.count(t.get('shape')) == 1 and t.get('shape') not in ['unknown', 'blank']]
+                            if singleton_indices:
+                                target = [singleton_indices[0]]
+                                print(f"   [Cloud API CV] Phát hiện ô khác nhóm (Singleton Shape: {shapes[target[0]]}): {target}")
+                            elif detected_shape and cv_res.get('correct_indices'):
+                                # 2. Nếu phát hiện các ô đa số là detected_shape -> ô đáp án là ô KHÔNG thuộc correct_indices
+                                majority_indices = set(cv_res['correct_indices'])
+                                diff_indices = [i for i in range(len(assets)) if i not in majority_indices]
+                                if diff_indices:
+                                    target = [diff_indices[0]]
+                                    print(f"   [Cloud API CV] Phát hiện ô khác nhóm (Đảo tập hợp đa số {detected_shape}): {target}")
+                        else:
+                            # Standard grid3x3 or countshapes
+                            if detected_shape and cv_res.get('correct_indices'):
+                                target = cv_res['correct_indices']
+                                print(f"   [Cloud API CV] Nhận diện {detected_shape}: {target} ({cv_res.get('elapsed_ms', 0)}ms)")
+                except Exception as e:
+                    print(f"   [Cloud API CV] Fallback sang xử lý local: {e}")
+
+                # Priority 1: Local OpenCV & Contour Analysis
                 if not target:
                     args_list = [(i, u) for i, u in enumerate(assets)]
                     features = list(executor.map(analyze_tile_url, args_list))
                     features.sort(key=lambda x: x[0])
 
-                    if 'khác nhóm' in q_text or 'khác' in q_text or c_type == 'oddoneout':
+                    if is_odd_one_out:
                         v_counts = [f[1] for f in features]
                         for i, v in enumerate(v_counts):
                             if v_counts.count(v) == 1:
@@ -694,12 +717,23 @@ def run(target_url: str = None, headless: bool = None):
                         target = [f[0] for f in features if f[1] in [10, 8, 12] or (f[1] > 6 and f[2] < 0.5)]
                     elif 'tròn' in q_text or 'circle' in q_text:
                         target = [f[0] for f in features if f[2] > 0.75]
+                    elif 'chữ thập' in q_text or 'cross' in q_text:
+                        target = [f[0] for f in features if f[1] in [8, 10, 12] or (f[2] < 0.6 and f[1] >= 4)]
                     else:
                         v_counts = [f[1] for f in features]
                         for i, v in enumerate(v_counts):
                             if v_counts.count(v) == 1:
                                 target = [i]
                                 break
+
+                # Count limitation if specified in prompt (e.g. 'hai chữ thập' -> limit to 2)
+                if target and not is_odd_one_out:
+                    if 'hai ' in q_text or ' 2 ' in q_text or 'hai chữ' in q_text:
+                        if len(target) > 2: target = target[:2]
+                    elif 'ba ' in q_text or ' 3 ' in q_text or 'ba chữ' in q_text:
+                        if len(target) > 3: target = target[:3]
+                    elif 'một ' in q_text or ' 1 ' in q_text or 'một chữ' in q_text:
+                        if len(target) > 1: target = target[:1]
 
                 if not target:
                     target = [0]

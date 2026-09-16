@@ -67,9 +67,19 @@ proxies.txt
 create_test_span.py
 write_span_test.py
 qcaptcha_api.js
-traffic_agila.js
-traffic_index_4JilBaPXK.js
-DESTINATION_FINAL_URL.txt
-src/core/*.js
+# Temporary dumps & scratch
+*.txt
+*.jsonl
+benchmark_*.json
+analyze_traffic_js.py
+dump_*.py
+find_*.py
+scratch/
+solution2_dump.txt
+wait_server.txt
+best_traffic.js
+test_finish_page.js
+traffic_index.js
+scripts_extracted.js
 
 
