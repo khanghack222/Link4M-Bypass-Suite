@@ -25,6 +25,16 @@ class RecaptchaAudioSolver:
         self.model = get_whisper_model(model_name)
 
     def transcribe_audio_url(self, audio_url: str) -> str:
+        # Priority 0: Microservice API on Render
+        try:
+            from captcha_api_client import solve_audio_recaptcha
+            res_text = solve_audio_recaptcha(audio_url=audio_url)
+            if res_text:
+                return res_text.strip().lower()
+        except Exception:
+            pass
+
+        # Priority 1: Local Whisper
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             tmp_path = tmp.name
         try:

@@ -53,6 +53,27 @@ def get_ocr():
         ocr_engine = RapidOCR()
     return ocr_engine
 
+def clean_destination_url(url: str) -> str:
+    if not url:
+        return url
+    if "bbmkts.com/go/file/" in url:
+        encoded_part = url.split("/go/file/")[-1].split("?")[0].split("#")[0]
+        # Thử unquote trước
+        try:
+            dec = urllib.parse.unquote(encoded_part)
+            if dec.startswith("http"):
+                return dec
+        except Exception:
+            pass
+        # Thử base64
+        try:
+            dec = base64.b64decode(encoded_part + "===").decode("utf-8", errors="ignore")
+            if dec.startswith("http"):
+                return dec
+        except Exception:
+            pass
+    return url
+
 def run(target_link: str = None, headless: bool = None):
     if not target_link:
         target_link = sys.argv[1].strip() if len(sys.argv) > 1 and sys.argv[1].startswith("http") else "https://bbmkts.com/go/3p82s"
@@ -61,22 +82,14 @@ def run(target_link: str = None, headless: bool = None):
 
     # 0. Instant Zero-Click Base64 Decoder
     if "bbmkts.com/go/file/" in target_link:
-        encoded_part = target_link.split("/go/file/")[-1].split("?")[0].split("#")[0]
-        for dec_fn in [
-            lambda s: base64.b64decode(s + "===").decode("utf-8", errors="ignore"),
-            lambda s: urllib.parse.unquote(s)
-        ]:
-            try:
-                dec = dec_fn(encoded_part)
-                if dec.startswith("http"):
-                    log(f"🎉 [ZERO-CLICK] Giai ma Base64 truc tiep tu link /go/file/: {dec}")
-                    with open(DEST_FILE, "w", encoding="utf-8") as f:
-                        f.write(dec)
-                    with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f:
-                        f.write(dec)
-                    return
-            except Exception:
-                pass
+        dec = clean_destination_url(target_link)
+        if dec and dec.startswith("http") and "bbmkts.com/go/file/" not in dec:
+            log(f"🎉 [ZERO-CLICK] Giai ma truc tiep tu link /go/file/: {dec}")
+            with open(DEST_FILE, "w", encoding="utf-8") as f:
+                f.write(dec)
+            with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f:
+                f.write(dec)
+            return dec
 
     final_destination = None
 
@@ -130,7 +143,7 @@ def run(target_link: str = None, headless: bool = None):
                     data = resp.json()
                     log(f"[API] Phan hoi /link/submit: {data}")
                     if 'url' in data and data['url']:
-                        final_destination = data['url']
+                        final_destination = clean_destination_url(data['url'])
                 except Exception:
                     pass
 
@@ -541,19 +554,23 @@ def run(target_link: str = None, headless: bool = None):
                 for i in range(95):
                     time.sleep(1)
 
+                    try:
+                        txt = bb.inner_text().strip().replace('\n', ' ')
+                    except Exception:
+                        txt = ""
+                    txt_upper = txt.upper()
+
+                    if i % 10 == 0 or not any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'S']):
+                        log(f"  [Countdown {i}s] Trang thai nut: '{txt}'")
+
                     # Neu timer da hoan tat (khong con text dem nguoc)
-                    is_counting = any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'GIÂY']) or re.search(r'\b\d+s\b', txt, re.I)
+                    is_counting = any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'GIÂY']) or bool(re.search(r'\b\d+s\b', txt, re.I))
                     if abx_code and not is_counting and i >= 30:
                         final_code = abx_code
                         log(f"\n==================================================")
                         log(f"   [TAB 2] DA HOAN TAT DEM NGUOC VA LAY MA: >>> {final_code} <<<")
                         log(f"==================================================\n")
                         break
-
-                    txt = bb.inner_text().strip().replace('\n', ' ')
-                    txt_upper = txt.upper()
-                    if i % 10 == 0 or not any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'S']):
-                        log(f"  [Countdown {i}s] Trang thai nut: '{txt}'")
 
                     # Kiem tra ngay trong DOM page2 xem co chua script TrafficSEO khong
                     if not final_code:
@@ -885,27 +902,10 @@ def run(target_link: str = None, headless: bool = None):
             pass
 
         # Bypas trang trung gian /go/file/ de trich xuat link ngoai thuc te
-        if final_destination and 'bbmkts.com/go/file/' in final_destination:
-            encoded_part = final_destination.split('/go/file/')[-1]
-            real_url = None
-            try:
-                dec = base64.b64decode(encoded_part + '===').decode('utf-8')
-                if dec.startswith('http'):
-                    real_url = dec
-            except Exception:
-                pass
-            
-            if not real_url:
-                try:
-                    dec = urllib.parse.unquote(encoded_part)
-                    if dec.startswith('http'):
-                        real_url = dec
-                except Exception:
-                    pass
-
-            if real_url:
-                log(f"[GET LINK NGOAI] Da giai ma URL dich goc tu trang file:")
-                final_destination = real_url
+        if final_destination:
+            final_destination = clean_destination_url(final_destination)
+            if 'bbmkts.com/go/file/' not in final_destination:
+                log(f"[GET LINK NGOAI] Da giai ma URL dich goc tu trang file: {final_destination}")
 
         log("=================================================================")
         if final_destination:

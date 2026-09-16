@@ -169,8 +169,25 @@ class TurnstileSolver:
     def solve(self, url: str, sitekey: str, action: Optional[str] = None, cdata: Optional[str] = None) -> Dict[str, Any]:
         """Solve Turnstile challenge and return token dict."""
         start_time = time.time()
+
+        # Priority 0: Microservice API on Render (Zero Local CPU/RAM)
+        try:
+            from captcha_api_client import solve_turnstile_cloud
+            api_token = solve_turnstile_cloud(url, sitekey, timeout_seconds=20)
+            if api_token:
+                elapsed = round(time.time() - start_time, 2)
+                logger.success(f"Turnstile solved via Render Cloud API in {elapsed}s!")
+                return {
+                    "turnstile_value": api_token,
+                    "elapsed_time_seconds": elapsed,
+                    "status": "success",
+                    "engine": "render_cloud_api"
+                }
+        except Exception as e:
+            if self.debug:
+                logger.debug(f"Render Cloud API fallback: {e}")
         
-        # Priority 0: Native Node.js Patchright Runner (Verified 100% bypass in ~10s)
+        # Priority 1: Native Node.js Patchright Runner (Verified 100% bypass in ~10s)
         js_solver = os.path.join(os.path.dirname(__file__), "turnstile_solver.js")
         if os.path.exists(js_solver):
             try:
