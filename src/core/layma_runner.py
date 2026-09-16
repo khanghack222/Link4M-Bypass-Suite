@@ -636,41 +636,70 @@ def run(target_url: str = None, headless: bool = None):
             print(f"[+] Nhận dạng Challenge: {c_type} ('{q_text}')")
 
             if c_type in ['grid3x3', 'oddoneout'] and 'chạm' not in q_text:
-                args_list = [(i, u) for i, u in enumerate(assets)]
-                features = list(executor.map(analyze_tile_url, args_list))
-                features.sort(key=lambda x: x[0])
-
                 target = []
-                if 'khác nhóm' in q_text or 'khác' in q_text or c_type == 'oddoneout':
-                    v_counts = [f[1] for f in features]
-                    for i, v in enumerate(v_counts):
-                        if v_counts.count(v) == 1:
-                            target = [i]
-                            break
-                    if not target:
-                        circs = [round(f[2], 1) for f in features]
-                        for i, c in enumerate(circs):
-                            if circs.count(c) == 1:
+                
+                # Priority 0: Giải qua Cloud QCaptcha OpenCV Microservice
+                shape_map = {
+                    'tam giác': 'triangle', 'triangle': 'triangle',
+                    'vuông': 'rectangle', 'square': 'rectangle', 'chữ nhật': 'rectangle', 'rectangle': 'rectangle',
+                    'lục giác': 'hexagon', 'hexagon': 'hexagon',
+                    'ngôi sao': 'star', 'star': 'star',
+                    'tròn': 'circle', 'circle': 'circle',
+                    'chữ thập': 'cross', 'cross': 'cross'
+                }
+                detected_shape = None
+                for k_shape, s_name in shape_map.items():
+                    if k_shape in q_text:
+                        detected_shape = s_name
+                        break
+                
+                if detected_shape:
+                    try:
+                        from captcha_api_client import solve_qcaptcha
+                        full_asset_urls = ['https://frame.103-141-140-153.sslip.io' + u if u.startswith('/') else u for u in assets]
+                        cv_res = solve_qcaptcha(full_asset_urls, target_shape=detected_shape, min_confidence=0.60)
+                        if cv_res and cv_res.get('correct_indices'):
+                            target = cv_res['correct_indices']
+                            print(f"   [Cloud API CV] Đã nhận diện ô đáp án ({detected_shape}): {target} trong {cv_res.get('elapsed_ms', 0)}ms")
+                    except Exception as e:
+                        print(f"   [Cloud API CV] Fallback sang xử lý local: {e}")
+
+                # Priority 1: Xử lý cục bộ bằng lọc màu HSV + Bounding Contour
+                if not target:
+                    args_list = [(i, u) for i, u in enumerate(assets)]
+                    features = list(executor.map(analyze_tile_url, args_list))
+                    features.sort(key=lambda x: x[0])
+
+                    if 'khác nhóm' in q_text or 'khác' in q_text or c_type == 'oddoneout':
+                        v_counts = [f[1] for f in features]
+                        for i, v in enumerate(v_counts):
+                            if v_counts.count(v) == 1:
                                 target = [i]
                                 break
-                elif 'tam giác' in q_text or 'triangle' in q_text:
-                    target = [f[0] for f in features if f[1] == 3]
-                elif 'vuông' in q_text or 'square' in q_text or 'chữ nhật' in q_text or 'rectangle' in q_text:
-                    target = [f[0] for f in features if f[1] == 4]
-                elif 'ngũ giác' in q_text or 'pentagon' in q_text:
-                    target = [f[0] for f in features if f[1] == 5]
-                elif 'lục giác' in q_text or 'hexagon' in q_text:
-                    target = [f[0] for f in features if f[1] == 6]
-                elif 'ngôi sao' in q_text or 'star' in q_text:
-                    target = [f[0] for f in features if f[1] in [10, 8, 12] or (f[1] > 6 and f[2] < 0.5)]
-                elif 'tròn' in q_text or 'circle' in q_text:
-                    target = [f[0] for f in features if f[2] > 0.75]
-                else:
-                    v_counts = [f[1] for f in features]
-                    for i, v in enumerate(v_counts):
-                        if v_counts.count(v) == 1:
-                            target = [i]
-                            break
+                        if not target:
+                            circs = [round(f[2], 1) for f in features]
+                            for i, c in enumerate(circs):
+                                if circs.count(c) == 1:
+                                    target = [i]
+                                    break
+                    elif 'tam giác' in q_text or 'triangle' in q_text:
+                        target = [f[0] for f in features if f[1] == 3]
+                    elif 'vuông' in q_text or 'square' in q_text or 'chữ nhật' in q_text or 'rectangle' in q_text:
+                        target = [f[0] for f in features if f[1] == 4]
+                    elif 'ngũ giác' in q_text or 'pentagon' in q_text:
+                        target = [f[0] for f in features if f[1] == 5]
+                    elif 'lục giác' in q_text or 'hexagon' in q_text:
+                        target = [f[0] for f in features if f[1] == 6]
+                    elif 'ngôi sao' in q_text or 'star' in q_text:
+                        target = [f[0] for f in features if f[1] in [10, 8, 12] or (f[1] > 6 and f[2] < 0.5)]
+                    elif 'tròn' in q_text or 'circle' in q_text:
+                        target = [f[0] for f in features if f[2] > 0.75]
+                    else:
+                        v_counts = [f[1] for f in features]
+                        for i, v in enumerate(v_counts):
+                            if v_counts.count(v) == 1:
+                                target = [i]
+                                break
 
                 if not target:
                     target = [0]

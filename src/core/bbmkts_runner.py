@@ -363,6 +363,20 @@ def run(target_link: str = None, headless: bool = None):
                 except Exception:
                     pass
 
+                # 1.5. Priority 0: Trích xuất domain qua Cloud OCR API
+                if not target_url and guide_url:
+                    try:
+                        from captcha_api_client import resolve_domain_ocr
+                        doms = resolve_domain_ocr(image_url=guide_url)
+                        if doms:
+                            for d in doms:
+                                if not any(k in d.lower() for k in ['google', 'youtube', 'facebook', 'bbmkts', 'imgur']):
+                                    target_url = f"https://{d.strip('/')}/"
+                                    log(f"[Cloud API OCR] Đã trích xuất domain nhà tài trợ: {target_url}")
+                                    break
+                    except Exception as e:
+                        log(f"[Cloud API OCR] Fallback sang OCR local: {e}")
+
                 # 2. Phat hien Red Bounding Box
                 if not target_url:
                     try:
