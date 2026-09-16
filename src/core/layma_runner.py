@@ -300,24 +300,35 @@ def run(target_url: str = None, headless: bool = None):
 
         for sw_attempt in range(8):
             if not detected_sponsor or not is_domain_live(detected_sponsor):
-                print(f"[!] Sponsor '{detected_sponsor}' không khả dụng / chết DNS (Lần {sw_attempt + 1}/8). Tự động đổi nhiệm vụ (#btn-baoloi)...")
+                print(f"[!] Sponsor '{detected_sponsor}' không khả dụng / chết DNS (Lần {sw_attempt + 1}/8). Tự động đổi nhiệm vụ siêu tốc...")
                 old_camp = camp_id
-                btn_baoloi = page_layma.locator("#btn-baoloi")
-                if btn_baoloi.count() > 0:
-                    btn_baoloi.click()
-                    time.sleep(0.5)
-                    btn_confirm = page_layma.locator("#btnXacNhanDoiNhiemVu")
-                    if btn_confirm.count() > 0:
-                        btn_confirm.click()
-                        print("[*] Đã nhấn xác nhận đổi nhiệm vụ, đợi tải campaign mới...")
-                        for _ in range(12):
-                            time.sleep(1)
-                            new_camp = page_layma.locator("#campainId").inner_text().strip() if page_layma.locator("#campainId").count() > 0 else ""
-                            if new_camp and new_camp != old_camp:
-                                camp_id = new_camp
-                                break
-                        detected_sponsor = detect_layma_sponsor()
-                        print(f"[+] Sau khi đổi: Campaign ID: {camp_id}, Sponsor: '{detected_sponsor}'")
+                # Bypass 5s countdown by directly invoking executeChangeMission() or fallback to clicks
+                switched = page_layma.evaluate("""() => {
+                    try {
+                        if (typeof executeChangeMission === 'function') {
+                            executeChangeMission();
+                            return true;
+                        } else if (typeof doiNhiemVu === 'function') {
+                            doiNhiemVu();
+                            return true;
+                        }
+                    } catch (e) {}
+                    const b1 = document.getElementById('btn-baoloi');
+                    if (b1) b1.click();
+                    const b2 = document.getElementById('btnXacNhanDoiNhiemVu');
+                    if (b2) b2.click();
+                    return false;
+                }""")
+                print("[*] Đã kích hoạt đổi nhiệm vụ (bỏ qua đếm ngược 5s), đợi tải campaign mới...")
+                for _ in range(25):
+                    time.sleep(0.3)
+                    new_camp = page_layma.locator("#campainId").inner_text().strip() if page_layma.locator("#campainId").count() > 0 else ""
+                    if new_camp and new_camp != old_camp:
+                        camp_id = new_camp
+                        break
+                time.sleep(0.4)
+                detected_sponsor = detect_layma_sponsor()
+                print(f"[+] Sau khi đổi: Campaign ID: {camp_id}, Sponsor: '{detected_sponsor}'")
             else:
                 break
 
@@ -404,8 +415,12 @@ def run(target_url: str = None, headless: bool = None):
         page_sponsor.route("**/best-traffic.pages.dev/traffic.js", route_traffic_js)
         page_sponsor.route("**/traffic.js", route_traffic_js)
 
+        visit_start_time = None
         def on_sponsor_res(res):
-            nonlocal extracted_layma_code
+            nonlocal extracted_layma_code, visit_start_time
+            if "/api/traffic/visit" in res.url:
+                visit_start_time = time.time()
+                print(f"[+] Đã ghi nhận thời điểm bắt đầu on-site từ server LayMa (/api/traffic/visit)")
             if "/api/traffic/getcode" in res.url:
                 try:
                     data = res.json()
@@ -487,9 +502,9 @@ def run(target_url: str = None, headless: bool = None):
             print("[!] Thử query selector click nút lấy mã...")
             page_sponsor.evaluate("() => { const b = document.querySelector('[class*=\"Ran\"], button[id], div[id*=\"Az\"], div[id*=\"Jkf\"], div[id*=\"DrD\"], button:has-text(\"LẤY MÃ\"), a:has-text(\"LẤY MÃ\")'); if (b) b.click(); }")
 
-        # Wait 60 seconds with scrolling to keep session active
+        # Chờ 60s trên trang sponsor theo yêu cầu bắt buộc của máy chủ LayMa
         dir_w = 1
-        for sec in range(65, 0, -1):
+        for sec in range(61, 0, -1):
             time.sleep(1.0)
             if sec % 10 == 0:
                 print(f"  ⌛ Đang chờ máy chủ xác nhận thời gian on-site: còn {sec}s...")
@@ -526,17 +541,17 @@ def run(target_url: str = None, headless: bool = None):
                             break
                 if cf:
                     break
-                time.sleep(0.5)
+                time.sleep(0.3)
 
             if not cf:
-                frame_el = page_sponsor.wait_for_selector('iframe[src*="sslip.io"], iframe[src*="frame.html"]', state="attached", timeout=10000)
+                frame_el = page_sponsor.wait_for_selector('iframe[src*="sslip.io"], iframe[src*="frame.html"]', state="attached", timeout=8000)
                 if frame_el:
                     cf = frame_el.content_frame()
 
             if cf:
                 try:
-                    cf.wait_for_selector('#box', state="attached", timeout=10000)
-                    time.sleep(1)
+                    cf.wait_for_selector('#box', state="attached", timeout=8000)
+                    time.sleep(0.5)
                     print("[*] Nhấn checkbox xác thực 'Tôi là con người'...")
                     cf.evaluate("() => { const b = document.getElementById('box'); if (b) b.click(); }")
                     try: cf.click('#box', force=True, timeout=2000)
@@ -554,11 +569,12 @@ def run(target_url: str = None, headless: bool = None):
             return None
 
         last_cid = None
+        verified_token = None
 
         # Solve QCaptcha loop
         print("[*] Bắt đầu tự động giải QCaptcha challenge...")
         for round_idx in range(60):
-            time.sleep(0.8)
+            time.sleep(0.35)
 
             token = page_sponsor.evaluate('''() => {
                 const api = window.hcaptcha || window.qcaptcha;
@@ -609,7 +625,7 @@ def run(target_url: str = None, headless: bool = None):
                 continue
 
             if ch_info['cid'] == last_cid:
-                time.sleep(1.0)
+                time.sleep(0.4)
                 continue
 
             c_type = ch_info['type']
@@ -645,6 +661,8 @@ def run(target_url: str = None, headless: bool = None):
                     target = [f[0] for f in features if f[1] == 5]
                 elif 'lục giác' in q_text or 'hexagon' in q_text:
                     target = [f[0] for f in features if f[1] == 6]
+                elif 'ngôi sao' in q_text or 'star' in q_text:
+                    target = [f[0] for f in features if f[1] in [10, 8, 12] or (f[1] > 6 and f[2] < 0.5)]
                 elif 'tròn' in q_text or 'circle' in q_text:
                     target = [f[0] for f in features if f[2] > 0.75]
                 else:
@@ -663,7 +681,7 @@ def run(target_url: str = None, headless: bool = None):
                         window.__qc_submit(ans);
                     }
                 }''', target)
-                time.sleep(0.6)
+                time.sleep(0.3)
 
             elif c_type == 'order':
                 args_list = [(i, u) for i, u in enumerate(assets)]
@@ -681,7 +699,7 @@ def run(target_url: str = None, headless: bool = None):
                         window.__qc_submit(ans);
                     }
                 }''', target)
-                time.sleep(0.6)
+                time.sleep(0.3)
 
             else:
                 print(f"   ➔ Đổi dạng challenge ({c_type})...")
@@ -690,7 +708,7 @@ def run(target_url: str = None, headless: bool = None):
                         window.__qc_skip();
                     }
                 }''')
-                time.sleep(0.4)
+                time.sleep(0.2)
 
         # Wait for extracted code (turbo loop)
         for _ in range(35):
