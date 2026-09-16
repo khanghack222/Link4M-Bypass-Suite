@@ -694,7 +694,7 @@ function runBypassLayMa(targetUrl, headless = currentHeadless) {
 function isOctolinkUrl(u) {
     if (!u) return false;
     const lower = u.toLowerCase();
-    return lower.includes("octolink") || lower.includes("linkhuongdan") || /octo/i.test(lower);
+    return lower.includes("link999") || lower.includes("uptolink") || lower.includes("octolink") || lower.includes("linkhuongdan") || /octo/i.test(lower);
 }
 
 function isLink4mUrl(u) {
@@ -706,9 +706,7 @@ function isLink4mUrl(u) {
 async function dispatchUrl(url, headless = currentHeadless) {
     const target = url.trim();
     if (isOctolinkUrl(target)) {
-        console.log(`\n  ${c.bgRed} ⛔ THÔNG BÁO TẠM NGỪNG DỰ ÁN OCTOLINK ⛔ ${c.reset}`);
-        console.log(`  ${c.crimsonRed}Website octolink.vip đã bị Cục An ninh mạng (A05 - Bộ Công An) chặn do có dấu hiệu vi phạm Điều 321, 322 Bộ luật Hình sự.${c.reset}`);
-        console.log(`  ${c.flameOrange}Dự án chính thức ngừng mọi hoạt động hỗ trợ Octolink để đảm bảo an toàn và tuân thủ pháp luật.${c.reset}\n`);
+        await runBypassOctolink(target, headless);
         return;
     }
     if (isLaymaUrl(target)) {

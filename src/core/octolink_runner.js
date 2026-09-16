@@ -75,7 +75,8 @@ function isAdOrSpamUrl(u, targetDomain) {
   if (!u || typeof u !== 'string' || !u.startsWith('http')) return false;
   const lower = u.toLowerCase();
   if (lower.includes('about:blank')) return false;
-  if (lower.includes('octolink.vip')) return false;
+  if (lower.includes('link999.app') || lower.includes('link999') || lower.includes('uptolink')) return false;
+  if (lower.includes('octolink.vip') || lower.includes('octolink')) return false;
   if (lower.includes('linkhuongdan.online')) return false;
   if (targetDomain && lower.includes(targetDomain.toLowerCase())) return false;
 
@@ -91,12 +92,13 @@ function isAdOrSpamUrl(u, targetDomain) {
   return adPatterns.some(p => lower.includes(p));
 }
 
-// Kiểm tra xem URL có phải là link đích hợp lệ (link callback thực sự, không phải octolink, không phải camp, không phải rác)
+// Kiểm tra xem URL có phải là link đích hợp lệ (link callback thực sự, không phải link999, không phải octolink, không phải camp, không phải rác)
 function isValidFinalDestination(u, targetDomain) {
   if (!u || typeof u !== 'string' || !u.startsWith('http')) return false;
   const lower = u.toLowerCase();
   if (lower.includes('about:blank')) return false;
-  if (lower.includes('octolink.vip')) return false;
+  if (lower.includes('link999.app') || lower.includes('link999') || lower.includes('uptolink')) return false;
+  if (lower.includes('octolink.vip') || lower.includes('octolink')) return false;
   if (lower.includes('linkhuongdan.online')) return false;
   if (lower.includes('google.com')) return false;
   if (lower.includes('example.com') || lower.includes('example.org') || lower.includes('example.net')) return false;
@@ -201,11 +203,11 @@ async function runBypass(octolinkUrl, options = {}, onLog = console.log) {
     const setupResponseListener = (p) => {
       p.on('response', async (res) => {
         const u = res.url();
-        if (u.includes('octolink.vip/check/continue')) {
+        if (u.includes('link999.app/check/continue') || u.includes('uptolink.com/check/continue') || u.includes('octolink.vip/check/continue')) {
           continueConfirmed = true;
           onLog(`\n✅ [Máy Chủ Xác Nhận] API /check/continue đã hoàn tất thành công!`);
         }
-        if (u.includes('octolink.vip/check/')) {
+        if (u.includes('/check/job') || u.includes('/check/continue') || u.includes('/check/')) {
           let body = '';
           try {
             body = (await res.text()).slice(0, 500);
@@ -218,11 +220,11 @@ async function runBypass(octolinkUrl, options = {}, onLog = console.log) {
               onLog(`\n🎉 [API Finish] Tìm thấy URL hoàn tất: ${finishUrlFromApi}`);
             }
           } catch (e) {}
-          onLog(`[API ${res.status()}] ${u.replace('https://octolink.vip', '')} ${body.slice(0, 280)}`);
+          onLog(`[API ${res.status()}] ${u.replace('https://link999.app', '').replace('https://octolink.vip', '')} ${body.slice(0, 280)}`);
         }
 
-        // Bắt mọi JSON từ octolink chứa link đích cuối cùng (kể cả /links/go2)
-        if (u.includes('octolink.vip') && (u.includes('/links/go') || u.includes('/links/') || u.includes('/finish/'))) {
+        // Bắt mọi JSON từ link999/octolink chứa link đích cuối cùng (kể cả /links/go2)
+        if ((u.includes('link999.app') || u.includes('octolink.vip') || u.includes('uptolink')) && (u.includes('/links/go') || u.includes('/links/') || u.includes('/finish/'))) {
           try {
             const body = await res.text();
             const data = JSON.parse(body);
@@ -991,7 +993,7 @@ async function runBypass(octolinkUrl, options = {}, onLog = console.log) {
         await sleep(2000);
       }
 
-      if (finalUrl.includes('octolink.vip/finish') || finalUrl.includes('octolink.vip')) {
+      if (finalUrl.includes('link999.app/finish') || finalUrl.includes('link999.app') || finalUrl.includes('uptolink') || finalUrl.includes('octolink.vip/finish') || finalUrl.includes('octolink.vip')) {
         // Tắt cookie pop nếu có
         await activePage.evaluate(() => {
           const b = document.getElementById('got-cookie');

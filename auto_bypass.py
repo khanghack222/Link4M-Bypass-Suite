@@ -115,8 +115,8 @@ def copy_to_clipboard(text: str):
 def classify_url(url: str) -> str:
     """Accurately classifies the target URL to select the corresponding engine."""
     u = url.strip().lower()
-    if any(k in u for k in ["octolink", "linkhuongdan"]):
-        return "OCTOLINK"
+    if any(k in u for k in ["link999.app", "link999", "uptolink", "octolink", "linkhuongdan"]):
+        return "LINK999"
     if any(k in u for k in ["gtraffic.io", "direct.gtraffic.io", "dr-client.gtraffic.io", "client.gtraffic.io", "gtraffic"]):
         return "GTRAFFIC"
     if any(k in u for k in ["bbmkts.com", "bbmkt", "yeumoney.com", "yeumoney"]):
@@ -208,11 +208,18 @@ def execute_bypass(target_url: str, headless: bool = True) -> str:
             except Exception:
                 pass
 
-    if category == "OCTOLINK":
-        print(f"\n  {BG_RED} ⛔ THÔNG BÁO TẠM NGỪNG DỰ ÁN OCTOLINK ⛔ {C_RESET}")
-        print(f"  {C_RED}Website octolink.vip đã bị Cục An ninh mạng (A05 - Bộ Công An) chặn do có dấu hiệu vi phạm Điều 321, 322 BLHS.{C_RESET}")
-        print(f"  {C_ORANGE}Dự án chính thức ngừng mọi hoạt động hỗ trợ Octolink để đảm bảo an toàn và tuân thủ pháp luật.{C_RESET}\n")
-        return ""
+    if category == "LINK999":
+        print(f"  {BG_PINK} ▶ KHỞI CHẠY {C_RESET}  {C_BOLD}{C_BPINK}LINK999 / UPTOLINK AUTONOMOUS ENGINE{C_RESET}")
+        print(f"  {C_DIM}{C_GRAY}Mục tiêu: {target_url} | Headless: {headless}{C_RESET}\n")
+        octo_js = os.path.join(CORE_DIR, "octolink_runner.js")
+        if os.path.exists(octo_js):
+            try:
+                js_cmd = f"const {{ runBypass }} = require('{octo_js.replace(chr(92), '/')}'); runBypass('{target_url}', {{ headless: {str(headless).lower()} }}).then(r => {{ if (r && r.finalUrl) console.log('FINAL DESTINATION URL:', r.finalUrl); }}).catch(e => console.error(e));"
+                subprocess.run(["node", "-e", js_cmd], check=False)
+            except Exception as e:
+                print(f"[-] Node.js runner error: {e}")
+        else:
+            print(f"[-] Không tìm thấy {octo_js}")
 
     if category == "GTRAFFIC":
         # 0.1. Zero-Click Fast API Probe for GTraffic Direct Link Leak (0.2s)
