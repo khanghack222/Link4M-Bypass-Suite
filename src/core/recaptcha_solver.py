@@ -57,13 +57,14 @@ class RecaptchaAudioSolver:
             });
         }""", token)
 
-    def solve_on_page(self, page: Page, timeout_sec: int = 35) -> Dict[str, Any]:
+    def solve_on_page(self, page: Page, timeout_sec: int = 35, container_selector: str = None) -> Dict[str, Any]:
         t0 = time.perf_counter()
         
         # 1. Wait and collect all valid anchor frames
         candidate_anchors = []
+        target_css = f"{container_selector} iframe[src*='recaptcha/api2/anchor'], {container_selector} iframe[src*='recaptcha/enterprise/anchor']" if container_selector else "iframe[src*='recaptcha/api2/anchor'], iframe[src*='recaptcha/enterprise/anchor']"
         for _wait in range(20):
-            anchors = page.locator("iframe[src*='recaptcha/api2/anchor'], iframe[src*='recaptcha/enterprise/anchor']").all()
+            anchors = page.locator(target_css).all()
             for idx, a in enumerate(anchors):
                 try:
                     box = a.bounding_box()
@@ -80,12 +81,21 @@ class RecaptchaAudioSolver:
                     has_quota_error = any(w in body_text.lower() for w in ["quota", "exceeding", "bị lỗi", "error"])
                     
                     y_pos = box['y'] if box else 0
+                    
+                    # Detect if this anchor belongs to #recaptcha-2 or #main-form-2
+                    is_in_form2 = False
+                    try:
+                        is_in_form2 = a.evaluate("el => el.closest('#main-form-2') !== null || el.closest('#recaptcha-2') !== null")
+                    except Exception:
+                        pass
+                    
                     candidate_anchors.append({
                         "anchor": a,
                         "frame": cf,
                         "chk": chk,
                         "y": y_pos,
                         "has_error": has_quota_error,
+                        "is_in_form2": is_in_form2,
                         "index": idx
                     })
                 except Exception:
@@ -97,8 +107,8 @@ class RecaptchaAudioSolver:
         if not candidate_anchors:
             return {"success": False, "error": "no_anchors_found"}
 
-        # Sort: healthy first (has_error == False), then top-first (visible on main-form, lower Y)
-        candidate_anchors.sort(key=lambda x: (not x["has_error"], -x["y"]), reverse=True)
+        # Sort: healthy first (has_error == False), then form2, then bottom-most
+        candidate_anchors.sort(key=lambda x: (not x["has_error"], 1 if x["is_in_form2"] else 0, x["y"]), reverse=True)
 
         for cand in candidate_anchors:
             try:
@@ -113,7 +123,7 @@ class RecaptchaAudioSolver:
                     pass
 
                 try:
-                    chk.click(timeout=5000)
+                    chk.click(force=True, timeout=4000)
                 except Exception:
                     cf.evaluate("() => { const el = document.getElementById('recaptcha-anchor'); if (el) el.click(); }")
                 time.sleep(2.0)
@@ -125,31 +135,81 @@ class RecaptchaAudioSolver:
                     self._sync_tokens(page, token)
                     return {"success": True, "token": token, "type": "instant", "time_ms": elapsed}
 
-                # Locate active visible bframe
+                # Locate active visible bframe using evaluated DOM styles
                 active_bframe = None
-                for _ in range(10):
+                for _ in range(25):
+                    active_idx = page.evaluate("""() => {
+                        const iframes = Array.from(document.querySelectorAll("iframe[src*='recaptcha/api2/bframe'], iframe[src*='recaptcha/enterprise/bframe']"));
+                        for (let i = 0; i < iframes.length; i++) {
+                            const f = iframes[i];
+                            const p = f.parentElement;
+                            const rect = f.getBoundingClientRect();
+                            const pRect = p ? p.getBoundingClientRect() : null;
+                            const style = window.getComputedStyle(f);
+                            const pStyle = p ? window.getComputedStyle(p) : null;
+                            
+                            const isHidden = style.visibility === 'hidden' || style.display === 'none' || (pStyle && (pStyle.visibility === 'hidden' || pStyle.display === 'none' || pStyle.opacity === '0'));
+                            const isOffscreen = rect.top < -3000 || (pRect && pRect.top < -3000);
+                            
+                            const w = rect.width || f.offsetWidth;
+                            const h = rect.height || f.offsetHeight;
+                            if (w > 150 && h > 150 && !isHidden && !isOffscreen) {
+                                return i;
+                            }
+                        }
+                        return -1;
+                    }""")
+                    
+                    if active_idx >= 0:
+                        bframes = page.locator("iframe[src*='recaptcha/api2/bframe'], iframe[src*='recaptcha/enterprise/bframe']").all()
+                        if active_idx < len(bframes):
+                            try:
+                                bframes[active_idx].scroll_into_view_if_needed()
+                            except Exception:
+                                pass
+                            active_bframe = bframes[active_idx].content_frame
+                            if active_bframe:
+                                break
+
+                    # Fallback: check content frames directly
                     bframes = page.locator("iframe[src*='recaptcha/api2/bframe'], iframe[src*='recaptcha/enterprise/bframe']").all()
                     for bf in bframes:
                         try:
-                            bbox = bf.bounding_box()
-                            if bbox and bbox.get('y', -9999) > 0 and bbox.get('width', 0) > 100 and bf.is_visible():
-                                b_cf = bf.content_frame
-                                if b_cf:
-                                    active_bframe = b_cf
-                                    break
+                            b_cf = bf.content_frame
+                            if b_cf and b_cf.locator("#recaptcha-audio-button, #recaptcha-verify-button, .rc-imageselect, .rc-doscaptcha-header-text").count() > 0:
+                                active_bframe = b_cf
+                                break
                         except Exception:
                             pass
                     if active_bframe:
                         break
-                    time.sleep(0.4)
+                    time.sleep(0.3)
 
                 if not active_bframe:
                     print(f"[!] No visible bframe for candidate anchor {cand['index']}. Trying next candidate...", flush=True)
                     continue
 
                 audio_btn = active_bframe.locator("#recaptcha-audio-button")
-                audio_btn.wait_for(state="visible", timeout=6000)
-                audio_btn.click()
+                try:
+                    audio_btn.wait_for(state="attached", timeout=6000)
+                except Exception:
+                    pass
+
+                # Check if audio challenge is disabled by Google
+                btn_class = audio_btn.get_attribute("class") or ""
+                if "rc-button-disabled" in btn_class or audio_btn.get_attribute("disabled"):
+                    print("[!] Audio challenge is disabled by Google for this session/IP", flush=True)
+                    continue
+
+                try:
+                    audio_btn.scroll_into_view_if_needed()
+                    time.sleep(0.2)
+                    audio_btn.click(force=True, timeout=3000)
+                except Exception:
+                    try:
+                        active_bframe.evaluate("() => { const b = document.getElementById('recaptcha-audio-button'); if (b) b.click(); }")
+                    except Exception:
+                        pass
                 print("[+] Audio challenge requested!", flush=True)
 
                 solved = False

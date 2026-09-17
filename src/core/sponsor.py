@@ -153,7 +153,8 @@ def extract_domain_candidates(ocr_lines):
         score += len(clow)
         return score
 
-    candidates = [c for c in candidates if 'google' not in c.lower() and 'link4m' not in c.lower()]
+    EXCLUDED_DOMAINS = {'gmail.com', 'gmal.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com', 'mail.com', 'de.com', 'link4m.net', 'link4m.com'}
+    candidates = [c for c in candidates if 'google' not in c.lower() and 'link4m' not in c.lower() and c.lower() not in EXCLUDED_DOMAINS and not any(c.lower().endswith(f".{em}") for em in EXCLUDED_DOMAINS)]
     candidates.sort(key=rank_c, reverse=True)
     return candidates
 
@@ -217,6 +218,7 @@ def detect_sponsor_domain(page_link):
         pass
 
     # Step 2: Extract from target sponsor images and base64 images
+    log("[*] Đang quét hình ảnh quảng cáo & hướng dẫn nhiệm vụ...")
     for _ in range(8):
         try:
             imgs_info = page_link.evaluate("""() => {
@@ -237,6 +239,7 @@ def detect_sponsor_domain(page_link):
             pass
         time.sleep(0.2)
 
+    log(f"[*] Phát hiện {len(imgs_info or [])} ảnh nhiệm vụ. Đang khởi chạy RapidOCR AI...")
     ocr = get_ocr()
     def _fetch_one_img(item):
         try:
@@ -253,7 +256,7 @@ def detect_sponsor_domain(page_link):
     with ThreadPoolExecutor(max_workers=min(len(imgs_info or [1]), 4)) as ex:
         all_img_bytes = list(ex.map(_fetch_one_img, imgs_info or []))
 
-    for img_bytes in all_img_bytes:
+    for idx_img, img_bytes in enumerate(all_img_bytes):
         if not img_bytes:
             continue
         try:
@@ -286,7 +289,7 @@ def detect_sponsor_domain(page_link):
             pass
 
     candidates = extract_domain_candidates(all_texts)
-    log(f"[*] Extracted domain candidates (including unmasked): {candidates}")
+    log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (kèm giải mã mask): {candidates}")
 
     # Sắp xếp và phân hạng các ứng viên:
     def rank_candidate(c):
@@ -308,6 +311,7 @@ def detect_sponsor_domain(page_link):
 
     candidates.sort(key=rank_candidate, reverse=True)
 
+    log(f"[*] Đang kiểm tra kết nối & DNS live probe cho các ứng viên...")
     # Probe live domain: domains with verified active sponsor scripts get TOP priority!
     script_urls = []
     live_urls = []
@@ -356,7 +360,11 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
             try:
                 res = route.fetch()
                 body = res.text()
-                # Bypass detectIncognito checks in scripts
+                # Bypass detectIncognito at root definition
+                body = re.sub(r'if\s*\(\s*result\.isPrivate\s*\)\s*\{', 'if(false){', body)
+                body = re.sub(r'function\s+__callback\s*\(\s*isPrivate\s*\)\s*\{', 'function __callback(isPrivate) { isPrivate = false; ', body)
+                body = body.replace('async function detectIncognito() {', 'async function detectIncognito() { return { isPrivate: false, browserName: "Chrome" }; } async function _old_detectIncognito() {')
+                body = body.replace('var detectIncognito = async function () {', 'var detectIncognito = async function () { return { isPrivate: false, browserName: "Chrome" }; }; var _old_detectIncognito = async function () {')
                 body = body.replace('if(result.isPrivate){', 'if(false){')
                 body = re.sub(r'var check_ref\s*=\s*false;', 'var check_ref = true;', body)
                 # Keep scroll/active state
@@ -372,6 +380,18 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
         route.continue_()
 
     page.route("**/*", route_handler)
+    page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        if (window.navigator && window.navigator.webkitTemporaryStorage) {
+            window.navigator.webkitTemporaryStorage.queryUsageAndQuota = (s) => { if (typeof s === 'function') s(0, 500*1024*1024*1024); };
+        }
+        window.detectIncognito = () => Promise.resolve({ isPrivate: false, browserName: "Chrome" });
+        try {
+            Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+            Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+            window.hasFocus = () => true;
+        } catch (e) {}
+    """)
 
     try:
         page.goto(sponsor_url, wait_until="domcontentloaded", referer="https://www.google.com/", timeout=40000)
@@ -409,13 +429,16 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
             return ""
         clean = re.sub(r'<[^>]+>', '', str(text))
         clean = re.sub(r'^(?:M[ãa]\s*KM|M[ãa]\s*x[áa]c\s*nh[ậa]n|Code|M[ãa])[\s\:\-]+', '', clean, flags=re.IGNORECASE)
+        lines = [l.strip() for l in clean.splitlines() if l.strip()]
+        clean = lines[0] if lines else ""
+        clean = re.sub(r'[\s\:\.\,\!\?]+$', '', clean)
         return clean.strip()
 
     def is_valid_sponsor_code(text: str) -> bool:
         t = clean_code_str(text)
         if not t or len(t) < 4 or len(t) > 25:
             return False
-        if any(w in t.lower() for w in ['click', 'vui lòng', 'vui long', 'link', 'bước', 'buoc', 'lay ma', 'lấy mã', 'chờ', 'seconds', 'giây']):
+        if any(w in t.lower() for w in ['click', 'vui lòng', 'vui long', 'link', 'bước', 'buoc', 'lay ma', 'lấy mã', 'chờ', 'seconds', 'giây', 'loading']):
             return False
         return bool(re.match(r'^[A-Za-z0-9_\-]{4,25}$', t))
 
@@ -427,7 +450,7 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
             try:
                 data = res.json()
                 log(f"[*] API Response raw from {res.url[:70]}: {data}")
-                if data.get("info") == "No Campaign" or data.get("code") == -1:
+                if data.get("info") == "No Campaign" or (data.get("success") is False and "No Campaign" in str(data)):
                     campaign_dead = True
                 raw = data.get("html") or data.get("code") or data.get("data") or data.get("c")
                 if raw:
@@ -444,34 +467,39 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
     btn_sel = f"[id='{traffic_key}'] button, [id='{traffic_key}'] a, [id='{traffic_key}'], button:has-text('LẤY MÃ'), button:has-text('LAY MA'), a:has-text('LẤY MÃ'), .whatoncode" if traffic_key else "button:has-text('LẤY MÃ'), button:has-text('LAY MA'), a:has-text('LẤY MÃ'), .whatoncode"
 
     def prep():
-        page.evaluate(f"""() => {{
-            document.querySelectorAll('script[type="rocketlazyloadscript"]').forEach(s => {{
-                const ns = document.createElement('script');
-                if (s.hasAttribute('data-rocket-src')) {{
-                    let src = s.getAttribute('data-rocket-src');
-                    ns.src = src.startsWith('//') ? 'https:' + src : src;
-                }} else {{
-                    ns.textContent = s.textContent;
-                }}
-                document.body.appendChild(ns);
-            }});
-            document.querySelectorAll('#hpps-popup, .hpps-popup, .popup, .modal, [class*="popup"]').forEach(e => e.remove());
-            if ('{traffic_key}') {{
-                window.location.hash = '#ss-{traffic_key}';
-                if (typeof forceShowButton === 'function') forceShowButton();
-            }}
-            window.scrollTo(0, document.body.scrollHeight);
+        for _ in range(3):
+            try:
+                page.evaluate(f"""() => {{
+                    document.querySelectorAll('script[type="rocketlazyloadscript"]').forEach(s => {{
+                        const ns = document.createElement('script');
+                        if (s.hasAttribute('data-rocket-src')) {{
+                            let src = s.getAttribute('data-rocket-src');
+                            ns.src = src.startsWith('//') ? 'https:' + src : src;
+                        }} else {{
+                            ns.textContent = s.textContent;
+                        }}
+                        document.body.appendChild(ns);
+                    }});
+                    document.querySelectorAll('#hpps-popup, .hpps-popup, .popup, .modal, [class*="popup"]').forEach(e => e.remove());
+                    if ('{traffic_key}') {{
+                        window.location.hash = '#ss-{traffic_key}';
+                        if (typeof forceShowButton === 'function') forceShowButton();
+                    }}
+                    window.scrollTo(0, document.body.scrollHeight);
 
-            // Active scroll heartbeat to defeat mouse_scroll timer pause in service-v3.js
-            if (!window.heartbeat_scroll) {{
-                let dir = 1;
-                window.heartbeat_scroll = setInterval(() => {{
-                    window.scrollBy(0, 25 * dir);
-                    dir = -dir;
-                    window.dispatchEvent(new Event('scroll'));
-                }}, 750);
-            }}
-        }}""")
+                    // Active scroll heartbeat to defeat mouse_scroll timer pause in service-v3.js
+                    if (!window.heartbeat_scroll) {{
+                        let dir = 1;
+                        window.heartbeat_scroll = setInterval(() => {{
+                            window.scrollBy(0, 25 * dir);
+                            dir = -dir;
+                            window.dispatchEvent(new Event('scroll'));
+                        }}, 750);
+                    }}
+                }}""")
+                break
+            except Exception:
+                time.sleep(0.5)
 
     visited = {sponsor_url.rstrip("/")}
     for step in range(1, 4):
@@ -513,7 +541,7 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                 page.goto(art_url, wait_until="domcontentloaded", timeout=35000)
             except Exception:
                 pass
-            time.sleep(1.0)
+            time.sleep(1.5)
 
         prep()
         time.sleep(0.5)
@@ -540,16 +568,18 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
             btn.evaluate("el => el.click()")
         time.sleep(0.4)
 
-        sec_dur = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : 60; }}")
+        sec_dur = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : (typeof traffic_step_2_wait_time !== 'undefined' && {step} > 1 ? traffic_step_2_wait_time : ({step} > 1 ? 15 : 60)); }}")
         log(f"[*] Step {step}: Countdown duration = {sec_dur}s")
 
         dir_wheel = 1
+        start_step_time = time.time()
         max_ticks = int((sec_dur + 15) * 2)
         for tick in range(1, max(max_ticks, 40)):
             time.sleep(0.5)
             if tick % 4 == 0:
                 dir_wheel = -dir_wheel
-                page.mouse.wheel(0, 120 * dir_wheel)
+                try: page.mouse.wheel(0, 120 * dir_wheel)
+                except Exception: pass
 
             rem = page.evaluate(f"""() => {{
                 const el = document.getElementById('{traffic_key}');
@@ -561,11 +591,31 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                 }}
                 return null;
             }}""")
+            if rem is None:
+                elapsed = time.time() - start_step_time
+                rem = max(0.0, sec_dur - elapsed)
+
             if rem is not None:
                 if tick % 6 == 0 or rem <= 3:
-                    log(f"  [Step {step}] Remaining: {rem}s")
+                    log(f"  [Step {step}] Remaining: {int(rem)}s")
                 if rem <= 0:
-                    page.evaluate("() => { if (typeof checkButtonClick === 'function') checkButtonClick(); }")
+                    page.evaluate(f"""() => {{
+                        const el = document.getElementById('{traffic_key}');
+                        if (el) {{
+                            el.dataset.time = '0';
+                            el.dataset.loading = 'false';
+                            el.dataset.click = 'true';
+                            delete el.dataset.loaded;
+                        }}
+                        if (typeof checkButtonClick === 'function') checkButtonClick();
+                    }}""")
+                    try:
+                        page.evaluate(f"""() => {{
+                            const btn = document.querySelector("[id='{traffic_key}'] button, [id='{traffic_key}'] a, [id='{traffic_key}'], .whatoncode, .completed");
+                            if (btn && (!btn.innerText || !btn.innerText.includes('Mã KM'))) btn.click();
+                        }}""")
+                    except Exception:
+                        pass
                     if step == 1:
                         # Kiểm tra xem mã có xuất hiện luôn ở bước 1 không (single-step sponsor / traffic.com.vn)
                         for _ in range(16):

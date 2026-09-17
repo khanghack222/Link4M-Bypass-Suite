@@ -151,8 +151,19 @@ def run(target_url: str = None, headless: bool = True):
         context.on("page", on_new_page)
 
         api_rejected_captcha = False
+        sponsor_campaign_detected = None
         def handle_resp(res):
-            nonlocal final_destination_url, api_rejected_captcha
+            nonlocal final_destination_url, api_rejected_captcha, sponsor_campaign_detected
+            if "/campaign/get-advertise" in res.url:
+                try:
+                    data = res.json()
+                    log(f"[+] Intercepted Link4M campaign advertise response: success={data.get('success')}")
+                    if data.get("success"):
+                        sponsor_campaign_detected = True
+                    else:
+                        sponsor_campaign_detected = False
+                except Exception:
+                    pass
             if any(ep in res.url for ep in ["/links/get-link-info", "/links/check-captcha", "/links/go", "/links/verify"]):
                 try:
                     data = res.json()
@@ -168,44 +179,42 @@ def run(target_url: str = None, headless: bool = True):
 
         page_link.on("response", handle_resp)
 
-        solver = RecaptchaAudioSolver(headless=headless, model_name="tiny.en")
-
-        # ⚡ TẦNG 1: TURBO DIRECT CAPTCHA EXPLOIT (Nhảy cóc 3s)
-        def route_adv(route):
-            log("⚡ [TURBO EXPLOIT] Chặn /api/campaign/get-advertise -> Ép Link4M kích hoạt Cổng Captcha Trực Tiếp!")
-            route.fulfill(status=200, content_type='application/json', body='{}')
-
-        page_link.route("**/api/campaign/get-advertise", route_adv)
+        solver = None
+        def get_solver():
+            nonlocal solver
+            if solver is None:
+                solver = RecaptchaAudioSolver(headless=headless, model_name="tiny.en")
+            return solver
 
         try:
             page_link.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(2)
+            time.sleep(1.0)
         except Exception as e:
             log(f"[!] Warning on initial goto: {e}")
 
-        # Chờ Cổng Captcha Trực Tiếp render đầy đủ (tối đa 6s)
+        # Chờ trang Link4M xác định nhiệm vụ tài trợ hoặc cổng captcha (tối đa 6s)
+        has_sponsor_mission = False
+        has_captcha_direct = False
         for _ in range(12):
-            has_captcha_text = page_link.locator("h4, h3, h2, div, p").filter(has_text="CHECK CAPTCHA").count() > 0 or \
-                               page_link.locator("h4, h3, h2, div, p").filter(has_text="check captcha").count() > 0 or \
-                               page_link.locator("h4, h3, h2, div, p").filter(has_text="Check Captcha").count() > 0
-            has_captcha_frame = page_link.locator("#recaptcha iframe, .g-recaptcha iframe, iframe[src*='recaptcha'], .g-recaptcha, #recaptcha").count() > 0
-            if has_captcha_text or has_captcha_frame:
+            if page_link.locator("#advertise-html-wrapper img, img[src*='uploads/advertiser'], [placeholder*='Nhập mã'], #password-2, input[name='password']").count() > 0 or sponsor_campaign_detected is True:
+                has_sponsor_mission = True
+                break
+            if sponsor_campaign_detected is False:
+                has_captcha_direct = True
                 break
             time.sleep(0.5)
 
-        # Kiểm tra xem Cổng Captcha Trực Tiếp đã được kích hoạt thành công chưa
-        has_captcha_text = page_link.locator("h4, h3, h2, div, p").filter(has_text="CHECK CAPTCHA").count() > 0 or \
-                           page_link.locator("h4, h3, h2, div, p").filter(has_text="check captcha").count() > 0 or \
-                           page_link.locator("h4, h3, h2, div, p").filter(has_text="Check Captcha").count() > 0
-        has_captcha_frame = page_link.locator("#recaptcha iframe, .g-recaptcha iframe, iframe[src*='recaptcha']").count() > 0
-        is_direct_gate = has_captcha_text or has_captcha_frame or \
-                         (page_link.locator("#advertise-html-wrapper").count() == 0 and page_link.locator(".g-recaptcha, #recaptcha").count() > 0)
+        if not has_sponsor_mission and sponsor_campaign_detected is not True:
+            if page_link.locator("#recaptcha iframe, .g-recaptcha iframe, iframe[src*='recaptcha']").count() > 0:
+                has_captcha_direct = True
 
-        if is_direct_gate:
-            log("🚀 [TURBO EXPLOIT] Đã kích hoạt thành công Cổng Captcha Trực Tiếp (Bỏ qua 100% nhiệm vụ tìm web)!")
+        # KIỂM TRA LUỒNG: CỔNG CAPTCHA TRỰC TIẾP HAY NHIỆM VỤ WEB TÀI TRỢ
+        if has_captcha_direct and not has_sponsor_mission:
+            # Luồng 1: Cổng Captcha Trực Tiếp (link thuần captcha không có nhà tài trợ)
+            log("🚀 [DIRECT GATE] Phát hiện Link4M Cổng Trực Tiếp (Không có web tài trợ)!")
             try:
-                res_solve = solver.solve_on_page(page_link, timeout_sec=25)
-                log(f"[+] Turbo solver result: {res_solve}")
+                res_solve = get_solver().solve_on_page(page_link, timeout_sec=25)
+                log(f"[+] Direct solver result: {res_solve}")
                 if res_solve.get("success"):
                     time.sleep(0.5)
                     page_link.evaluate("""() => {
@@ -224,32 +233,16 @@ def run(target_url: str = None, headless: bool = True):
                                 break
                         time.sleep(0.5)
             except Exception as e:
-                log(f"[!] Turbo solver note: {e}")
+                log(f"[!] Direct solver note: {e}")
 
-        # Nếu Turbo Exploit đã lấy được link đích -> Hoàn tất!
-        if is_valid_destination(final_destination_url):
-            log(f"🎉🎉🎉 [TURBO WIN] VƯỢT LINK4M SIÊU TỐC TRONG 3 GIÂY: {final_destination_url}")
-        else:
-            # 🛡️ TẦNG 2: FALLBACK TOÀN DIỆN SANG LUỒNG WEB TÀI TRỢ (SPONSOR QUEST)
-            log("[*] Chuyển tiếp sang Tầng 2: Vượt bằng luồng Web tài trợ (Sponsor Quest)...")
+        if not is_valid_destination(final_destination_url):
+            # Luồng 2: Web Tài TrỢ (Sponsor Quest - Tiêu Chuẩn)
+            log("[*] Khởi chạy Luồng Web tài trợ (Sponsor Quest)...")
             try:
-                page_link.unroute("**/api/campaign/get-advertise")
+                page_link.wait_for_selector("#advertise-html-wrapper img, img[src^='data:image'], img[src*='uploads/advertiser'], body", timeout=6000)
             except Exception:
                 pass
-            try:
-                page_link.reload(wait_until="networkidle", timeout=30000)
-            except Exception:
-                try:
-                    page_link.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-                except Exception as e:
-                    log(f"[!] Reload error: {e}")
-
-            # Chờ ảnh nhiệm vụ render từ get-advertise
-            try:
-                page_link.wait_for_selector("#advertise-html-wrapper img, img[src^='data:image'], img[src*='uploads/advertiser']", timeout=12000)
-            except Exception:
-                pass
-            time.sleep(2)
+            time.sleep(0.5)
 
             sponsor_candidates = detect_sponsor_domain(page_link)
             if not sponsor_candidates:
@@ -292,17 +285,22 @@ def run(target_url: str = None, headless: bool = True):
                     inp.dispatchEvent(new Event('change', { bubbles: true }));
                 });
             }""", code_found)
-            log(f"[+] Filled code '{code_found}' into all Link4M inputs!")
+            # Gỡ bỏ các popup / overlay quảng cáo che phủ nút bấm trước khi giải captcha
+            page_link.evaluate("""() => {
+                document.querySelectorAll('.modal-backdrop, #ad_banner, [id*="google_ads"], [class*="overlay"], iframe[id*="aswift"]').forEach(el => el.remove());
+            }""")
 
+            # Giải reCAPTCHA chính xác trên form nhập mã (#recaptcha-2)
             try:
-                res_solve = solver.solve_on_page(page_link)
+                recaptcha_target = "#recaptcha-2" if page_link.locator("#recaptcha-2").count() > 0 else None
+                res_solve = get_solver().solve_on_page(page_link, container_selector=recaptcha_target)
                 log(f"[+] Smart solver result: {res_solve}")
             except Exception as e:
                 log(f"[!] AI solver note: {e}")
 
             time.sleep(0.3)
             if not final_destination_url:
-                page_link.evaluate("""() => {
+                page_link.evaluate("""(code) => {
                     document.querySelectorAll('.modal-backdrop, #ad_banner, [id*="google_ads"], [class*="overlay"]').forEach(el => el.remove());
                     
                     let validToken = '';
@@ -310,9 +308,14 @@ def run(target_url: str = None, headless: bool = True):
                         if (el.value && el.value.length > 20) validToken = el.value;
                     });
                     if (validToken) {
-                        document.querySelectorAll('[name="g-recaptcha-response"]').forEach(el => {
+                        document.querySelectorAll('[name="g-recaptcha-response"], #g-recaptcha-response-2').forEach(el => {
                             el.value = validToken;
                         });
+                        try {
+                            if (window.grecaptcha && typeof window.grecaptcha.getResponse === 'function') {
+                                window.grecaptcha.getResponse = () => validToken;
+                            }
+                        } catch (e) {}
                     }
 
                     if (window.jQuery) {
@@ -321,18 +324,14 @@ def run(target_url: str = None, headless: bool = True):
                             window.check_form = f2;
                             checkPassword();
                         }
-                        const f1 = jQuery('#main-form');
-                        if (f1.length && typeof checkPassword === 'function') {
-                            window.check_form = f1;
-                            checkPassword();
-                        }
                     }
 
-                    // Direct API fallback dispatch
-                    const fActive = document.querySelector('#main-form-2') || document.querySelector('#main-form');
+                    // Direct API dispatch fallback
+                    const fActive = document.querySelector('#main-form-2');
                     if (fActive) {
                         const formData = new FormData(fActive);
                         if (validToken) formData.set('g-recaptcha-response', validToken);
+                        formData.set('password', code);
                         const params = new URLSearchParams(formData).toString();
                         const endpoint = (window.api_domain || 'https://s1.link4m.app') + '/links/get-link-info';
                         fetch(endpoint, {
@@ -354,7 +353,7 @@ def run(target_url: str = None, headless: bool = True):
                             btn.click();
                         }
                     });
-                }""")
+                }""", code_found)
 
         log("[*] Waiting for destination URL unlock...")
         for _ in range(40):
