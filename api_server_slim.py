@@ -2,15 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-⚡ LINK4M ULTRA-SLIM & STABLE MICROSERVICE API (RENDER / KOYEB OPTIMIZED) ⚡
-=============================================================================
-Architecture & RAM Optimization:
-  - Base RAM Target : ~140 MB – 180 MB (Strictly < 300 MB under peak load)
-  - Memory Protection: MALLOC_ARENA_MAX=2, downscaling 4K images, auto-gc
-  - Replaced PyTorch/Whisper with lightweight Google Speech API (pydub + SpeechRecognition)
-  - Replaced Heavy OpenCV with headless OpenCV
-  - Singleton Lazy ONNX Engine with arena memory tuning
-  - Turnstile solver support with graceful fallback
+⚡ LINK4M ULTRA-SLIM & TURBO MICROSERVICE API (SUB-0.1S OPTIMIZED) ⚡
 =============================================================================
 """
 
@@ -24,12 +16,12 @@ import json
 import base64
 import gc
 import asyncio
+import hashlib
 import urllib.request
 import urllib.parse
 from typing import Optional, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
-# Inject src and core into python path
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(CURRENT_DIR, "src")
 CORE_DIR = os.path.join(SRC_DIR, "core")
@@ -45,29 +37,32 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 import numpy as np
-from PIL import Image
 import cv2
 import speech_recognition as sr
 from pydub import AudioSegment
-from pydub.effects import normalize
+from pydub.effects import normalize, high_pass_filter, low_pass_filter
 import psutil
 
-# -----------------------------------------------------------------------------
-# Long-Term Stability & Memory Protections
-# -----------------------------------------------------------------------------
 os.environ["MALLOC_ARENA_MAX"] = "2"
-os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["OPENBLAS_NUM_THREADS"] = "2"
 
 _REQUEST_COUNTER = 0
 _PROCESS = psutil.Process(os.getpid())
 _OCR_ENGINE = None
-_THREAD_POOL = ThreadPoolExecutor(max_workers=8)
+_THREAD_POOL = ThreadPoolExecutor(max_workers=16)
 
-# Robust HTTP Session with pooling & retry
+_TILE_CACHE: Dict[str, dict] = {}
+_MAX_TILE_CACHE = 800
+_OCR_CACHE: Dict[str, dict] = {}
+_MAX_OCR_CACHE = 400
+_K3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+
 _HTTP = requests.Session()
-_retries = Retry(total=2, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
-_HTTP.mount("https://", HTTPAdapter(max_retries=_retries, pool_connections=8, pool_maxsize=8))
-_HTTP.mount("http://", HTTPAdapter(max_retries=_retries, pool_connections=8, pool_maxsize=8))
+_retries = Retry(total=2, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504])
+_adapter = HTTPAdapter(max_retries=_retries, pool_connections=20, pool_maxsize=20)
+_HTTP.mount("https://", _adapter)
+_HTTP.mount("http://", _adapter)
 
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
@@ -77,7 +72,10 @@ def get_rapidocr():
     global _OCR_ENGINE
     if _OCR_ENGINE is None:
         from rapidocr_onnxruntime import RapidOCR
-        _OCR_ENGINE = RapidOCR()
+        _OCR_ENGINE = RapidOCR(use_angle_cls=False, det_limit_side_len=320, det_db_box_thresh=0.3, det_db_unclip_ratio=1.5)
+        # Pre-warm
+        dummy = np.full((60, 200, 3), 255, dtype=np.uint8)
+        _, _ = _OCR_ENGINE(dummy)
     return _OCR_ENGINE
 
 def get_ram_mb() -> float:
@@ -89,30 +87,16 @@ def get_ram_mb() -> float:
 def check_and_gc():
     global _REQUEST_COUNTER
     _REQUEST_COUNTER += 1
-    if _REQUEST_COUNTER % 20 == 0:
+    if _REQUEST_COUNTER % 40 == 0:
         gc.collect()
-
-def safe_downscale_image(image_bytes: bytes, max_dim: int = 1280) -> bytes:
-    """Downscale large images in memory to prevent tensor blowup during OCR."""
-    try:
-        im = Image.open(io.BytesIO(image_bytes))
-        w, h = im.size
-        if max(w, h) > max_dim:
-            im.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-            buf = io.BytesIO()
-            im.convert("RGB").save(buf, format="JPEG", quality=85)
-            return buf.getvalue()
-        return image_bytes
-    except Exception:
-        return image_bytes
 
 # -----------------------------------------------------------------------------
 # FastAPI App
 # -----------------------------------------------------------------------------
 app = FastAPI(
-    title="Link4M Ultra-Slim Microservice API",
-    description="Engineered for high stability and minimal RAM footprint on 512MB containers (Render/Koyeb).",
-    version="2.5.0-slim"
+    title="Link4M Ultra-Slim Turbo API",
+    description="Engineered for high stability and sub-0.1s response on containers.",
+    version="3.1.0-slim-turbo"
 )
 
 app.add_middleware(
@@ -123,9 +107,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------------------------------------------------------
-# Schemas
-# -----------------------------------------------------------------------------
+@app.on_event("startup")
+def on_startup():
+    try:
+        _THREAD_POOL.submit(get_rapidocr)
+    except Exception:
+        pass
+
 class OcrRequest(BaseModel):
     image_url: Optional[str] = None
     image_base64: Optional[str] = None
@@ -136,14 +124,17 @@ class OcrResponse(BaseModel):
     raw_text: List[str]
     elapsed_ms: float
     ram_used_mb: float
+    cached: bool = False
 
 class TileItem(BaseModel):
     idx: int
-    url: str
+    url: Optional[str] = None
+    base64_data: Optional[str] = None
 
 class TileAnalyzeRequest(BaseModel):
     tiles: Optional[List[TileItem]] = None
     tile_urls: Optional[List[str]] = None
+    tile_base64s: Optional[List[str]] = None
     target_shape: Optional[str] = None
     min_confidence: float = 0.55
 
@@ -161,87 +152,80 @@ class TurnstileSolveRequest(BaseModel):
     url: str = Field(..., description="Target webpage URL")
     sitekey: str = Field(..., description="Turnstile sitekey")
     headless: bool = Field(True, description="Headless browser mode")
-    timeout_seconds: Optional[int] = Field(30, alias="timeout_sec", description="Timeout in seconds")
+    timeout_seconds: Optional[int] = Field(30, alias="timeout_sec")
     worker_url: Optional[str] = None
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
 IGNORE_DOMAINS = {
     'google.com', 'google.com.vn', 'shopee.vn', 'youtube.com', 'facebook.com',
     'tiktok.com', 'instagram.com', 'twitter.com', 'x.com', 'wikipedia.org',
     'scholar.google.com', 't.me', 'telegram.org', 'linkhuongdan.online', 'octolink.vip',
     'play.google.com', 'mudeo.app', 'apps.apple.com', 'placehold.co'
 }
-JUNK_TLD = ('.app', '.play', '.png', '.jpg', '.jpeg', '.webp')
-
-def deobfuscate_text(text: str) -> str:
-    t = text
-    t = re.sub(r'\[dot\]|\(dot\)|\{dot\}|\s+dot\s+|\[\.\]|\(\.\)', '.', t, flags=re.IGNORECASE)
-    t = re.sub(r'\s*\.\s*', '.', t)
-    return t
+JUNK_EXT = ('.app', '.play', '.png', '.jpg', '.jpeg', '.webp', '.svg', '.gif')
+RE_DOMAIN = re.compile(r'(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)')
+RE_DOT = re.compile(r'\[dot\]|\(dot\)|\{dot\}|\s+dot\s+|\[\.\]|\(\.\)|_dot_', re.IGNORECASE)
 
 def extract_domains(lines: list) -> tuple:
     candidates = []
     raw_texts = []
     if not lines:
         return candidates, raw_texts
-
     for item in lines:
         text = item[1].strip()
         raw_texts.append(text)
-        normalized = deobfuscate_text(text)
-        for part in normalized.split():
-            clean_part = part.strip('()[]{}<>,;:\'\"')
-            match = re.search(r'(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', clean_part)
+        norm = RE_DOT.sub('.', text)
+        for part in norm.split():
+            clean = part.strip('()[]{}<>,;:\'\" \t\r\n')
+            match = RE_DOMAIN.search(clean)
             if match:
-                d = match.group(1).lower()
-                if d in IGNORE_DOMAINS or any(d.endswith(ext) for ext in JUNK_TLD):
+                d = match.group(1).lower().strip('.')
+                if d in IGNORE_DOMAINS or any(d.endswith(ext) for ext in JUNK_EXT):
                     continue
                 if d not in candidates:
                     candidates.append(d)
     return candidates, raw_texts
 
-def analyze_tile_worker(args: tuple) -> dict:
-    idx, url = args
-    if url.startswith('/'):
-        url = 'https://frame.103-141-140-153.sslip.io' + url
-    try:
-        if url.startswith("data:image"):
-            b64_data = url.split(",")[-1]
-            content = base64.b64decode(b64_data)
-        else:
-            resp = _HTTP.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code != 200:
-                return {"idx": idx, "shape": "http_error", "confidence": 0.0, "solidity": 0.0, "circularity": 0.0, "vertices": 0, "defects": 0, "aspect_ratio": 0.0, "extent": 0.0, "area": 0.0}
-            content = resp.content
+def analyze_tile_raw(idx: int, raw_bytes: bytes) -> dict:
+    h = hashlib.md5(raw_bytes).hexdigest()
+    if h in _TILE_CACHE:
+        res = dict(_TILE_CACHE[h])
+        res["idx"] = idx
+        res["cached"] = True
+        return res
 
-        im = Image.open(io.BytesIO(content)).convert('RGB')
-        arr = np.array(im)
-        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
-        mask = (hsv[:, :, 1] > 30) | (hsv[:, :, 2] < 150)
-        mask_u8 = mask.astype(np.uint8) * 255
-        contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
+    try:
+        arr = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if arr is None:
             return {"idx": idx, "shape": "blank", "confidence": 0.0, "solidity": 0.0, "circularity": 0.0, "vertices": 0, "defects": 0, "aspect_ratio": 0.0, "extent": 0.0, "area": 0.0}
+
+        hsv = cv2.cvtColor(arr, cv2.COLOR_BGR2HSV)
+        mask = ((hsv[:, :, 1] > 28) | (hsv[:, :, 2] < 160)).astype(np.uint8) * 255
+        mask_clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _K3)
+        contours, _ = cv2.findContours(mask_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            out = {"idx": idx, "shape": "blank", "confidence": 0.0, "solidity": 0.0, "circularity": 0.0, "vertices": 0, "defects": 0, "aspect_ratio": 0.0, "extent": 0.0, "area": 0.0}
+            if len(_TILE_CACHE) < _MAX_TILE_CACHE: _TILE_CACHE[h] = out
+            return out
 
         c = max(contours, key=cv2.contourArea)
         area = float(cv2.contourArea(c))
         peri = float(cv2.arcLength(c, True))
-        if area < 10 or peri == 0:
-            return {"idx": idx, "shape": "blank", "confidence": 0.0, "solidity": 0.0, "circularity": 0.0, "vertices": 0, "defects": 0, "aspect_ratio": 0.0, "extent": 0.0, "area": area}
+        if area < 30 or peri == 0:
+            out = {"idx": idx, "shape": "blank", "confidence": 0.0, "solidity": 0.0, "circularity": 0.0, "vertices": 0, "defects": 0, "aspect_ratio": 0.0, "extent": 0.0, "area": area}
+            if len(_TILE_CACHE) < _MAX_TILE_CACHE: _TILE_CACHE[h] = out
+            return out
 
-        approx = cv2.approxPolyDP(c, 0.035 * peri, True)
-        num_v = len(approx)
-        circ = 4 * np.pi * area / (peri * peri) if peri > 0 else 0.0
-
+        circ = (4.0 * np.pi * area) / (peri * peri)
         hull = cv2.convexHull(c)
         hull_area = float(cv2.contourArea(hull))
         solidity = (area / hull_area) if hull_area > 0 else 0.0
 
-        x, y, w, h = cv2.boundingRect(c)
-        aspect_ratio = round(float(w) / h, 2) if h > 0 else 0.0
-        extent = round(area / (w * h), 2) if (w * h) > 0 else 0.0
+        approx = cv2.approxPolyDP(c, 0.032 * peri, True)
+        num_v = len(approx)
+
+        x, y, w, h_box = cv2.boundingRect(c)
+        aspect_ratio = round(float(min(w, h_box)) / max(w, h_box), 2) if max(w, h_box) > 0 else 0.0
+        extent = round(area / (w * h_box), 2) if (w * h_box) > 0 else 0.0
 
         defects_count = 0
         try:
@@ -249,9 +233,10 @@ def analyze_tile_worker(args: tuple) -> dict:
             if len(hull_idx) > 3 and len(c) > 3:
                 defects = cv2.convexityDefects(c, hull_idx)
                 if defects is not None:
+                    min_dim = min(w, h_box)
                     for i in range(defects.shape[0]):
                         _, _, _, d = defects[i, 0]
-                        if d > 1000:
+                        if (d / 256.0) > (min_dim * 0.12):
                             defects_count += 1
         except Exception:
             defects_count = 0
@@ -259,29 +244,32 @@ def analyze_tile_worker(args: tuple) -> dict:
         shape = "unknown"
         confidence = 0.50
 
-        if circ >= 0.70 and solidity >= 0.82 and 0.75 <= aspect_ratio <= 1.30:
-            shape = "circle"
-            confidence = min(0.99, round(circ * 0.85 + solidity * 0.15, 2))
-        elif num_v == 3 or (num_v <= 4 and solidity >= 0.65 and circ < 0.65 and defects_count <= 1):
-            shape = "triangle"
-            confidence = 0.95 if num_v == 3 else 0.82
-        elif (num_v == 4 and solidity >= 0.85) or (extent >= 0.75 and solidity >= 0.85 and 0.70 <= aspect_ratio <= 1.40):
-            shape = "rectangle"
-            confidence = 0.95 if num_v == 4 else 0.85
-        elif (circ < 0.45 and num_v >= 5) or (solidity < 0.65 and num_v >= 5) or (defects_count >= 3 and solidity < 0.70):
-            shape = "star"
-            confidence = 0.95 if (defects_count >= 3 or solidity < 0.55) else 0.88
-        elif num_v == 6 or (circ >= 0.58 and solidity >= 0.78 and num_v in [5, 6, 7] and defects_count <= 2):
-            shape = "hexagon"
-            confidence = 0.92 if num_v == 6 else 0.82
-        elif (num_v >= 8 and solidity < 0.72 and 0.75 <= aspect_ratio <= 1.30) or (defects_count >= 4 and 0.75 <= aspect_ratio <= 1.30):
+        if (defects_count == 4 and solidity > 0.63) or (num_v in (11, 12) and 0.60 <= solidity <= 0.80):
             shape = "cross"
-            confidence = 0.90
+            confidence = 0.96
+        elif defects_count >= 5 or (solidity <= 0.63 and circ < 0.48) or (num_v == 10 and solidity < 0.65):
+            shape = "star"
+            confidence = 0.98 if defects_count >= 5 else 0.90
+        elif num_v == 3 or (solidity >= 0.84 and circ <= 0.69 and num_v <= 5 and 0.35 <= extent <= 0.68):
+            shape = "triangle"
+            confidence = 0.98 if num_v == 3 else 0.88
+        elif num_v == 4 and solidity >= 0.88 and extent >= 0.70:
+            shape = "rectangle"
+            confidence = 0.96
+        elif num_v in (5, 6, 7) and solidity >= 0.88 and 0.68 <= circ <= 0.86 and aspect_ratio >= 0.72:
+            shape = "hexagon"
+            confidence = 0.96 if num_v == 6 else 0.85
+        elif solidity >= 0.90 and (circ >= 0.86 or (circ >= 0.80 and num_v >= 8)) and aspect_ratio >= 0.74:
+            shape = "circle"
+            confidence = min(0.99, round((circ / 0.88) * 0.95, 2))
+        elif defects_count >= 3 and solidity <= 0.75:
+            shape = "cross" if solidity > 0.62 else "star"
+            confidence = 0.80
 
-        return {
+        out = {
             "idx": idx,
             "shape": shape,
-            "confidence": round(confidence, 2),
+            "confidence": confidence,
             "solidity": round(solidity, 3),
             "circularity": round(circ, 3),
             "vertices": num_v,
@@ -290,39 +278,66 @@ def analyze_tile_worker(args: tuple) -> dict:
             "extent": extent,
             "area": round(area, 1)
         }
+        if len(_TILE_CACHE) < _MAX_TILE_CACHE:
+            _TILE_CACHE[h] = out
+        return out
     except Exception as e:
-        return {"idx": idx, "shape": "error", "confidence": 0.0, "solidity": 0.0, "circularity": 0.0, "vertices": 0, "defects": 0, "aspect_ratio": 0.0, "extent": 0.0, "area": 0.0, "error": str(e)}
+        return {"idx": idx, "shape": "error", "confidence": 0.0, "error": str(e)}
 
-NUMBER_WORDS = {
-    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "for": "4",
-    "five": "5", "six": "6", "seven": "7", "eight": "8", "ate": "8", "nine": "9",
-    "to": "2", "too": "2", "tree": "3", "won": "1", "ten": "10"
+def fetch_and_analyze_tile(args: tuple) -> dict:
+    idx, item = args
+    if isinstance(item, str):
+        if item.startswith("data:image") or len(item) > 300:
+            try:
+                raw_bytes = base64.b64decode(item.split(",")[-1])
+                return analyze_tile_raw(idx, raw_bytes)
+            except Exception as e:
+                return {"idx": idx, "shape": "decode_error", "confidence": 0.0, "error": str(e)}
+        url = item
+        if url.startswith('/'):
+            url = 'https://frame.103-141-140-153.sslip.io' + url
+        try:
+            resp = _HTTP.get(url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code == 200:
+                return analyze_tile_raw(idx, resp.content)
+            return {"idx": idx, "shape": "http_error", "confidence": 0.0}
+        except Exception as e:
+            return {"idx": idx, "shape": "error", "confidence": 0.0, "error": str(e)}
+    return {"idx": idx, "shape": "unknown", "confidence": 0.0}
+
+DIGIT_WORDS = {
+    'zero': '0', 'oh': '0', 'o': '0', 'hero': '0', 'null': '0',
+    'one': '1', 'won': '1', 'wan': '1',
+    'two': '2', 'to': '2', 'too': '2', 'tu': '2',
+    'three': '3', 'tree': '3', 'free': '3',
+    'four': '4', 'for': '4', 'fore': '4', 'fo': '4', 'floor': '4',
+    'five': '5', 'fiv': '5', 'hive': '5', 'fine': '5',
+    'six': '6', 'sex': '6', 'sicks': '6', 'sax': '6', 'fix': '6',
+    'seven': '7', 'sever': '7', 'heaven': '7',
+    'eight': '8', 'ate': '8', 'ait': '8', 'hate': '8', 'weight': '8',
+    'nine': '9', 'mine': '9', 'line': '9', 'nigh': '9'
 }
 
 def extract_digits(text: str) -> str:
     digits_direct = re.sub(r'[^0-9]', '', text)
     if digits_direct:
         return digits_direct
-    words = text.lower().split()
+    tokens = re.findall(r'\b[a-zA-Z0-9]+\b', text.lower())
     digits = []
-    for w in words:
-        cw = re.sub(r'[^a-z]', '', w)
-        if cw in NUMBER_WORDS:
-            digits.append(NUMBER_WORDS[cw])
+    for tok in tokens:
+        if tok.isdigit():
+            digits.append(tok)
+        elif tok in DIGIT_WORDS:
+            digits.append(DIGIT_WORDS[tok])
     return "".join(digits)
-
-# -----------------------------------------------------------------------------
-# Endpoints
-# -----------------------------------------------------------------------------
 
 @app.get("/")
 def root():
-    ram_mb = get_ram_mb()
     return {
-        "service": "Link4M Ultra-Slim API",
+        "service": "Link4M Ultra-Slim Turbo API",
         "status": "online",
-        "ram_used_mb": ram_mb,
-        "target_max_ram_mb": 400.0,
+        "latency_target": "<0.1s",
+        "ram_used_mb": get_ram_mb(),
         "docs": "/docs"
     }
 
@@ -333,7 +348,9 @@ def health():
         "status": "healthy",
         "timestamp": time.time(),
         "ram_used_mb": ram_mb,
-        "safe_limit": ram_mb < 380.0
+        "safe_limit": ram_mb < 380.0,
+        "cached_tiles": len(_TILE_CACHE),
+        "cached_ocr": len(_OCR_CACHE)
     }
 
 @app.get("/api/v1/status")
@@ -343,11 +360,9 @@ def status():
         "process_ram_mb": ram_mb,
         "total_requests": _REQUEST_COUNTER,
         "ocr_loaded": _OCR_ENGINE is not None,
-        "python": sys.version.split()[0],
-        "system_status": "STABLE_24_7"
+        "system_status": "STABLE_TURBO_24_7"
     }
 
-# 1. OCR RESOLVE DOMAIN
 @app.post("/api/v1/ocr/resolve-domain", response_model=OcrResponse)
 def ocr_resolve_domain(req: OcrRequest):
     t0 = time.perf_counter()
@@ -361,7 +376,7 @@ def ocr_resolve_domain(req: OcrRequest):
             raise HTTPException(status_code=400, detail=f"Invalid base64: {e}")
     elif req.image_url:
         try:
-            resp = _HTTP.get(req.image_url, timeout=7, headers={"User-Agent": "Mozilla/5.0"})
+            resp = _HTTP.get(req.image_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
             if resp.status_code == 200:
                 image_bytes = resp.content
         except Exception as e:
@@ -372,41 +387,43 @@ def ocr_resolve_domain(req: OcrRequest):
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Empty image data")
 
-    image_bytes = safe_downscale_image(image_bytes, max_dim=1280)
+    h = hashlib.md5(image_bytes).hexdigest()
+    if h in _OCR_CACHE:
+        cached = _OCR_CACHE[h]
+        elapsed = (time.perf_counter() - t0) * 1000
+        return OcrResponse(
+            domains=cached["domains"],
+            raw_text=cached["raw_text"],
+            elapsed_ms=round(elapsed, 2),
+            ram_used_mb=get_ram_mb(),
+            cached=True
+        )
+
+    arr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if arr is None:
+        raise HTTPException(status_code=400, detail="Corrupted image bytes")
+
+    h_img, w_img = arr.shape[:2]
+    if max(h_img, w_img) > 480:
+        scale = 480.0 / max(h_img, w_img)
+        arr = cv2.resize(arr, (int(w_img * scale), int(h_img * scale)), interpolation=cv2.INTER_AREA)
+
     engine = get_rapidocr()
-    lines, _ = engine(image_bytes)
+    lines, _ = engine(arr)
     domains, raw_text = extract_domains(lines)
+
+    if len(_OCR_CACHE) < _MAX_OCR_CACHE:
+        _OCR_CACHE[h] = {"domains": domains, "raw_text": raw_text}
 
     elapsed = (time.perf_counter() - t0) * 1000
     return OcrResponse(
         domains=domains,
         raw_text=raw_text,
         elapsed_ms=round(elapsed, 2),
-        ram_used_mb=get_ram_mb()
+        ram_used_mb=get_ram_mb(),
+        cached=False
     )
 
-@app.post("/api/v1/ocr/upload")
-async def ocr_upload(file: UploadFile = File(...)):
-    t0 = time.perf_counter()
-    check_and_gc()
-
-    image_bytes = await file.read()
-    image_bytes = safe_downscale_image(image_bytes, max_dim=1280)
-
-    engine = get_rapidocr()
-    lines, _ = engine(image_bytes)
-    domains, raw_text = extract_domains(lines)
-
-    elapsed = (time.perf_counter() - t0) * 1000
-    return {
-        "filename": file.filename,
-        "domains": domains,
-        "raw_text": raw_text,
-        "elapsed_ms": round(elapsed, 2),
-        "ram_used_mb": get_ram_mb()
-    }
-
-# 2. QCAPTCHA TILE GEOMETRIC SOLVER
 @app.post("/api/v1/cv/analyze-tiles")
 def analyze_tiles(req: TileAnalyzeRequest):
     t0 = time.perf_counter()
@@ -414,13 +431,16 @@ def analyze_tiles(req: TileAnalyzeRequest):
 
     items = []
     if req.tiles:
-        items = [(t.idx, t.url) for t in req.tiles]
+        for t in req.tiles:
+            items.append((t.idx, t.url or t.base64_data))
     elif req.tile_urls:
         items = [(i, u) for i, u in enumerate(req.tile_urls)]
+    elif req.tile_base64s:
+        items = [(i, b) for i, b in enumerate(req.tile_base64s)]
     else:
-        raise HTTPException(status_code=400, detail="Provide tiles or tile_urls")
+        raise HTTPException(status_code=400, detail="Provide tiles, tile_urls, or tile_base64s")
 
-    futures = [_THREAD_POOL.submit(analyze_tile_worker, item) for item in items]
+    futures = [_THREAD_POOL.submit(fetch_and_analyze_tile, item) for item in items]
     results = [f.result() for f in futures]
     results.sort(key=lambda x: x["idx"])
 
@@ -445,7 +465,6 @@ def analyze_tiles(req: TileAnalyzeRequest):
         "ram_used_mb": get_ram_mb()
     }
 
-# 3. ULTRA-LIGHT SPEECH-TO-TEXT (GOOGLE SPEECH API + DSP)
 @app.post("/api/v1/audio/transcribe")
 def audio_transcribe(req: AudioTranscribeRequest):
     t0 = time.perf_counter()
@@ -459,7 +478,7 @@ def audio_transcribe(req: AudioTranscribeRequest):
             raise HTTPException(status_code=400, detail=f"Invalid base64: {e}")
     elif req.audio_url:
         try:
-            resp = _HTTP.get(req.audio_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            resp = _HTTP.get(req.audio_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
             if resp.status_code == 200:
                 audio_bytes = resp.content
         except Exception as e:
@@ -473,11 +492,9 @@ def audio_transcribe(req: AudioTranscribeRequest):
     try:
         audio_seg = AudioSegment.from_file(io.BytesIO(audio_bytes))
         if req.apply_dsp_filter:
-            try:
-                audio_seg = audio_seg.high_pass_filter(300).low_pass_filter(3400)
-                audio_seg = normalize(audio_seg)
-            except Exception:
-                pass
+            audio_seg = normalize(audio_seg)
+            audio_seg = high_pass_filter(audio_seg, 250)
+            audio_seg = low_pass_filter(audio_seg, 3500)
 
         wav_io = io.BytesIO()
         audio_seg.export(wav_io, format="wav")
@@ -507,7 +524,6 @@ def audio_transcribe(req: AudioTranscribeRequest):
         "ram_used_mb": get_ram_mb()
     }
 
-# 4. LINK DECODER & PARAMETER UNPACKER
 @app.post("/api/v1/link/decode")
 def decode_link(req: DecodeLinkRequest):
     t0 = time.perf_counter()
@@ -541,7 +557,7 @@ def decode_link(req: DecodeLinkRequest):
     target_url = decoded or url
     if req.follow_redirects and target_url.startswith('http'):
         try:
-            r = _HTTP.get(target_url, allow_redirects=False, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+            r = _HTTP.get(target_url, allow_redirects=False, timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
             if r.status_code in (301, 302, 303, 307, 308):
                 next_hop = r.headers.get('Location')
         except Exception:
@@ -557,7 +573,6 @@ def decode_link(req: DecodeLinkRequest):
         "ram_used_mb": get_ram_mb()
     }
 
-# 5. CLOUDFLARE TURNSTILE AUTOMATED SOLVER
 @app.post("/api/v1/turnstile/solve")
 async def turnstile_solve(req: TurnstileSolveRequest):
     try:
@@ -572,7 +587,7 @@ async def turnstile_solve(req: TurnstileSolveRequest):
 
     def _run_solve():
         solver = TurnstileSolver(headless=req.headless)
-        return solver.solve(url=req.url, sitekey=req.sitekey)
+        return solver.solve(url=req.url, sitekey=req.sitekey, use_cloud=False)
 
     try:
         result = await asyncio.get_event_loop().run_in_executor(_THREAD_POOL, _run_solve)
@@ -580,7 +595,7 @@ async def turnstile_solve(req: TurnstileSolveRequest):
         raise HTTPException(status_code=500, detail=f"Turnstile solver execution failed: {e}")
 
     elapsed = round(time.perf_counter() - t0, 2)
-    token = result.get("token") if isinstance(result, dict) else None
+    token = result.get("token") or result.get("turnstile_value") if isinstance(result, dict) else None
 
     if not token:
         raise HTTPException(status_code=504, detail="Turnstile solver timeout or token not retrieved")
@@ -592,10 +607,7 @@ async def turnstile_solve(req: TurnstileSolveRequest):
         "engine": "patchright_playwright"
     }
 
-# -----------------------------------------------------------------------------
-# Main Runner
-# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    print(f"[*] Starting Link4M Ultra-Slim API on port {port}...")
+    print(f"[*] Starting Link4M Ultra-Slim Turbo API on port {port}...")
     uvicorn.run("api_server_slim:app", host="0.0.0.0", port=port, reload=False)
