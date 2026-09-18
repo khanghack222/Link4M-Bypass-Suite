@@ -50,6 +50,8 @@ def run(target_url: str = None, headless: bool = True):
             "--no-first-run",
             "--no-default-browser-check",
             "--window-size=1280,720",
+            "--enable-features=DnsOverHttps",
+            "--dns-over-https-templates=https://dns.google/dns-query",
             "--host-resolver-rules=MAP happy.jpn.com 104.21.17.40, MAP jpn.com 54.153.56.183, MAP dawnseeker.za.com 104.21.54.177, MAP betflik24win.co 172.67.170.150, MAP what-on.com 172.67.178.139, MAP s1.what-on.com 104.21.43.112, MAP website-analytics.net 104.21.52.154"
         ]
         if headless:

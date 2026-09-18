@@ -3,6 +3,7 @@ import time
 import urllib.request
 import ssl
 import base64
+import requests
 from rapidocr_onnxruntime import RapidOCR
 from config import log
 
@@ -12,6 +13,28 @@ def get_ocr():
     if _OCR_INSTANCE is None:
         _OCR_INSTANCE = RapidOCR()
     return _OCR_INSTANCE
+
+def _ocr_cloud_api(img_bytes: bytes) -> str:
+    """Gửi ảnh lên Cloud OCR API với timeout ngắn để tăng tốc tối đa."""
+    if not img_bytes or len(img_bytes) < 100:
+        return ""
+    try:
+        b64_img = "data:image/png;base64," + base64.b64encode(img_bytes).decode('utf-8')
+        payload = {
+            'base64Image': b64_img,
+            'isOverlayRequired': False,
+            'apikey': 'helloworld',
+            'language': 'eng',
+            'OCREngine': '2'
+        }
+        r = requests.post('https://api.ocr.space/parse/image', data=payload, timeout=5)
+        if r.status_code == 200:
+            parsed = r.json().get("ParsedResults", [])
+            if parsed:
+                return parsed[0].get("ParsedText", "").strip()
+    except Exception:
+        pass
+    return ""
 
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
@@ -53,7 +76,7 @@ def unmask_domain_candidates(raw_text: str):
     return list(dict.fromkeys(results))
 
 VALID_TLDS = [
-    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'com', 'net', 'org', 'io', 'cc',
+    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'de.com', 'uk.com', 'jpn.com', 'com', 'net', 'org', 'io', 'cc',
     'me', 'vn', 'tw', 'vip', 'tv', 'co', 'site', 'top', 'online', 'xyz',
     'info', 'biz', 'club', 'games', 'app', 'live', 'ai', 'in', 'us', 'uk'
 ]
@@ -153,8 +176,8 @@ def extract_domain_candidates(ocr_lines):
         score += len(clow)
         return score
 
-    EXCLUDED_DOMAINS = {'gmail.com', 'gmal.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com', 'mail.com', 'de.com', 'link4m.net', 'link4m.com'}
-    candidates = [c for c in candidates if 'google' not in c.lower() and 'link4m' not in c.lower() and c.lower() not in EXCLUDED_DOMAINS and not any(c.lower().endswith(f".{em}") for em in EXCLUDED_DOMAINS)]
+    EXCLUDED_DOMAINS = {'gmail.com', 'gmal.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com', 'mail.com', 'link4m.net', 'link4m.com', 'link4m.org', 'link4m.co', 'link4m.me'}
+    candidates = [c for c in candidates if 'google' not in c.lower() and 'link4m' not in c.lower() and c.lower() not in EXCLUDED_DOMAINS]
     candidates.sort(key=rank_c, reverse=True)
     return candidates
 
@@ -204,6 +227,9 @@ def probe_domain_live(domain: str):
                     best_url = res_url
         if best_url:
             return (best_url, has_best_script)
+    ip = resolve_ip_google(domain)
+    if ip:
+        return (f"https://{domain}", True)
     return ("", False)
 
 def detect_sponsor_domain(page_link):
@@ -239,8 +265,7 @@ def detect_sponsor_domain(page_link):
             pass
         time.sleep(0.2)
 
-    log(f"[*] Phát hiện {len(imgs_info or [])} ảnh nhiệm vụ. Đang khởi chạy RapidOCR AI...")
-    ocr = get_ocr()
+    log(f"[*] Phát hiện {len(imgs_info or [])} ảnh nhiệm vụ. Đang chạy Cloud OCR API siêu tốc song song...")
     def _fetch_one_img(item):
         try:
             if item['type'] == 'b64':
@@ -253,42 +278,58 @@ def detect_sponsor_domain(page_link):
         except Exception:
             return None
 
-    with ThreadPoolExecutor(max_workers=min(len(imgs_info or [1]), 4)) as ex:
+    with ThreadPoolExecutor(max_workers=min(len(imgs_info or [1]), 5)) as ex:
         all_img_bytes = list(ex.map(_fetch_one_img, imgs_info or []))
 
-    for idx_img, img_bytes in enumerate(all_img_bytes):
-        if not img_bytes:
-            continue
-        try:
-            res, _ = ocr(img_bytes)
-            if res:
-                for line in res:
-                    if len(line) > 1:
-                        t = line[1].strip()
-                        all_texts.append(t)
-                try:
-                    items = []
-                    for box, text, conf in res:
-                        cy = (box[0][1] + box[2][1]) / 2.0
-                        min_x = min(p[0] for p in box)
-                        items.append((cy, min_x, text))
-                    items.sort(key=lambda x: x[0])
-                    clusters = []
-                    for it in items:
-                        if not clusters or abs(clusters[-1][0] - it[0]) > 15:
-                            clusters.append([it[0], [it]])
-                        else:
-                            clusters[-1][1].append(it)
-                    for _, box_list in clusters:
-                        box_list.sort(key=lambda x: x[1])
-                        c_line = ' '.join(b[2] for b in box_list)
-                        all_texts.append(c_line)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+    # Phase 1: High-speed parallel Cloud OCR API (3s)
+    cloud_texts = []
+    valid_imgs = [b for b in all_img_bytes if b]
+    if valid_imgs:
+        with ThreadPoolExecutor(max_workers=min(len(valid_imgs), 5)) as ex:
+            cloud_results = list(ex.map(_ocr_cloud_api, valid_imgs))
+        for c_res in cloud_results:
+            if c_res:
+                cloud_texts.extend(c_res.splitlines())
 
-    candidates = extract_domain_candidates(all_texts)
+    candidates = extract_domain_candidates(all_texts + cloud_texts)
+
+    # Phase 2: Automatic Fallback to Local RapidOCR if Cloud API returned no viable candidates
+    if not candidates and valid_imgs:
+        log("[!] Cloud OCR chưa đủ dữ liệu, tự động kích hoạt Local RapidOCR AI...")
+        ocr = get_ocr()
+        for idx_img, img_bytes in enumerate(valid_imgs):
+            try:
+                res, _ = ocr(img_bytes)
+                if res:
+                    for line in res:
+                        if len(line) > 1:
+                            all_texts.append(line[1].strip())
+                    try:
+                        items = []
+                        for box, text, conf in res:
+                            cy = (box[0][1] + box[2][1]) / 2.0
+                            min_x = min(p[0] for p in box)
+                            items.append((cy, min_x, text))
+                        items.sort(key=lambda x: x[0])
+                        clusters = []
+                        for it in items:
+                            if not clusters or abs(clusters[-1][0] - it[0]) > 15:
+                                clusters.append([it[0], [it]])
+                            else:
+                                clusters[-1][1].append(it)
+                        for _, box_list in clusters:
+                            box_list.sort(key=lambda x: x[1])
+                            c_line = ' '.join(b[2] for b in box_list)
+                            all_texts.append(c_line)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        candidates = extract_domain_candidates(all_texts)
+    else:
+        all_texts.extend(cloud_texts)
+        log(f"[+] Cloud OCR hoàn tất siêu tốc ({len(cloud_texts)} dòng chữ trích xuất).")
+
     log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (kèm giải mã mask): {candidates}")
 
     # Sắp xếp và phân hạng các ứng viên:

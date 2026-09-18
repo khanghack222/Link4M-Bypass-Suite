@@ -77,6 +77,20 @@ def is_domain_live(domain: str) -> bool:
         socket.gethostbyname(clean)
         return True
     except Exception:
+        # Fallback to Google DoH to avoid ISP DNS false positives
+        try:
+            import urllib.request, json, ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(f"https://dns.google/resolve?name={clean}", headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, context=ctx, timeout=2.0) as r:
+                data = json.loads(r.read().decode("utf-8"))
+                for ans in data.get("Answer", []):
+                    if ans.get("type") == 1:
+                        return True
+        except Exception:
+            pass
         add_to_dead_domains(clean)
         return False
 
@@ -139,7 +153,9 @@ def run(target_url: str = None, headless: bool = None):
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
-                '--window-size=1280,720'
+                '--window-size=1280,720',
+                '--enable-features=DnsOverHttps',
+                '--dns-over-https-templates=https://dns.google/dns-query'
             ]
         )
         context = browser.new_context(
@@ -403,6 +419,7 @@ def run(target_url: str = None, headless: bool = None):
             text = text.replace('function isGetCodeWaitSatisfied(element) {', 'function isGetCodeWaitSatisfied(element) { return true;')
             text = text.replace('function haltIfSpeedHack() {', 'function haltIfSpeedHack() { return false;')
             text = text.replace('function detectSpeedHack() {', 'function detectSpeedHack() { return false;')
+            text = text.replace('solution: solution,', 'solution: String(solution ?? "0"),')
             text = text.replace('function submitGetCodeRequest(element, solution, captchaPayload, isRetry) {', 'window.__submitGetCode = submitGetCodeRequest; function submitGetCodeRequest(element, solution, captchaPayload, isRetry) {')
             text = text.replace('function checkButtonClick(step = 4){', 'window.__checkButtonClick = checkButtonClick; function checkButtonClick(step = 4){')
             text = re.sub(r"checkScrollUpDown\w*\([^)]*\);\s*return true;", "return false;", text)
