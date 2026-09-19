@@ -1,0 +1,624 @@
+{
+  "version": "2.0.0-adaptive",
+  "stats": {
+    "total_runs": 7,
+    "total_success": 2,
+    "total_heals": 1,
+    "time_saved_sec": 0.0,
+    "last_updated": 1789782848
+  },
+  "domain_intelligence": {
+    "tructiepkeobongda.com": {
+      "domain": "tructiepkeobongda.com",
+      "traffic_key": "BUQeFzS",
+      "success_count": 1,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1789780437,
+      "ip": "104.21.18.134",
+      "network": "what-on.com"
+    },
+    "theyhouse.co": {
+      "domain": "theyhouse.co",
+      "traffic_key": "gcFOGozc",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "best_time_sec": 95.87,
+      "last_code": "tKowQf",
+      "last_success": 1789781079,
+      "ip": "172.67.191.36",
+      "network": "what-on.com"
+    },
+    "giaiphapdokiem.vn": {
+      "domain": "giaiphapdokiem.vn",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 2,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1789781725
+    },
+    "soikeonhacai24h.net": {
+      "domain": "soikeonhacai24h.net",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1789782163
+    },
+    "dichvuchuyennhahanoi.com": {
+      "domain": "dichvuchuyennhahanoi.com",
+      "traffic_key": "jGZ8P",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "best_time_sec": 73.92,
+      "last_code": "iN4Cus",
+      "last_success": 1789782627,
+      "ip": "172.67.219.58",
+      "network": "website-analytics.net"
+    },
+    "ghk.gb.net": {
+      "domain": "ghk.gb.net",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "172.67.214.159",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "rik88.gb.net": {
+      "domain": "rik88.gb.net",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "172.67.192.114",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "dawnseeker.za.com": {
+      "domain": "dawnseeker.za.com",
+      "traffic_key": "bM6yhoh",
+      "network": "what-on.com",
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.54.177",
+      "default_steps": 2,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "betflik24win.co": {
+      "domain": "betflik24win.co",
+      "traffic_key": "GWYYdtf6",
+      "network": "website-analytics.net",
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.71.134",
+      "default_steps": 2,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "happy.jpn.com": {
+      "domain": "happy.jpn.com",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.17.40",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "memberqq.me": {
+      "domain": "memberqq.me",
+      "traffic_key": "CFPLb",
+      "network": "what-on.com",
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.18.238",
+      "default_steps": 2,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "agobet.cc": {
+      "domain": "agobet.cc",
+      "traffic_key": "Q5mGI",
+      "network": "website-analytics.net",
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "172.67.140.77",
+      "default_steps": 2,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "recsport.tv": {
+      "domain": "recsport.tv",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.72.248",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "d55slot.vip": {
+      "domain": "d55slot.vip",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "172.67.181.54",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "preciouscollection.co.in": {
+      "domain": "preciouscollection.co.in",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.12.35",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "ro88.cn.com": {
+      "domain": "ro88.cn.com",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "172.67.157.237",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "aviator-slot.games": {
+      "domain": "aviator-slot.games",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "172.67.219.221",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "santuy88slot.net": {
+      "domain": "santuy88slot.net",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "172.67.161.150",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "hitclube.cc": {
+      "domain": "hitclube.cc",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.90.229",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "vitalticks.in": {
+      "domain": "vitalticks.in",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.94.39",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "marcjestin.me": {
+      "domain": "marcjestin.me",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.63.195",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "tamjaibet.cc": {
+      "domain": "tamjaibet.cc",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "160.250.186.152",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "ex8898.com": {
+      "domain": "ex8898.com",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.1.64",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "ayoslots.co": {
+      "domain": "ayoslots.co",
+      "traffic_key": null,
+      "network": null,
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.86.36",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "agilafc.com": {
+      "domain": "agilafc.com",
+      "traffic_key": null,
+      "network": "layma.net",
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "172.67.187.197",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "vijaylaxmigranito.in": {
+      "domain": "vijaylaxmigranito.in",
+      "traffic_key": null,
+      "network": "layma.net",
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "62.146.234.92",
+      "default_steps": 1,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "nhandinhkeobongdaonl.com": {
+      "domain": "nhandinhkeobongdaonl.com",
+      "traffic_key": "gcFOGozc",
+      "network": "what-on.com",
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "172.67.218.14",
+      "default_steps": 2,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "soccervirtualcup.com": {
+      "domain": "soccervirtualcup.com",
+      "traffic_key": "gcFOGozc",
+      "network": "what-on.com",
+      "success_count": 1,
+      "fail_count": 0,
+      "ip": "104.21.75.156",
+      "default_steps": 2,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "last_success": 1789782848
+    },
+    "soikeous.org": {
+      "domain": "soikeous.org",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "DNS_NXDOMAIN",
+      "last_fail": 1789782848
+    }
+  },
+  "campaign_cache": {
+    "h19": {
+      "sponsor_url": "https://memberqq.me",
+      "traffic_key": "CFPLb",
+      "timestamp": 1789782848
+    },
+    "h19.com": {
+      "sponsor_url": "https://memberqq.me",
+      "traffic_key": "CFPLb",
+      "timestamp": 1789782848
+    },
+    "222-3": {
+      "sponsor_url": "https://memberqq.me",
+      "traffic_key": "CFPLb",
+      "timestamp": 1789782848
+    },
+    "200-2": {
+      "sponsor_url": "https://memberqq.me",
+      "traffic_key": "CFPLb",
+      "timestamp": 1789782848
+    },
+    "155-2": {
+      "sponsor_url": "https://memberqq.me",
+      "traffic_key": "CFPLb",
+      "timestamp": 1789782848
+    },
+    "17937-2": {
+      "sponsor_url": "https://memberqq.me",
+      "traffic_key": "CFPLb",
+      "timestamp": 1789782848
+    },
+    "luck8": {
+      "sponsor_url": "https://ayoslots.co",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "216-2": {
+      "sponsor_url": "https://tamjaibet.cc",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "ex88": {
+      "sponsor_url": "https://ex8898.com",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "197-2": {
+      "sponsor_url": "https://ex8898.com",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "218-3": {
+      "sponsor_url": "https://tamjaibet.cc",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "keo nha cai": {
+      "sponsor_url": "https://recsport.tv",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "kèo nhà cái": {
+      "sponsor_url": "https://recsport.tv",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "keonhacai": {
+      "sponsor_url": "https://recsport.tv",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "kèo nhà cái 5": {
+      "sponsor_url": "https://recsport.tv",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "400-2": {
+      "sponsor_url": "https://recsport.tv",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "159-2": {
+      "sponsor_url": "https://recsport.tv",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "184-2": {
+      "sponsor_url": "https://d55slot.vip",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "ao88": {
+      "sponsor_url": "https://d55slot.vip",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "221-3": {
+      "sponsor_url": "https://preciouscollection.co.in",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "nh88": {
+      "sponsor_url": "https://preciouscollection.co.in",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "mm88": {
+      "sponsor_url": "https://preciouscollection.co.in",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "97-2": {
+      "sponsor_url": "https://ro88.cn.com",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "136-2": {
+      "sponsor_url": "https://aviator-slot.games",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "nohu": {
+      "sponsor_url": "https://aviator-slot.games",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "162-2": {
+      "sponsor_url": "https://santuy88slot.net",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "uy88": {
+      "sponsor_url": "https://santuy88slot.net",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "134-2": {
+      "sponsor_url": "https://hitclube.cc",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "217-4": {
+      "sponsor_url": "https://aviator-slot.games",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "nohu90": {
+      "sponsor_url": "https://aviator-slot.games",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "237-2": {
+      "sponsor_url": "https://vitalticks.in",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "206-2": {
+      "sponsor_url": "https://marcjestin.me",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "227-2": {
+      "sponsor_url": "https://agobet.cc",
+      "traffic_key": "Q5mGI",
+      "timestamp": 1789782848
+    },
+    "188-2": {
+      "sponsor_url": "https://agobet.cc",
+      "traffic_key": "Q5mGI",
+      "timestamp": 1789782848
+    },
+    "205-2": {
+      "sponsor_url": "https://tamjaibet.cc",
+      "traffic_key": null,
+      "timestamp": 1789782848
+    },
+    "208-2": {
+      "sponsor_url": "https://agobet.cc",
+      "traffic_key": "Q5mGI",
+      "timestamp": 1789782848
+    },
+    "u88": {
+      "sponsor_url": "https://agobet.cc",
+      "traffic_key": "Q5mGI",
+      "timestamp": 1789782848
+    }
+  },
+  "blacklist": [
+    "zbet.com",
+    "shbet.com",
+    "keonhacai",
+    "catfish",
+    "martech",
+    "bong88",
+    "fb88",
+    "w88",
+    "fun88",
+    "188bet",
+    "kubet",
+    "thabet",
+    "jun88",
+    "789bet",
+    "hi88",
+    "new88",
+    "f8bet"
+  ],
+  "ad_network_rules": {
+    "what-on.com": {
+      "api_endpoint": "https://s1.what-on.com/widget/get_quest_code.html",
+      "code_selector": ".whatoncode, .whatoncode-wrapper",
+      "default_steps": 2
+    },
+    "website-analytics.net": {
+      "api_endpoint": "https://website-analytics.net/widget/get_quest_code.html",
+      "code_selector": ".whatoncode, .whatoncode-wrapper",
+      "default_steps": 2
+    },
+    "traffic.com.vn": {
+      "api_endpoint": "process-site",
+      "code_selector": "[id^='traffic'], .completed",
+      "default_steps": 1
+    }
+  },
+  "dns_cache": {
+    "theyhouse.co": "172.67.191.36",
+    "dichvuchuyennhahanoi.com": "172.67.219.58",
+    "ghk.gb.net": "172.67.214.159",
+    "rik88.gb.net": "172.67.192.114",
+    "dawnseeker.za.com": "104.21.54.177",
+    "betflik24win.co": "104.21.71.134",
+    "happy.jpn.com": "104.21.17.40",
+    "memberqq.me": "104.21.18.238",
+    "agobet.cc": "172.67.140.77",
+    "recsport.tv": "104.21.72.248",
+    "d55slot.vip": "172.67.181.54",
+    "preciouscollection.co.in": "104.21.12.35",
+    "ro88.cn.com": "172.67.157.237",
+    "aviator-slot.games": "172.67.219.221",
+    "santuy88slot.net": "172.67.161.150",
+    "hitclube.cc": "104.21.90.229",
+    "vitalticks.in": "104.21.94.39",
+    "marcjestin.me": "104.21.63.195",
+    "tamjaibet.cc": "160.250.186.152",
+    "ex8898.com": "104.21.1.64",
+    "ayoslots.co": "104.21.86.36",
+    "agilafc.com": "172.67.187.197",
+    "vijaylaxmigranito.in": "62.146.234.92",
+    "nhandinhkeobongdaonl.com": "172.67.218.14",
+    "soccervirtualcup.com": "104.21.75.156",
+    "tructiepkeobongda.com": "104.21.18.134"
+  }
+}

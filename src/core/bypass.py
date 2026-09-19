@@ -20,7 +20,14 @@ from sponsor import detect_sponsor_domain, solve_sponsor_quest
 def is_valid_destination(u: str) -> bool:
     if not u or not u.startswith("http"):
         return False
-    return not any(d in u for d in ["link4m.org", "link4m.net", "link4m.co", "link4m.me", "about:blank"])
+    AD_DOMAINS = [
+        "link4m.org", "link4m.net", "link4m.co", "link4m.me", "about:blank",
+        "zbet", "shbet", "keonhacai", "bet88", "fb88", "fun88", "w88", "bk8",
+        "ku789", "sunwin", "go88", "hitclub", "b52", "rikvip", "789club",
+        "website-analytics", "what-on", "iatum", "traffic.com.vn", "best-traffic",
+        "catfish", "martech", "doubleclick", "googlesyndication", "adservice"
+    ]
+    return not any(d in u.lower() for d in AD_DOMAINS)
 
 def run(target_url: str = None, headless: bool = True):
     if not target_url:
@@ -52,7 +59,7 @@ def run(target_url: str = None, headless: bool = True):
             "--window-size=1280,720",
             "--enable-features=DnsOverHttps",
             "--dns-over-https-templates=https://dns.google/dns-query",
-            "--host-resolver-rules=MAP happy.jpn.com 104.21.17.40, MAP jpn.com 54.153.56.183, MAP dawnseeker.za.com 104.21.54.177, MAP betflik24win.co 172.67.170.150, MAP what-on.com 172.67.178.139, MAP s1.what-on.com 104.21.43.112, MAP website-analytics.net 104.21.52.154"
+            f"--host-resolver-rules={brain.get_host_resolver_rules()}"
         ]
         if headless:
             launch_args.extend([
@@ -140,9 +147,12 @@ def run(target_url: str = None, headless: bool = True):
         page_link = context.new_page()
         final_destination_url = None
 
+        allow_intercept_new_tab = False
         def on_new_page(new_p):
             nonlocal final_destination_url
             try:
+                if not allow_intercept_new_tab:
+                    return
                 new_p.wait_for_load_state("domcontentloaded", timeout=15000)
                 u = new_p.url
                 if is_valid_destination(u):
@@ -212,6 +222,7 @@ def run(target_url: str = None, headless: bool = True):
 
         # KIỂM TRA LUỒNG: CỔNG CAPTCHA TRỰC TIẾP HAY NHIỆM VỤ WEB TÀI TRỢ
         if has_captcha_direct and not has_sponsor_mission:
+            allow_intercept_new_tab = True
             # Luồng 1: Cổng Captcha Trực Tiếp (link thuần captcha không có nhà tài trợ)
             log("🚀 [DIRECT GATE] Phát hiện Link4M Cổng Trực Tiếp (Không có web tài trợ)!")
             try:
@@ -278,6 +289,7 @@ def run(target_url: str = None, headless: bool = True):
                 pass
 
             page_link.bring_to_front()
+            allow_intercept_new_tab = True
             time.sleep(0.2)
 
             page_link.evaluate("""(code) => {
@@ -292,9 +304,9 @@ def run(target_url: str = None, headless: bool = True):
                 document.querySelectorAll('.modal-backdrop, #ad_banner, [id*="google_ads"], [class*="overlay"], iframe[id*="aswift"]').forEach(el => el.remove());
             }""")
 
-            # Giải reCAPTCHA chính xác trên form nhập mã (#recaptcha-2)
+            # Giải reCAPTCHA chính xác trên form nhập mã (#recaptcha hoặc #recaptcha-2)
             try:
-                recaptcha_target = "#recaptcha-2" if page_link.locator("#recaptcha-2").count() > 0 else None
+                recaptcha_target = "#recaptcha, #recaptcha-2" if page_link.locator("#recaptcha, #recaptcha-2").count() > 0 else None
                 res_solve = get_solver().solve_on_page(page_link, container_selector=recaptcha_target)
                 log(f"[+] Smart solver result: {res_solve}")
             except Exception as e:
@@ -310,7 +322,7 @@ def run(target_url: str = None, headless: bool = True):
                         if (el.value && el.value.length > 20) validToken = el.value;
                     });
                     if (validToken) {
-                        document.querySelectorAll('[name="g-recaptcha-response"], #g-recaptcha-response-2').forEach(el => {
+                        document.querySelectorAll('[name="g-recaptcha-response"], #g-recaptcha-response, #g-recaptcha-response-1, #g-recaptcha-response-2').forEach(el => {
                             el.value = validToken;
                         });
                         try {
@@ -320,18 +332,23 @@ def run(target_url: str = None, headless: bool = True):
                         } catch (e) {}
                     }
 
-                    if (window.jQuery) {
-                        const f2 = jQuery('#main-form-2');
-                        if (f2.length && typeof checkPassword === 'function') {
-                            window.check_form = f2;
-                            checkPassword();
+                    // Hỗ trợ đồng thời cả #main-form và #main-form-2
+                    const forms = document.querySelectorAll('#main-form, #main-form-2, form');
+                    forms.forEach(f => {
+                        const inp = f.querySelector("input[name='password'], input.password, #password, #password-2, [placeholder*='Nhập mã']");
+                        if (inp) {
+                            inp.value = code;
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
                         }
-                    }
 
-                    // Direct API dispatch fallback
-                    const fActive = document.querySelector('#main-form-2');
-                    if (fActive) {
-                        const formData = new FormData(fActive);
+                        if (window.jQuery && typeof checkPassword === 'function') {
+                            window.check_form = jQuery(f);
+                            try { checkPassword(); } catch (e) {}
+                        }
+
+                        // Direct API dispatch fallback
+                        const formData = new FormData(f);
                         if (validToken) formData.set('g-recaptcha-response', validToken);
                         formData.set('password', code);
                         const params = new URLSearchParams(formData).toString();
@@ -343,12 +360,19 @@ def run(target_url: str = None, headless: bool = True):
                         }).then(r => r.json()).then(res => {
                             if (res && res.url) {
                                 window.destination_url = res.url;
-                                document.querySelectorAll('.get-link').forEach(a => { a.href = res.url; a.classList.remove('disabled'); });
+                                document.querySelectorAll('.get-link, a[href*="download"]').forEach(a => {
+                                    a.href = res.url;
+                                    a.classList.remove('disabled');
+                                    a.removeAttribute('disabled');
+                                    a.click();
+                                });
                             }
                         }).catch(() => {});
-                    }
+                    });
 
-                    if (typeof checkCaptcha === 'function') checkCaptcha();
+                    if (typeof checkCaptcha === 'function') {
+                        try { checkCaptcha(); } catch (e) {}
+                    }
 
                     document.querySelectorAll('#btn-main, #btn-continue, button[type="submit"], input[type="submit"], .btn-primary, .get-link').forEach(btn => {
                         if (!btn.classList.contains('disabled')) {
@@ -420,6 +444,11 @@ def run(target_url: str = None, headless: bool = True):
             pass
 
         log("[*] Full automation completed successfully.")
+        try:
+            from brain import get_brain
+            log(get_brain().get_summary_report())
+        except Exception:
+            pass
         time.sleep(1.5)
         browser.close()
 

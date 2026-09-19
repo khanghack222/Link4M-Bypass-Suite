@@ -124,6 +124,15 @@ def show_result_card(final_url: str, duration_sec: int, engine_name: str):
     print(f"  {C_CYAN}║{C_RESET}  {C_GREEN}✔ Đã tự động sao chép link vào Clipboard (Ctrl+V để dán)!{C_RESET}             {C_CYAN}║{C_RESET}")
     print(f"  {C_CYAN}╚══════════════════════════════════════════════════════════════════════════════╝{C_RESET}\n")
 
+    try:
+        from brain import get_brain
+        b_rep = get_brain().get_summary_report()
+        for l in b_rep.splitlines():
+            print(f"  {C_PURPLE}{l}{C_RESET}")
+        print()
+    except Exception:
+        pass
+
 
 def save_destination_url(final_url: str):
     """Saves final destination link to project files and Desktop."""
@@ -162,9 +171,16 @@ def read_captured_destination() -> str:
 
 
 def execute_bypass(target_url: str, headless: bool = True) -> str:
-    """Executes the specialized bypass runner according to the URL category."""
+    """Executes the specialized bypass runner guided by BotBrain FlowDirector & DataController."""
     target_url = target_url.strip()
-    category = classify_url(target_url)
+    
+    # 🧠 BRAIN FLOW DIRECTOR: determine engine with intelligent priority
+    from src.core.brain import get_brain
+    brain = get_brain()
+    category = brain.flow_director.determine_best_engine(target_url)
+    
+    # 🧠 BRAIN DATA CONTROLLER: start telemetry & data lifecycle session
+    s_id = brain.data_controller.start_session(target_url, category)
 
     # Clean up old destination files
     for p in [DEST_FILE, FINAL_DEST_FILE]:
@@ -276,10 +292,12 @@ def execute_bypass(target_url: str, headless: bool = True) -> str:
     final_dest = read_captured_destination()
 
     if final_dest and final_dest.startswith("http"):
+        brain.data_controller.finish_session(success=True, destination_url=final_dest)
         save_destination_url(final_dest)
         show_result_card(final_dest, duration, category)
         return final_dest
     else:
+        brain.data_controller.finish_session(success=False)
         print(f"\n  {C_YELLOW}⚠ Tiến trình hoàn tất nhưng chưa trích xuất được link đích.{C_RESET}\n")
         return ""
 
@@ -319,6 +337,8 @@ def main():
     parser.add_argument("--head", "-w", "--window", action="store_true", help="Run with visible browser window")
     parser.add_argument("--headless", "-hl", action="store_true", default=True, help="Run in headless browser mode (default)")
     parser.add_argument("--loop", "-l", action="store_true", help="Continuously monitor clipboard for new shortlinks")
+    parser.add_argument("--train", "--train-brain", action="store_true", help="Run autonomous training on BotBrain knowledge base")
+    parser.add_argument("--brain", action="store_true", help="View current BotBrain evolution report")
 
     args = parser.parse_args()
 
@@ -326,6 +346,16 @@ def main():
     headless = False if args.head else True
 
     print_banner()
+
+    if args.brain:
+        from src.core.brain import get_brain
+        print(get_brain().get_summary_report())
+        return
+
+    if args.train:
+        from src.core.trainer import train_now
+        train_now()
+        return
 
     # Loop Mode
     if args.loop:

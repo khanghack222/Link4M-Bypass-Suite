@@ -6,6 +6,10 @@ import base64
 import requests
 from rapidocr_onnxruntime import RapidOCR
 from config import log
+try:
+    from brain import get_brain
+except ImportError:
+    from src.core.brain import get_brain
 
 _OCR_INSTANCE = None
 def get_ocr():
@@ -76,7 +80,7 @@ def unmask_domain_candidates(raw_text: str):
     return list(dict.fromkeys(results))
 
 VALID_TLDS = [
-    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'de.com', 'uk.com', 'jpn.com', 'com', 'net', 'org', 'io', 'cc',
+    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'de.com', 'uk.com', 'jpn.com', 'gb.net', 'com', 'net', 'org', 'io', 'cc',
     'me', 'vn', 'tw', 'vip', 'tv', 'co', 'site', 'top', 'online', 'xyz',
     'info', 'biz', 'club', 'games', 'app', 'live', 'ai', 'in', 'us', 'uk'
 ]
@@ -330,12 +334,17 @@ def detect_sponsor_domain(page_link):
         all_texts.extend(cloud_texts)
         log(f"[+] Cloud OCR hoàn tất siêu tốc ({len(cloud_texts)} dòng chữ trích xuất).")
 
-    log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (kèm giải mã mask): {candidates}")
+    brain = get_brain()
+    candidates = brain.prioritize_candidates(candidates)
+    log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (sau khi lọc Brain & giải mã mask): {candidates}")
 
     # Sắp xếp và phân hạng các ứng viên:
     def rank_candidate(c):
         score = 0
         clow = c.lower()
+        prof = brain.get_domain_profile(clow)
+        if prof and prof.get("success_count", 0) > 0:
+            score += 1000 + prof.get("success_count", 0) * 50
         for txt in all_texts:
             tlow = txt.lower()
             if f"https://{clow}" in tlow or f"http://{clow}" in tlow or f"website:{clow}" in tlow.replace(' ', ''):
@@ -369,16 +378,57 @@ def detect_sponsor_domain(page_link):
         log(f"[+] Verified live sponsor website candidates (priority sorted): {final_live}")
         return final_live
 
+    # If Cloud OCR returned candidates but NONE were live, trigger Local RapidOCR
+    if valid_imgs and (not candidates or not final_live):
+        log("[*] Không tìm thấy ứng viên live từ Cloud OCR, kích hoạt Local RapidOCR để quét lại ảnh...")
+        ocr = get_ocr()
+        local_texts = []
+        for idx_img, img_bytes in enumerate(valid_imgs):
+            try:
+                res, _ = ocr(img_bytes)
+                if res:
+                    for line in res:
+                        if len(line) > 1:
+                            local_texts.append(line[1].strip())
+            except Exception:
+                pass
+        candidates_local = extract_domain_candidates(local_texts)
+        candidates_local = brain.prioritize_candidates(candidates_local)
+        candidates_local.sort(key=rank_candidate, reverse=True)
+        log(f"[*] Trích xuất ứng viên từ RapidOCR: {candidates_local}")
+        for c in candidates_local:
+            live_url, has_sc = probe_domain_live(c)
+            if live_url:
+                if has_sc and live_url not in script_urls:
+                    script_urls.append(live_url)
+                elif live_url not in live_urls:
+                    live_urls.append(live_url)
+        final_live = script_urls + [u for u in live_urls if u not in script_urls]
+        if final_live:
+            log(f"[+] Verified live sponsor website candidates từ Local RapidOCR: {final_live}")
+            return final_live
+
     if candidates:
-        fallbacks = [f"https://{c}" for c in candidates]
-        log(f"[+] Fallback to candidate list: {fallbacks}")
-        return fallbacks
+        fallbacks = [f"https://{c}" for c in candidates if not brain.is_blacklisted(c) and resolve_ip_google(c)]
+        if fallbacks:
+            log(f"[+] Fallback to candidate list: {fallbacks}")
+            return fallbacks
 
     return []
 
 def _solve_single_sponsor(context, sponsor_url: str) -> str:
+    t_single_start = time.time()
+    code_from_api = False
     log(f"[*] Opening sponsor site via Google referrer: {sponsor_url}")
     page = context.new_page()
+
+    def on_sponsor_popup(p):
+        if p != page:
+            try:
+                p.close()
+            except Exception:
+                pass
+    context.on("page", on_sponsor_popup)
 
     # 1. Neutralize detectIncognito cleanly
     page.add_init_script("""
@@ -397,23 +447,46 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
             route.abort()
             return
         u = req.url.lower()
-        if any(k in u for k in ["service", "widget", "traffic", "what-on", "website-analytics", "yoads"]):
+        if any(ep in u for ep in ["get_quest_code", "get_code", "ajax_code", "lay_ma", "process-site", "check-site", "iatum"]):
+            route.continue_()
+            return
+        if any(k in u for k in ["service", "widget", "traffic", "what-on", "website-analytics", "yoads"]) and (".js" in u or "script" in req.resource_type):
             try:
                 res = route.fetch()
                 body = res.text()
-                # Bypass detectIncognito at root definition
+                # 1. Bypass detectIncognito at root definition
                 body = re.sub(r'if\s*\(\s*result\.isPrivate\s*\)\s*\{', 'if(false){', body)
                 body = re.sub(r'function\s+__callback\s*\(\s*isPrivate\s*\)\s*\{', 'function __callback(isPrivate) { isPrivate = false; ', body)
                 body = body.replace('async function detectIncognito() {', 'async function detectIncognito() { return { isPrivate: false, browserName: "Chrome" }; } async function _old_detectIncognito() {')
                 body = body.replace('var detectIncognito = async function () {', 'var detectIncognito = async function () { return { isPrivate: false, browserName: "Chrome" }; }; var _old_detectIncognito = async function () {')
                 body = body.replace('if(result.isPrivate){', 'if(false){')
                 body = re.sub(r'var check_ref\s*=\s*false;', 'var check_ref = true;', body)
-                # Keep scroll/active state
-                body = body.replace('!mouse_scroll', 'false')
-                body = body.replace('mouse_scroll = !1', 'mouse_scroll = true')
-                body = body.replace('mouse_scroll = false', 'mouse_scroll = true')
-                body = body.replace('traffic_blurred\n\t\t\t\t\t\t\t\t\t\t\t||', '')
-                body = body.replace('traffic_blurred ||', '')
+
+                # 2. Keep scroll/active state & eliminate blur lock (handles CRLF and tabs)
+                body = re.sub(r'!\s*mouse_scroll', 'false', body)
+                body = re.sub(r'mouse_scroll\s*=\s*[^;]+;', 'mouse_scroll = true;', body)
+                body = re.sub(r'traffic_blurred\s*\|\|', '', body)
+                body = re.sub(r'var\s+traffic_blurred\s*=\s*[^;]+;', 'var traffic_blurred = false;', body)
+                body = re.sub(r'traffic_blurred\s*=\s*[^;]+;', 'traffic_blurred = false;', body)
+                body = re.sub(r'mouse_scroll_time\s*\+\s*delay_time\s*<\s*Date\.now\(\)\s*\/\s*1000\s*&&\s*\([^)]*\)', 'false', body)
+
+                # 3. Expose checkButtonClick to window
+                body = body.replace('function checkButtonClick(){', 'window.__checkButtonClick = checkButtonClick; function checkButtonClick(){')
+
+                # 4. Universal quest_info fallback across all steps and domains
+                quest_patch = """var quest_info = localStorage.getItem(uuid_name + '_quest');
+if (!quest_info && typeof(Storage) !== "undefined") {
+    for (var _k in localStorage) {
+        if (_k.includes('quest')) {
+            try {
+                var _tmp = JSON.parse(localStorage.getItem(_k));
+                if (_tmp && _tmp.id) { quest_info = localStorage.getItem(_k); localStorage.setItem(uuid_name + '_quest', quest_info); break; }
+            } catch(e) {}
+        }
+    }
+}"""
+                body = body.replace("var quest_info = localStorage.getItem(uuid_name + '_quest');", quest_patch)
+
                 route.fulfill(response=res, body=body)
                 return
             except Exception:
@@ -437,6 +510,32 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
     try:
         page.goto(sponsor_url, wait_until="domcontentloaded", referer="https://www.google.com/", timeout=40000)
     except Exception as e:
+        if "ERR_NAME_NOT_RESOLVED" in str(e):
+            d_name = urllib.parse.urlparse(sponsor_url).netloc.split(':')[0]
+            ip = resolve_ip_google(d_name)
+            if ip:
+                log(f"[*] DNS self-healing: Domain {d_name} resolved to {ip} via Google DNS. Spawning mapped session...")
+                try: page.close()
+                except Exception: pass
+                try:
+                    from playwright.sync_api import sync_playwright
+                    with sync_playwright() as p_sub:
+                        b_sub = p_sub.chromium.launch(
+                            headless=True,
+                            args=[
+                                f'--host-resolver-rules=MAP {d_name} {ip}, MAP *.{d_name} {ip}, MAP s1.what-on.com 104.21.43.112, MAP what-on.com 172.67.178.139',
+                                '--no-sandbox'
+                            ]
+                        )
+                        ctx_sub = b_sub.new_context(
+                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                            viewport={"width": 1280, "height": 720}
+                        )
+                        res_code = _solve_single_sponsor(ctx_sub, sponsor_url)
+                        b_sub.close()
+                        return res_code
+                except Exception as sub_e:
+                    log(f"[!] Mapped session error: {sub_e}")
         log(f"[!] Sponsor goto note: {e}")
         try: page.close()
         except Exception: pass
@@ -486,7 +585,7 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
     code_found = None
     campaign_dead = False
     def on_resp(res):
-        nonlocal code_found, campaign_dead
+        nonlocal code_found, campaign_dead, code_from_api
         if any(ep in res.url for ep in ["get_quest_code.html", "get_code", "ajax_code", "lay_ma", "process-site", "check-site", "iatum"]):
             try:
                 data = res.json()
@@ -498,6 +597,7 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                     val = clean_code_str(raw)
                     if is_valid_sponsor_code(val):
                         code_found = val
+                        code_from_api = True
                         log(f"🎉 EXTRACTED SPONSOR CODE FROM API: {code_found}")
                     else:
                         log(f"[*] API intermediate message: {val}")
@@ -543,7 +643,7 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                 time.sleep(0.5)
 
     visited = {sponsor_url.rstrip("/")}
-    for step in range(1, 4):
+    for step in range(1, 3):
         if code_found or campaign_dead:
             break
         log(f"\n[*] EXECUTING STEP {step} ON SPONSOR SITE")
@@ -648,7 +748,11 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                             el.dataset.click = 'true';
                             delete el.dataset.loaded;
                         }}
-                        if (typeof checkButtonClick === 'function') checkButtonClick();
+                        if (typeof window.__checkButtonClick === 'function') {{
+                            window.__checkButtonClick();
+                        }} else if (typeof checkButtonClick === 'function') {{
+                            checkButtonClick();
+                        }}
                     }}""")
                     try:
                         page.evaluate(f"""() => {{
@@ -688,18 +792,26 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                                 break
                     else:
                         log(f"[*] Step {step} countdown finished! Waiting for mission code from API/DOM...")
-                        for _ in range(30):
+                        for _ in range(40):
                             time.sleep(0.5)
                             if code_found:
                                 break
                             try:
                                 dom_t = page.evaluate(f"""() => {{
+                                    const whaton = document.querySelector('.whatoncode, [class*="whatoncode"], .whatoncode-wrapper');
+                                    if (whaton && whaton.innerText) {{
+                                        const m = whaton.innerText.match(/(?:M[ãa]\\s*KM|M[ãa]\\s*x[áa]c\\s*nh[ậa]n|Code|M[ãa])[\\s\\:\\-]+([A-Za-z0-9]{{4,20}})/i);
+                                        if (m) return m[1];
+                                        return whaton.innerText;
+                                    }}
                                     const el = document.getElementById('{traffic_key}');
                                     if (el) {{
                                         const d = el.getElementsByTagName('div')[0];
                                         if (d && d.innerText) return d.innerText;
                                         return el.dataset.code || el.value || el.innerText || '';
                                     }}
+                                    const cBtn = document.querySelector('.completed, [class*="completed"], #ma-km, #token');
+                                    if (cBtn && cBtn.innerText) return cBtn.innerText;
                                     return null;
                                 }}""")
                                 if dom_t:
@@ -741,7 +853,10 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
                 try {{
                     const el = document.querySelector(s);
                     if (el) {{
-                        const t = (el.dataset.code || el.value || el.innerText || '').trim();
+                        let t = (el.dataset.code || el.value || el.innerText || '').trim();
+                        const m = t.match(/(?:M[ãa]\\s*KM|M[ãa]\\s*x[áa]c\\s*nh[ậa]n|Code|M[ãa])[\\s\\:\\-]+([A-Za-z0-9]{{4,20}})/i);
+                        if (m) return m[1];
+                        t = t.replace(/^(?:M[ãa]\\s*KM|M[ãa]\\s*x[áa]c\\s*nh[ậa]n|Code|M[ãa])[\\s\\:\\-]+/i, '').trim();
                         if (/^[A-Za-z0-9_\\-]{{4,20}}$/.test(t) && !/lay|ma|click|link|buoc/i.test(t)) return t;
                     }}
                 }} catch (e) {{}}
@@ -758,6 +873,25 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
         if m and is_valid_sponsor_code(m.group(1)):
             code_found = clean_code_str(m.group(1))
             log(f"[+] FOUND CODE IN BODY: {code_found}")
+
+    brain = get_brain()
+    elapsed_single = round(time.time() - t_single_start, 2)
+    if code_found:
+        strat = "api" if code_from_api else "dom"
+        brain.learn_success(sponsor_url, traffic_key, code_found, elapsed_single, winning_strategy=strat)
+        brain.data_controller.mark_stage("sponsor_success", {
+            "active_sponsor": sponsor_url,
+            "traffic_key": traffic_key,
+            "code": code_found
+        })
+    else:
+        brain.learn_failure(sponsor_url, "code_not_found")
+        brain.flow_director.handle_stage_failure("code_harvest", {"domain": sponsor_url, "error": "code_not_found"})
+
+    try:
+        context.remove_listener("page", on_sponsor_popup)
+    except Exception:
+        pass
 
     try:
         page.close()
