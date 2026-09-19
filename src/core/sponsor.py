@@ -418,7 +418,6 @@ def detect_sponsor_domain(page_link):
 
 def _solve_single_sponsor(context, sponsor_url: str) -> str:
     t_single_start = time.time()
-    code_from_api = False
     log(f"[*] Opening sponsor site via Google referrer: {sponsor_url}")
     page = context.new_page()
 
@@ -429,6 +428,21 @@ def _solve_single_sponsor(context, sponsor_url: str) -> str:
             except Exception:
                 pass
     context.on("page", on_sponsor_popup)
+
+    try:
+        return _solve_single_sponsor_impl(context, page, sponsor_url, t_single_start)
+    finally:
+        try:
+            context.remove_listener("page", on_sponsor_popup)
+        except Exception:
+            pass
+        try:
+            page.close()
+        except Exception:
+            pass
+
+def _solve_single_sponsor_impl(context, page, sponsor_url: str, t_single_start: float) -> str:
+    code_from_api = False
 
     # 1. Neutralize detectIncognito cleanly
     page.add_init_script("""
@@ -586,22 +600,45 @@ if (!quest_info && typeof(Storage) !== "undefined") {
     campaign_dead = False
     def on_resp(res):
         nonlocal code_found, campaign_dead, code_from_api
-        if any(ep in res.url for ep in ["get_quest_code.html", "get_code", "ajax_code", "lay_ma", "process-site", "check-site", "iatum"]):
+        u_lower = res.url.lower()
+        if any(ep in u_lower for ep in ["get_quest_code", "get_code", "ajax_code", "lay_ma", "process-site", "check-site", "iatum"]):
             try:
-                data = res.json()
-                log(f"[*] API Response raw from {res.url[:70]}: {data}")
-                if data.get("info") == "No Campaign" or (data.get("success") is False and "No Campaign" in str(data)):
-                    campaign_dead = True
-                raw = data.get("html") or data.get("code") or data.get("data") or data.get("c")
-                if raw:
-                    val = clean_code_str(raw)
-                    if is_valid_sponsor_code(val):
-                        code_found = val
-                        code_from_api = True
-                        log(f"🎉 EXTRACTED SPONSOR CODE FROM API: {code_found}")
-                    else:
-                        log(f"[*] API intermediate message: {val}")
-            except Exception as ex:
+                data = None
+                try:
+                    data = res.json()
+                except Exception:
+                    data = None
+
+                if isinstance(data, dict):
+                    log(f"[*] API Response JSON from {res.url[:70]}: {data}")
+                    if data.get("info") == "No Campaign" or (data.get("success") is False and "No Campaign" in str(data)):
+                        campaign_dead = True
+                    raw = data.get("html") or data.get("code") or data.get("data") or data.get("c")
+                    if raw:
+                        val = clean_code_str(raw)
+                        if is_valid_sponsor_code(val):
+                            code_found = val
+                            code_from_api = True
+                            log(f"🎉 EXTRACTED SPONSOR CODE FROM API: {code_found}")
+                            return
+                        else:
+                            log(f"[*] API intermediate message: {val}")
+
+                # Text / Regex fallback
+                try:
+                    txt = res.text()
+                    if txt and len(txt) < 5000:
+                        m = re.search(r'(?:M[ãa]\s*KM|code|m[ãa])[\s":=\-]+([A-Za-z0-9_\-]{4,25})', txt, re.IGNORECASE)
+                        if m:
+                            val = clean_code_str(m.group(1))
+                            if is_valid_sponsor_code(val):
+                                code_found = val
+                                code_from_api = True
+                                log(f"🎉 EXTRACTED SPONSOR CODE FROM API TEXT: {code_found}")
+                                return
+                except Exception:
+                    pass
+            except Exception:
                 pass
     page.on("response", on_resp)
 
@@ -744,20 +781,23 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                         const el = document.getElementById('{traffic_key}');
                         if (el) {{
                             el.dataset.time = '0';
-                            el.dataset.loading = 'false';
                             el.dataset.click = 'true';
-                            delete el.dataset.loaded;
-                        }}
-                        if (typeof window.__checkButtonClick === 'function') {{
-                            window.__checkButtonClick();
-                        }} else if (typeof checkButtonClick === 'function') {{
-                            checkButtonClick();
+                            if (el.dataset.loading !== 'true' && el.dataset.loaded === undefined) {{
+                                if (typeof window.__checkButtonClick === 'function') {{
+                                    window.__checkButtonClick();
+                                }} else if (typeof checkButtonClick === 'function') {{
+                                    checkButtonClick();
+                                }}
+                            }}
                         }}
                     }}""")
                     try:
                         page.evaluate(f"""() => {{
-                            const btn = document.querySelector("[id='{traffic_key}'] button, [id='{traffic_key}'] a, [id='{traffic_key}'], .whatoncode, .completed");
-                            if (btn && (!btn.innerText || !btn.innerText.includes('Mã KM'))) btn.click();
+                            const el = document.getElementById('{traffic_key}');
+                            if (!el || el.dataset.loading !== 'true') {{
+                                const btn = document.querySelector("[id='{traffic_key}'] button, [id='{traffic_key}'] a, .completed");
+                                if (btn && (!btn.innerText || !btn.innerText.includes('Mã KM'))) btn.click();
+                            }}
                         }}""")
                     except Exception:
                         pass
@@ -798,20 +838,36 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                 break
                             try:
                                 dom_t = page.evaluate(f"""() => {{
+                                    // 1. Check whatoncode
                                     const whaton = document.querySelector('.whatoncode, [class*="whatoncode"], .whatoncode-wrapper');
-                                    if (whaton && whaton.innerText) {{
-                                        const m = whaton.innerText.match(/(?:M[ãa]\\s*KM|M[ãa]\\s*x[áa]c\\s*nh[ậa]n|Code|M[ãa])[\\s\\:\\-]+([A-Za-z0-9]{{4,20}})/i);
+                                    if (whaton) {{
+                                        const text = whaton.innerText || whaton.textContent || '';
+                                        const m = text.match(/(?:M[ãa]\\s*KM|M[ãa]\\s*x[áa]c\\s*nh[ậa]n|Code|M[ãa])[\\s\\:\\-]+([A-Za-z0-9_\\-]{{4,25}})/i);
                                         if (m) return m[1];
-                                        return whaton.innerText;
+                                        const t = text.trim();
+                                        if (/^[A-Za-z0-9_\\-]{{4,25}}$/.test(t) && !/lay|ma|click|link|buoc|cho|wait|giay|second|loading|keo/i.test(t)) {{
+                                            return t;
+                                        }}
                                     }}
+                                    // 2. Check element container
                                     const el = document.getElementById('{traffic_key}');
                                     if (el) {{
+                                        if (el.dataset.code && /^[A-Za-z0-9_\\-]{{4,25}}$/.test(el.dataset.code)) return el.dataset.code;
                                         const d = el.getElementsByTagName('div')[0];
-                                        if (d && d.innerText) return d.innerText;
-                                        return el.dataset.code || el.value || el.innerText || '';
+                                        if (d && d.innerText) {{
+                                            const m = d.innerText.match(/(?:M[ãa]\\s*KM|Code|M[ãa])[\\s\\:\\-]+([A-Za-z0-9_\\-]{{4,25}})/i);
+                                            if (m) return m[1];
+                                        }}
                                     }}
-                                    const cBtn = document.querySelector('.completed, [class*="completed"], #ma-km, #token');
-                                    if (cBtn && cBtn.innerText) return cBtn.innerText;
+                                    // 3. Check completed or token button
+                                    const cBtn = document.querySelector('.completed, [class*="completed"], #ma-km, .ma-km, #token, [data-code]');
+                                    if (cBtn) {{
+                                        const val = cBtn.dataset.code || cBtn.innerText || cBtn.value || '';
+                                        const m = val.match(/(?:M[ãa]\\s*KM|Code|M[ãa])[\\s\\:\\-]+([A-Za-z0-9_\\-]{{4,25}})/i);
+                                        if (m) return m[1];
+                                        const t = val.trim();
+                                        if (/^[A-Za-z0-9_\\-]{{4,25}}$/.test(t) && !/lay|ma|click|link|buoc|cho|wait|giay/i.test(t)) return t;
+                                    }}
                                     return null;
                                 }}""")
                                 if dom_t:
@@ -868,6 +924,38 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             log(f"🎉 EXTRACTED SPONSOR CODE FROM DOM: {code_found}")
 
     if not code_found:
+        try:
+            fallback_res = page.evaluate("""async () => {
+                for (let k in localStorage) {
+                    if (k.includes('quest')) {
+                        try {
+                            const q = JSON.parse(localStorage.getItem(k));
+                            if (q && q.id) {
+                                const endpoints = ['/widget/get_quest_code.html?id=' + q.id, 'https://s1.what-on.com/widget/get_quest_code.html?id=' + q.id];
+                                for (const ep of endpoints) {
+                                    try {
+                                        const r = await fetch(ep, { credentials: 'include' });
+                                        if (r.ok) {
+                                            const res = await r.json();
+                                            if (res && (res.html || res.code)) return res.html || res.code;
+                                        }
+                                    } catch (err) {}
+                                }
+                            }
+                        } catch (e) {}
+                    }
+                }
+                return null;
+            }""")
+            if fallback_res:
+                cl = clean_code_str(fallback_res)
+                if is_valid_sponsor_code(cl):
+                    code_found = cl
+                    log(f"🎉 EXTRACTED SPONSOR CODE VIA DIRECT FALLBACK FETCH: {code_found}")
+        except Exception:
+            pass
+
+    if not code_found:
         body = page.evaluate("() => document.body.innerText")
         m = re.search(r'(?:M[ãa]\s*KM|M[ãa]\s*x[áa]c\s*nh[ậa]n|Code|M[ãa])[\s\:\-]+([A-Za-z0-9]{4,15})', body)
         if m and is_valid_sponsor_code(m.group(1)):
@@ -887,17 +975,6 @@ if (!quest_info && typeof(Storage) !== "undefined") {
     else:
         brain.learn_failure(sponsor_url, "code_not_found")
         brain.flow_director.handle_stage_failure("code_harvest", {"domain": sponsor_url, "error": "code_not_found"})
-
-    try:
-        context.remove_listener("page", on_sponsor_popup)
-    except Exception:
-        pass
-
-    try:
-        page.close()
-    except Exception:
-        pass
-
     return code_found
 
 def solve_sponsor_quest(context, sponsor_url_or_list) -> str:
