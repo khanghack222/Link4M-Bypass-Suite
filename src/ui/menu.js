@@ -281,7 +281,6 @@ function showResultCard(finalUrl, durationSec) {
     console.log(`  ${c.neonCyan}║${c.reset}  ${c.bgGreen} 🏆 BYPASS THÀNH CÔNG RỰC RỠ! ${c.reset}  ${c.dim}${c.softGray}Thời gian: ${durationSec}s${c.reset}                                 ${c.neonCyan}║${c.reset}`);
     console.log(`  ${c.neonCyan}╠══════════════════════════════════════════════════════════════════════════════╣${c.reset}`);
     console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.pureWhite}Link đích:${c.reset} ${c.bold}${c.neonCyan}${finalUrl}${c.reset}`);
-    console.log(`  ${c.neonCyan}║${c.reset}  ${c.mintGreen}✔ Đã tự động sao chép link vào bộ nhớ tạm (Clipboard - Ctrl+V để dán)!${c.reset}     ${c.neonCyan}║${c.reset}`);
     console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
 }
 
@@ -340,7 +339,6 @@ function runBypassLink4M(targetUrl, headless = currentHeadless) {
             const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
 
             if (finalUrl && !finalUrl.includes("link4m")) {
-                copyToClipboard(finalUrl);
                 showResultCard(finalUrl, durationSec);
             } else if (code === 0) {
                 console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
@@ -389,7 +387,6 @@ async function runBypassOctolink(targetUrl, headless = currentHeadless) {
 
         const durationSec = Math.round((Date.now() - startTime) / 1000);
         if (res && res.success && res.finalUrl) {
-            copyToClipboard(res.finalUrl);
             showResultCard(res.finalUrl, durationSec);
         } else {
             console.log(`\n  ${c.cyberYellow}⚠ Quá trình kết thúc: ${res?.reason || res?.error || "Chưa lấy được link callback"}${c.reset}\n`);
@@ -454,7 +451,6 @@ function runBypassTrafficVN(targetUrl, headless = currentHeadless) {
             const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
 
             if (finalUrl && !finalUrl.includes("trafficvn")) {
-                copyToClipboard(finalUrl);
                 showResultCard(finalUrl, durationSec);
             } else if (code === 0) {
                 console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
@@ -526,8 +522,7 @@ function runBypassBBMKTS(targetUrl, headless = currentHeadless) {
             const durationSec = Math.round((Date.now() - startTime) / 1000);
             const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
 
-            if (finalUrl && !finalUrl.includes("bbmkts.com/go/")) {
-                copyToClipboard(finalUrl);
+            if (finalUrl && !finalUrl.includes("bbmkts")) {
                 showResultCard(finalUrl, durationSec);
             } else if (code === 0) {
                 console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
@@ -674,7 +669,6 @@ function runBypassLayMa(targetUrl, headless = currentHeadless) {
             const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
 
             if (finalUrl && !finalUrl.includes("layma.net")) {
-                copyToClipboard(finalUrl);
                 showResultCard(finalUrl, durationSec);
             } else if (code === 0) {
                 console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
@@ -754,32 +748,6 @@ async function main() {
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.cyberYellow}[7]${c.reset} ${c.bold}${c.pureWhite}🖥️ Đổi Trình Duyệt: [${modeStatus}${c.bold}${c.pureWhite}]${c.reset} ${c.dim}(Bấm 7 để chuyển đổi)${c.reset}            ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.pureWhite}[8]${c.reset} ${c.bold}${c.pureWhite}📖 Hướng Dẫn & Thông Tin Kỹ Thuật${c.reset}                                    ${c.neonCyan}║${c.reset}`);
         console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.crimsonRed}[0]${c.reset} ${c.bold}${c.pureWhite}🚪 Thoát Ứng Dụng${c.reset}                                                      ${c.neonCyan}║${c.reset}`);
-        console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
-
-        const clipUrl = getClipboardUrl();
-        if (clipUrl) {
-            const isOcto = isOctolinkUrl(clipUrl);
-            if (isOcto) {
-                console.log(`  ${c.bgPink} 🔗 OCTOLINK / LINK999 PHÁT HIỆN: ${c.reset} ${c.bold}${c.hotPink}${clipUrl}${c.reset}`);
-                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
-            } else if (isLaymaUrl(clipUrl)) {
-                console.log(`  ${c.bgPink} 🔗 LAYMA.NET PHÁT HIỆN: ${c.reset} ${c.bold}${c.brightPink}${clipUrl}${c.reset}`);
-                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
-            } else if (isGtrafficUrl(clipUrl)) {
-                console.log(`  ${c.bgOrange} 🔗 GTRAFFIC PHÁT HIỆN: ${c.reset} ${c.bold}${c.flameOrange}${clipUrl}${c.reset}`);
-                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
-            } else if (isBbmktsUrl(clipUrl)) {
-                console.log(`  ${c.bgPink} 🔗 BBMKTS PHÁT HIỆN: ${c.reset} ${c.bold}${c.brightPink}${clipUrl}${c.reset}`);
-                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động vượt ngay link này!${c.reset}\n`);
-            } else if (isTrafficvnUrl(clipUrl)) {
-                console.log(`  ${c.bgGreen} 🔗 TRAFFICVN PHÁT HIỆN (BETA): ${c.reset} ${c.bold}${c.mintGreen}${clipUrl}${c.reset}`);
-                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để thử nghiệm vượt link này!${c.reset}\n`);
-            } else {
-                console.log(`  ${c.bgCyan} 🔗 LINK4M PHÁT HIỆN: ${c.reset} ${c.bold}${c.neonCyan}${clipUrl}${c.reset}`);
-                console.log(`  ${c.dim}${c.softGray}↳ Nhấn Enter (chọn 1) để tự động chạy ngay link này!${c.reset}\n`);
-            }
-        }
-
         const inputChoice = await ask(`  ${c.bold}${c.cyberYellow}➤ Chọn chế độ hoặc Dán link trực tiếp [1]: ${c.reset}`);
         const choice = inputChoice.trim();
 
@@ -822,52 +790,38 @@ async function main() {
             continue;
         } else if (choice === "6") {
             const defaultUrl = "https://octolink.vip/K3r4k5";
-            const hint = clipUrl && isOctolinkUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
-            let link = await ask(`\n  ${c.bold}${c.mintGreen}Nhập link Octolink / Link999 cần vượt${hint}:${c.reset} `);
-            if (!link) link = (clipUrl && isOctolinkUrl(clipUrl)) ? clipUrl : defaultUrl;
+            let link = await ask(`\n  ${c.bold}${c.mintGreen}Nhập link Octolink / Link999 cần vượt [${defaultUrl}]:${c.reset} `);
+            if (!link) link = defaultUrl;
             await runBypassOctolink(link);
         } else if (choice === "5") {
             const defaultUrl = "https://layma.net/Kd1onyItr";
-            const hint = clipUrl && isLaymaUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.brightPink}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
-            let link = await ask(`\n  ${c.bold}${c.brightPink}Nhập link LayMa cần vượt${hint}:${c.reset} `);
-            if (!link) link = (clipUrl && isLaymaUrl(clipUrl)) ? clipUrl : defaultUrl;
+            let link = await ask(`\n  ${c.bold}${c.brightPink}Nhập link LayMa cần vượt [${defaultUrl}]:${c.reset} `);
+            if (!link) link = defaultUrl;
             await runBypassLayMa(link);
         } else if (choice === "4") {
             const defaultUrl = "https://gtraffic.io/X3BR2OQ";
-            const hint = clipUrl && isGtrafficUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.flameOrange}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
-            let link = await ask(`\n  ${c.bold}${c.flameOrange}Nhập link Gtraffic cần vượt${hint}:${c.reset} `);
-            if (!link) link = (clipUrl && isGtrafficUrl(clipUrl)) ? clipUrl : defaultUrl;
+            let link = await ask(`\n  ${c.bold}${c.flameOrange}Nhập link Gtraffic cần vượt [${defaultUrl}]:${c.reset} `);
+            if (!link) link = defaultUrl;
             await runBypassGtraffic(link);
         } else if (choice === "3") {
             const defaultUrl = "https://bbmkts.com/go/3p82s";
-            const hint = clipUrl && isBbmktsUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.brightPink}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
-            let link = await ask(`\n  ${c.bold}${c.brightPink}Nhập link BBMKTS cần vượt${hint}:${c.reset} `);
-            if (!link) link = (clipUrl && isBbmktsUrl(clipUrl)) ? clipUrl : defaultUrl;
+            let link = await ask(`\n  ${c.bold}${c.brightPink}Nhập link BBMKTS cần vượt [${defaultUrl}]:${c.reset} `);
+            if (!link) link = defaultUrl;
             await runBypassBBMKTS(link);
         } else if (choice === "2") {
-            const hint = clipUrl && isLink4mUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: https://link4m.net/go/2kCcIqn)${c.reset}`;
-            let link = await ask(`\n  ${c.bold}${c.electricBlue}Nhập link Link4M cần vượt${hint}:${c.reset} `);
-            if (!link) link = (clipUrl && isLink4mUrl(clipUrl)) ? clipUrl : (clipUrl || "https://link4m.net/go/2kCcIqn");
+            const defaultUrl = "https://link4m.net/go/2kCcIqn";
+            let link = await ask(`\n  ${c.bold}${c.electricBlue}Nhập link Link4M cần vượt [${defaultUrl}]:${c.reset} `);
+            if (!link) link = defaultUrl;
             await runBypassLink4M(link);
         } else if (choice === "beta" || choice === "trafficvn") {
             const defaultUrl = "https://trafficvn.com/get/MFGm2tAlcSn";
-            const hint = clipUrl && isTrafficvnUrl(clipUrl) ? ` ${c.softGray}(Enter để dùng: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}` : ` ${c.softGray}(Enter để dùng: ${defaultUrl})${c.reset}`;
-            let link = await ask(`\n  ${c.bold}${c.mintGreen}[BETA] Nhập link TrafficVN cần vượt${hint}:${c.reset} `);
-            if (!link) link = (clipUrl && isTrafficvnUrl(clipUrl)) ? clipUrl : defaultUrl;
+            let link = await ask(`\n  ${c.bold}${c.mintGreen}[BETA] Nhập link TrafficVN cần vượt [${defaultUrl}]:${c.reset} `);
+            if (!link) link = defaultUrl;
             await runBypassTrafficVN(link);
         } else {
-            // Chế độ 1: Tự động phát hiện (Nếu có trong clipboard -> ưu tiên, nếu không có -> hỏi nhập)
-            let link = "";
-            if (clipUrl) {
-                const hint = ` ${c.softGray}(Enter để dùng Clipboard: ${c.mintGreen}${clipUrl}${c.softGray})${c.reset}`;
-                link = await ask(`\n  ${c.bold}${c.neonCyan}Nhập link cần vượt${hint}:${c.reset} `);
-                if (!link) link = clipUrl;
-            } else {
-                const hint = ` ${c.softGray}(Mặc định: https://link4m.net/go/2kCcIqn)${c.reset}`;
-                link = await ask(`\n  ${c.bold}${c.neonCyan}Nhập link cần vượt (Link4M / BBMKTS / Gtraffic / LayMa)${hint}:${c.reset} `);
-                if (!link) link = "https://link4m.net/go/2kCcIqn";
-            }
-
+            const defaultUrl = "https://link4m.net/go/2kCcIqn";
+            let link = await ask(`\n  ${c.bold}${c.neonCyan}Nhập link cần vượt (Link4M / BBMKTS / Gtraffic / LayMa) [${defaultUrl}]:${c.reset} `);
+            if (!link) link = defaultUrl;
             await dispatchUrl(link);
         }
 

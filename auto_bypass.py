@@ -121,7 +121,6 @@ def show_result_card(final_url: str, duration_sec: int, engine_name: str):
     print(f"  {C_CYAN}║{C_RESET}  {BG_GREEN} 🏆 BYPASS THÀNH CÔNG RỰC RỠ! {C_RESET}  {C_YELLOW}[{engine_name}]{C_RESET}  {C_DIM}{C_GRAY}Thời gian: {duration_sec}s{C_RESET}               {C_CYAN}║{C_RESET}")
     print(f"  {C_CYAN}╠══════════════════════════════════════════════════════════════════════════════╣{C_RESET}")
     print(f"  {C_CYAN}║{C_RESET}  {C_BOLD}{C_WHITE}Link đích:{C_RESET} {C_BOLD}{C_CYAN}{final_url}{C_RESET}")
-    print(f"  {C_CYAN}║{C_RESET}  {C_GREEN}✔ Đã tự động sao chép link vào Clipboard (Ctrl+V để dán)!{C_RESET}             {C_CYAN}║{C_RESET}")
     print(f"  {C_CYAN}╚══════════════════════════════════════════════════════════════════════════════╝{C_RESET}\n")
 
     try:
@@ -148,7 +147,6 @@ def save_destination_url(final_url: str):
             fd.write(final_url.strip())
     except Exception:
         pass
-    copy_to_clipboard(final_url)
     try:
         import winsound
         winsound.MessageBeep(-1)
@@ -364,18 +362,11 @@ def main():
 
     target_url = args.url
 
-    # Check clipboard if URL argument was not provided
+    # Prompt user directly for link if not provided via CLI argument
     if not target_url:
-        clip_url = get_clipboard_url()
-        if clip_url:
-            cat = classify_url(clip_url)
-            print(f"  {BG_PURPLE} 🔗 PHÁT HIỆN LINK TỪ CLIPBOARD: {C_RESET} {C_BOLD}{C_CYAN}{clip_url}{C_RESET} {C_YELLOW}[{cat}]{C_RESET}")
-            ans = input(f"  {C_BOLD}{C_YELLOW}➤ Nhấn [Enter] để vượt ngay link này, hoặc nhập link khác: {C_RESET}").strip()
-            target_url = ans if ans.startswith("http") else clip_url
-        else:
-            default_demo = "https://gtraffic.io/X3BR2OQ"
-            ans = input(f"  {C_BOLD}{C_CYAN}➤ Nhập link cần vượt {C_DIM}(Enter để dùng demo {default_demo}){C_RESET}: ").strip()
-            target_url = ans if ans.startswith("http") else default_demo
+        default_demo = "https://gtraffic.io/X3BR2OQ"
+        ans = input(f"  {C_BOLD}{C_CYAN}➤ Nhập link cần vượt {C_DIM}(Enter để dùng demo {default_demo}){C_RESET}: ").strip()
+        target_url = ans if ans.startswith("http") else default_demo
 
     execute_bypass(target_url, headless=headless)
 
