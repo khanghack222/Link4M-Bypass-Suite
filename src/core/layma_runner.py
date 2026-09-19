@@ -706,83 +706,41 @@ def run(target_url: str = None, headless: bool = None):
                 target = []
                 full_asset_urls = ['https://frame.103-141-140-153.sslip.io' + u if u.startswith('/') else u for u in assets]
 
-                # Priority 0: Cloud Microservice OpenCV API
+                # Priority 0: Native Advanced QCaptcha Engine (Sub-pixel, Multi-feature & Outlier Clustering)
                 try:
-                    from captcha_api_client import solve_qcaptcha
-                    target_query_shape = detected_shape or "star"
-                    cv_res = solve_qcaptcha(full_asset_urls, target_shape=target_query_shape, min_confidence=0.55)
-                    if cv_res and cv_res.get('tiles'):
-                        tiles = cv_res['tiles']
-                        shapes = [t.get('shape', 'unknown') for t in tiles]
+                    from qcaptcha_engine import extract_tile_features, solve_qcaptcha_tiles
+                    def fetch_tile_bytes(idx_url):
+                        idx, u = idx_url
+                        if u.startswith('/'):
+                            u = 'https://frame.103-141-140-153.sslip.io' + u
+                        try:
+                            r = http_session.get(u, timeout=4)
+                            return (idx, extract_tile_features(r.content))
+                        except Exception:
+                            return (idx, {"shape": "unknown", "area": 0.0, "valid": False})
 
-                        if is_odd_one_out:
-                            # 1. Tìm ô có shape xuất hiện đúng 1 lần (singleton shape)
-                            singleton_indices = [t['idx'] for t in tiles if shapes.count(t.get('shape')) == 1 and t.get('shape') not in ['unknown', 'blank']]
-                            if singleton_indices:
-                                target = [singleton_indices[0]]
-                                print(f"   [Cloud API CV] Phát hiện ô khác nhóm (Singleton Shape: {shapes[target[0]]}): {target}")
-                            elif detected_shape and cv_res.get('correct_indices'):
-                                # 2. Nếu phát hiện các ô đa số là detected_shape -> ô đáp án là ô KHÔNG thuộc correct_indices
-                                majority_indices = set(cv_res['correct_indices'])
-                                diff_indices = [i for i in range(len(assets)) if i not in majority_indices]
-                                if diff_indices:
-                                    target = [diff_indices[0]]
-                                    print(f"   [Cloud API CV] Phát hiện ô khác nhóm (Đảo tập hợp đa số {detected_shape}): {target}")
-                        else:
-                            # Standard grid3x3 or countshapes
-                            if detected_shape and cv_res.get('correct_indices'):
-                                target = cv_res['correct_indices']
-                                print(f"   [Cloud API CV] Nhận diện {detected_shape}: {target} ({cv_res.get('elapsed_ms', 0)}ms)")
-                except Exception as e:
-                    print(f"   [Cloud API CV] Fallback sang xử lý local: {e}")
-
-                # Priority 1: Local OpenCV & Contour Analysis
-                if not target:
                     args_list = [(i, u) for i, u in enumerate(assets)]
-                    features = list(executor.map(analyze_tile_url, args_list))
-                    features.sort(key=lambda x: x[0])
+                    features_tuples = list(executor.map(fetch_tile_bytes, args_list))
+                    features_tuples.sort(key=lambda x: x[0])
+                    features = [f[1] for f in features_tuples]
 
-                    if is_odd_one_out:
-                        v_counts = [f[1] for f in features]
-                        for i, v in enumerate(v_counts):
-                            if v_counts.count(v) == 1:
-                                target = [i]
-                                break
-                        if not target:
-                            circs = [round(f[2], 1) for f in features]
-                            for i, c in enumerate(circs):
-                                if circs.count(c) == 1:
-                                    target = [i]
-                                    break
-                    elif 'tam giác' in q_text or 'triangle' in q_text:
-                        target = [f[0] for f in features if f[1] == 3]
-                    elif 'vuông' in q_text or 'square' in q_text or 'chữ nhật' in q_text or 'rectangle' in q_text:
-                        target = [f[0] for f in features if f[1] == 4]
-                    elif 'ngũ giác' in q_text or 'pentagon' in q_text:
-                        target = [f[0] for f in features if f[1] == 5]
-                    elif 'lục giác' in q_text or 'hexagon' in q_text:
-                        target = [f[0] for f in features if f[1] == 6]
-                    elif 'ngôi sao' in q_text or 'star' in q_text:
-                        target = [f[0] for f in features if f[1] in [10, 8, 12] or (f[1] > 6 and f[2] < 0.5)]
-                    elif 'tròn' in q_text or 'circle' in q_text:
-                        target = [f[0] for f in features if f[2] > 0.75]
-                    elif 'chữ thập' in q_text or 'cross' in q_text:
-                        target = [f[0] for f in features if f[1] in [8, 10, 12] or (f[2] < 0.6 and f[1] >= 4)]
-                    else:
-                        v_counts = [f[1] for f in features]
-                        for i, v in enumerate(v_counts):
-                            if v_counts.count(v) == 1:
-                                target = [i]
-                                break
+                    target = solve_qcaptcha_tiles(features, question_text=q_text, challenge_type=c_type, spec=spec)
+                    if target:
+                        print(f"   [Engine v4.0] Đáp án giải tự động: {target}")
+                except Exception as e_engine:
+                    print(f"   [Engine v4.0] Fallback: {e_engine}")
 
-                # Count limitation if specified in prompt (e.g. 'hai chữ thập' -> limit to 2)
-                if target and not is_odd_one_out:
-                    if 'hai ' in q_text or ' 2 ' in q_text or 'hai chữ' in q_text:
-                        if len(target) > 2: target = target[:2]
-                    elif 'ba ' in q_text or ' 3 ' in q_text or 'ba chữ' in q_text:
-                        if len(target) > 3: target = target[:3]
-                    elif 'một ' in q_text or ' 1 ' in q_text or 'một chữ' in q_text:
-                        if len(target) > 1: target = target[:1]
+                # Priority 1: Cloud Microservice OpenCV API
+                if not target:
+                    try:
+                        from captcha_api_client import solve_qcaptcha
+                        target_query_shape = detected_shape or "star"
+                        cv_res = solve_qcaptcha(full_asset_urls, target_shape=target_query_shape, min_confidence=0.55)
+                        if cv_res and cv_res.get('correct_indices'):
+                            target = cv_res['correct_indices']
+                            print(f"   [Cloud API CV] Nhận diện {target_query_shape}: {target}")
+                    except Exception:
+                        pass
 
                 if not target:
                     target = [0]
@@ -796,15 +754,33 @@ def run(target_url: str = None, headless: bool = None):
                 time.sleep(0.3)
 
             elif c_type == 'order':
-                args_list = [(i, u) for i, u in enumerate(assets)]
-                features = list(executor.map(analyze_tile_url, args_list))
-                features.sort(key=lambda x: x[0])
-                direction = spec.get('direction', 'desc')
-                if 'nhỏ đến lớn' in q_text or direction == 'asc':
-                    sorted_by_area = sorted(features, key=lambda x: x[3])
-                else:
-                    sorted_by_area = sorted(features, key=lambda x: x[3], reverse=True)
-                target = [f[0] for f in sorted_by_area]
+                target = []
+                try:
+                    from qcaptcha_engine import extract_tile_features, solve_qcaptcha_tiles
+                    def fetch_tile_bytes(idx_url):
+                        idx, u = idx_url
+                        if u.startswith('/'):
+                            u = 'https://frame.103-141-140-153.sslip.io' + u
+                        try:
+                            r = http_session.get(u, timeout=4)
+                            return (idx, extract_tile_features(r.content))
+                        except Exception:
+                            return (idx, {"shape": "unknown", "area": 0.0, "valid": False})
+
+                    args_list = [(i, u) for i, u in enumerate(assets)]
+                    features_tuples = list(executor.map(fetch_tile_bytes, args_list))
+                    features_tuples.sort(key=lambda x: x[0])
+                    features = [f[1] for f in features_tuples]
+                    target = solve_qcaptcha_tiles(features, question_text=q_text, challenge_type="order", spec=spec)
+                except Exception:
+                    args_list = [(i, u) for i, u in enumerate(assets)]
+                    features = list(executor.map(analyze_tile_url, args_list))
+                    features.sort(key=lambda x: x[0])
+                    direction = spec.get('direction', 'desc')
+                    is_asc = ('nhỏ đến lớn' in q_text or direction == 'asc')
+                    sorted_by_area = sorted(features, key=lambda x: x[3], reverse=(not is_asc))
+                    target = [f[0] for f in sorted_by_area]
+
                 print(f"   ➔ Thứ tự sắp xếp: {target}")
                 cur_cf.evaluate('''(ans) => {
                     if (typeof window.__qc_submit === 'function') {

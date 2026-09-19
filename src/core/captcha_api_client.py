@@ -73,6 +73,35 @@ def solve_qcaptcha(tile_urls: List[str], target_shape: str = "star", min_confide
     Solve QCaptcha 9-tile geometric challenge via OpenCV Omni-Precision API (<50ms).
     Shapes: star, circle, triangle, hexagon, rectangle, cross.
     """
+    # Priority 0: Fast Local OpenCV Engine (Sub-15ms, Zero Network Lag)
+    try:
+        from src.core.qcaptcha_engine import extract_tile_features, solve_qcaptcha_tiles
+        import requests, io
+        from concurrent.futures import ThreadPoolExecutor
+
+        def fetch_tile(url):
+            try:
+                r = _SESSION.get(url, timeout=3)
+                return r.content
+            except Exception:
+                return b""
+
+        with ThreadPoolExecutor(max_workers=len(tile_urls)) as pool:
+            raw_images = list(pool.map(fetch_tile, tile_urls))
+
+        features = [extract_tile_features(b) for b in raw_images]
+        target_indices = solve_qcaptcha_tiles(features, question_text=target_shape, challenge_type="grid3x3", spec={})
+        if target_indices:
+            return {
+                "correct_indices": target_indices,
+                "tiles": [{"idx": i, "shape": f.get("shape")} for i, f in enumerate(features)],
+                "status": "success",
+                "engine": "local_qcaptcha_v4"
+            }
+    except Exception:
+        pass
+
+    # Priority 1: Cloud Microservice (Timeout 2.0s)
     url = get_base_url()
     payload = {
         "tile_urls": tile_urls,
@@ -80,7 +109,7 @@ def solve_qcaptcha(tile_urls: List[str], target_shape: str = "star", min_confide
         "min_confidence": min_confidence
     }
     try:
-        r = _SESSION.post(f"{url}/api/v1/cv/analyze-tiles", json=payload, headers=_HEADERS, timeout=10)
+        r = _SESSION.post(f"{url}/api/v1/cv/analyze-tiles", json=payload, headers=_HEADERS, timeout=2.0)
         if r.status_code == 200:
             return r.json()
     except Exception:
