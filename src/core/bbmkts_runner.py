@@ -163,58 +163,58 @@ def run(target_link: str = None, headless: bool = None):
             html1 = page1.content()
             log(f"[TAB 1] Da tai DOM ({len(html1)} bytes).")
 
-            # Giai quyet Cloudflare Turnstile ngay khi Tab 1 vua load
-            log("[TAB 1] Kiem tra va giai quyet Cloudflare Turnstile ngay khi khoi tao...")
-            for sec in range(1, 7):
-                turnstile_token = page1.evaluate("""() => {
-                    try {
-                        if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
-                            const t = turnstile.getResponse();
-                            if (t && String(t).length > 20) return String(t);
-                        }
-                    } catch (e) {}
-                    const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
-                    for (const inp of inputs) {
-                        if (inp.value && inp.value.length > 20) return inp.value;
+            # Giai quyet Cloudflare Turnstile ngay khi Tab 1 vua load (Quick check 1.5s, fallback Patchright ngay)
+            log("[TAB 1] Kiem tra Cloudflare Turnstile...")
+            turnstile_token = page1.evaluate("""() => {
+                try {
+                    if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
+                        const t = turnstile.getResponse();
+                        if (t && String(t).length > 20) return String(t);
                     }
-                    return '';
-                }""")
-                if turnstile_token and len(turnstile_token) > 20:
-                    log(f"[TAB 1] Turnstile da xac thuc ngay khi load! Token len: {len(turnstile_token)}")
-                    break
-                if sec % 2 == 0:
-                    log(f"  [Turnstile {sec}s] Dang cho xac thuc...")
+                } catch (e) {}
+                const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+                for (const inp of inputs) {
+                    if (inp.value && inp.value.length > 20) return inp.value;
+                }
+                return '';
+            }""")
+            
+            if not turnstile_token or len(turnstile_token) < 20:
+                # Thu click nhe 1 lan trong 1s
                 try:
                     ts = page1.query_selector('.cf-turnstile')
                     if ts:
                         ts.click()
                 except Exception:
                     pass
-                for f in page1.frames:
-                    if 'challenges' in f.url:
-                        try:
-                            f.click("body", timeout=1000)
-                        except Exception:
-                            pass
                 time.sleep(1)
+                turnstile_token = page1.evaluate("""() => {
+                    const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+                    for (const inp of inputs) {
+                        if (inp.value && inp.value.length > 20) return inp.value;
+                    }
+                    return '';
+                }""")
 
-            if not turnstile_token or len(turnstile_token) < 20:
+            if turnstile_token and len(turnstile_token) > 20:
+                log(f"[TAB 1] Turnstile da co san! Token len: {len(turnstile_token)}")
+            else:
                 try:
                     from turnstile_solver import get_turnstile_token
                     sitekey = page1.evaluate("""() => {
                         let el = document.querySelector('.cf-turnstile') || document.querySelector('[data-sitekey]');
                         return el ? el.getAttribute('data-sitekey') : '0x4AAAAAAEzmJdRW__FHO9pu';
                     }""") or "0x4AAAAAAEzmJdRW__FHO9pu"
-                    log(f"[TAB 1] Khoi chay Turnstile Solver (Theyka Patchright) ngay o buoc khoi tao...")
+                    log(f"[TAB 1] Kich hoat ngay Turnstile Solver (Node.js Patchright)...")
                     ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=False, headless=False)
                     if ts_res.get('status') == 'success' and ts_res.get('turnstile_value'):
                         turnstile_token = ts_res['turnstile_value']
-                        log(f"[TAB 1] Turnstile da xac thuc thanh cong qua Patchright! Token len: {len(turnstile_token)}")
+                        log(f"[TAB 1] Turnstile xac thuc thanh cong qua Patchright! Token len: {len(turnstile_token)}")
                         page1.evaluate("""(tok) => {
                             document.querySelectorAll('input[name="cf-turnstile-response"]').forEach(i => i.value = tok);
                         }""", turnstile_token)
                 except Exception as e:
-                    log(f"[TAB 1] Warning Turnstile solver at init: {e}")
+                    log(f"[TAB 1] Warning Turnstile solver: {e}")
 
             final_code = None
             time.sleep(1)
@@ -449,6 +449,8 @@ def run(target_link: str = None, headless: bool = None):
                 if target_url:
                     if 'luxbikes.vn' in target_url and target_url.rstrip('/') == 'https://luxbikes.vn':
                         target_url = 'https://luxbikes.vn/xe-dap-tro-luc/'
+                    elif 'grandpalace.com.vn' in target_url and target_url.rstrip('/') == 'https://grandpalace.com.vn':
+                        target_url = 'https://grandpalace.com.vn/dich-vu/tiec-cuoi-tron-goi/'
                     elif 'namvietlift.com' in target_url and target_url.rstrip('/') == 'https://namvietlift.com':
                         target_url = 'https://namvietlift.com/xe-nang-tay/'
                     elif 'truongmaisaigon.vn' in target_url and target_url.rstrip('/') == 'https://truongmaisaigon.vn':
@@ -458,7 +460,9 @@ def run(target_link: str = None, headless: bool = None):
 
                 all_t = ' '.join(texts_crop if 'texts_crop' in locals() else (texts if 'texts' in locals() else [])).lower()
                 if not target_url:
-                    if 'eterra' in all_t:
+                    if 'grandpalace' in all_t or 'grand palace' in all_t:
+                        target_url = 'https://grandpalace.com.vn/dich-vu/tiec-cuoi-tron-goi/'
+                    elif 'eterra' in all_t:
                         target_url = 'https://eterra.vn/tu-chau-lavabo-eterra/'
                     elif 'bulong' in all_t or 'hoangha' in all_t:
                         target_url = 'https://bulonghoangha.com/'

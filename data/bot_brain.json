@@ -5,7 +5,7 @@
     "total_success": 2,
     "total_heals": 1,
     "time_saved_sec": 0.0,
-    "last_updated": 1789782848
+    "last_updated": 1789783571
   },
   "domain_intelligence": {
     "tructiepkeobongda.com": {
@@ -370,6 +370,34 @@
       "last_fail": 1789782848
     }
   },
+  "dns_cache": {
+    "theyhouse.co": "172.67.191.36",
+    "dichvuchuyennhahanoi.com": "172.67.219.58",
+    "ghk.gb.net": "172.67.214.159",
+    "rik88.gb.net": "172.67.192.114",
+    "dawnseeker.za.com": "104.21.54.177",
+    "betflik24win.co": "104.21.71.134",
+    "happy.jpn.com": "104.21.17.40",
+    "memberqq.me": "104.21.18.238",
+    "agobet.cc": "172.67.140.77",
+    "recsport.tv": "104.21.72.248",
+    "d55slot.vip": "172.67.181.54",
+    "preciouscollection.co.in": "104.21.12.35",
+    "ro88.cn.com": "172.67.157.237",
+    "aviator-slot.games": "172.67.219.221",
+    "santuy88slot.net": "172.67.161.150",
+    "hitclube.cc": "104.21.90.229",
+    "vitalticks.in": "104.21.94.39",
+    "marcjestin.me": "104.21.63.195",
+    "tamjaibet.cc": "160.250.186.152",
+    "ex8898.com": "104.21.1.64",
+    "ayoslots.co": "104.21.86.36",
+    "agilafc.com": "172.67.187.197",
+    "vijaylaxmigranito.in": "62.146.234.92",
+    "nhandinhkeobongdaonl.com": "172.67.218.14",
+    "soccervirtualcup.com": "104.21.75.156",
+    "tructiepkeobongda.com": "104.21.18.134"
+  },
   "campaign_cache": {
     "h19": {
       "sponsor_url": "https://memberqq.me",
@@ -557,6 +585,17 @@
       "timestamp": 1789782848
     }
   },
+  "session_history": [
+    {
+      "session_id": "sess_1789783418936",
+      "platform": "LAYMA",
+      "sponsor": null,
+      "success": true,
+      "duration": 152.97,
+      "heals": 0,
+      "timestamp": 1789783571
+    }
+  ],
   "blacklist": [
     "zbet.com",
     "shbet.com",
@@ -592,33 +631,5 @@
       "code_selector": "[id^='traffic'], .completed",
       "default_steps": 1
     }
-  },
-  "dns_cache": {
-    "theyhouse.co": "172.67.191.36",
-    "dichvuchuyennhahanoi.com": "172.67.219.58",
-    "ghk.gb.net": "172.67.214.159",
-    "rik88.gb.net": "172.67.192.114",
-    "dawnseeker.za.com": "104.21.54.177",
-    "betflik24win.co": "104.21.71.134",
-    "happy.jpn.com": "104.21.17.40",
-    "memberqq.me": "104.21.18.238",
-    "agobet.cc": "172.67.140.77",
-    "recsport.tv": "104.21.72.248",
-    "d55slot.vip": "172.67.181.54",
-    "preciouscollection.co.in": "104.21.12.35",
-    "ro88.cn.com": "172.67.157.237",
-    "aviator-slot.games": "172.67.219.221",
-    "santuy88slot.net": "172.67.161.150",
-    "hitclube.cc": "104.21.90.229",
-    "vitalticks.in": "104.21.94.39",
-    "marcjestin.me": "104.21.63.195",
-    "tamjaibet.cc": "160.250.186.152",
-    "ex8898.com": "104.21.1.64",
-    "ayoslots.co": "104.21.86.36",
-    "agilafc.com": "172.67.187.197",
-    "vijaylaxmigranito.in": "62.146.234.92",
-    "nhandinhkeobongdaonl.com": "172.67.218.14",
-    "soccervirtualcup.com": "104.21.75.156",
-    "tructiepkeobongda.com": "104.21.18.134"
   }
 }
