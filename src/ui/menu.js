@@ -222,6 +222,13 @@ function formatLogLine(rawLine) {
         return `  ${c.neonPurple}├───${c.reset} ${c.bgGreen} ✔ CAPTCHA PASS ${c.reset}  ${c.bold}${c.mintGreen}QCaptcha / reCAPTCHA đã được giải thành công!${c.reset}`;
     }
 
+    if (line.includes("Turnstile Solver (Node.js Patchright)") || line.includes("Turnstile Solver doc lap")) {
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgPink} ⚡ TURNSTILE ${c.reset}  ${c.brightPink}Đang giải Cloudflare Turnstile bằng Patchright Engine...${c.reset}`;
+    }
+    if (line.includes("Turnstile solved via Node.js Patchright") || line.includes("Turnstile xac thuc thanh cong")) {
+        return `  ${c.neonPurple}├───${c.reset} ${c.bgGreen} ✔ TURNSTILE PASS ${c.reset}  ${c.bold}${c.mintGreen}Cloudflare Turnstile đã được giải thành công qua Patchright!${c.reset}`;
+    }
+
     // BBMKTS Automation Logs
     if (line.includes("[TAB 1]") || line.includes("[TAB 2]")) {
         const tab = line.includes("[TAB 1]") ? "TAB 1" : "TAB 2";
