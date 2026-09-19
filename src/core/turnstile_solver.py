@@ -170,10 +170,32 @@ class TurnstileSolver:
         """Solve Turnstile challenge and return token dict."""
         start_time = time.time()
 
-        # Priority 0: Microservice API on Render (Zero Local CPU/RAM)
+        # Priority 0: Native Node.js Patchright Runner (Instant Sub-10s Verified 100% Bypass)
+        js_solver = os.path.join(os.path.dirname(__file__), "turnstile_solver.js")
+        if os.path.exists(js_solver):
+            try:
+                cmd = ["node", js_solver, url, sitekey]
+                if self.headless:
+                    cmd.append("--headless")
+                if self.debug:
+                    logger.info(f"Executing Node.js Patchright runner: {' '.join(cmd)}")
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    try:
+                        res = json.loads(proc.stdout.strip().splitlines()[-1])
+                        if res.get("status") == "success" and res.get("turnstile_value"):
+                            logger.success(f"Turnstile solved via Node.js Patchright in {res.get('elapsed_time_seconds')}s!")
+                            return res
+                    except Exception:
+                        pass
+            except Exception as e:
+                if self.debug:
+                    logger.warning(f"Node.js Patchright failed: {e}")
+
+        # Priority 1: Microservice API on Render (Fallback with 5s timeout)
         try:
             from captcha_api_client import solve_turnstile_cloud
-            api_token = solve_turnstile_cloud(url, sitekey, timeout_seconds=20)
+            api_token = solve_turnstile_cloud(url, sitekey, timeout_seconds=5)
             if api_token:
                 elapsed = round(time.time() - start_time, 2)
                 logger.success(f"Turnstile solved via Render Cloud API in {elapsed}s!")
@@ -186,28 +208,6 @@ class TurnstileSolver:
         except Exception as e:
             if self.debug:
                 logger.debug(f"Render Cloud API fallback: {e}")
-        
-        # Priority 1: Native Node.js Patchright Runner (Verified 100% bypass in ~10s)
-        js_solver = os.path.join(os.path.dirname(__file__), "turnstile_solver.js")
-        if os.path.exists(js_solver):
-            try:
-                cmd = ["node", js_solver, url, sitekey]
-                if self.headless:
-                    cmd.append("--headless")
-                if self.debug:
-                    logger.info(f"Executing Node.js Patchright runner: {' '.join(cmd)}")
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=40)
-                if proc.returncode == 0 and proc.stdout.strip():
-                    try:
-                        res = json.loads(proc.stdout.strip().splitlines()[-1])
-                        if res.get("status") == "success" and res.get("turnstile_value"):
-                            logger.success(f"Turnstile solved via Node.js Patchright in {res.get('elapsed_time_seconds')}s!")
-                            return res
-                    except Exception:
-                        pass
-            except Exception as e:
-                if self.debug:
-                    logger.warning(f"Node.js Patchright failed: {e}")
 
         pw_module = None
 

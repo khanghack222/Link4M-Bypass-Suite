@@ -165,7 +165,7 @@ def run(target_link: str = None, headless: bool = None):
 
             # Giai quyet Cloudflare Turnstile ngay khi Tab 1 vua load
             log("[TAB 1] Kiem tra va giai quyet Cloudflare Turnstile ngay khi khoi tao...")
-            for sec in range(1, 16):
+            for sec in range(1, 7):
                 turnstile_token = page1.evaluate("""() => {
                     try {
                         if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
@@ -182,7 +182,7 @@ def run(target_link: str = None, headless: bool = None):
                 if turnstile_token and len(turnstile_token) > 20:
                     log(f"[TAB 1] Turnstile da xac thuc ngay khi load! Token len: {len(turnstile_token)}")
                     break
-                if sec % 3 == 0:
+                if sec % 2 == 0:
                     log(f"  [Turnstile {sec}s] Dang cho xac thuc...")
                 try:
                     ts = page1.query_selector('.cf-turnstile')

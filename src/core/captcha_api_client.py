@@ -45,7 +45,7 @@ def get_base_url(force_refresh: bool = False) -> str:
     if not force_refresh and _RESOLVED_BASE_URL and (now - _LAST_HEALTH_CHECK_TIME < _HEALTH_CHECK_TTL):
         return _RESOLVED_BASE_URL
 
-    # Test local fast loopback
+    # 1. Test local fast loopback (< 0.2s)
     try:
         r = _SESSION.get(f"{LOCAL_URL}/health", timeout=0.2)
         if r.status_code == 200 and r.json().get("status") == "healthy":
@@ -55,9 +55,19 @@ def get_base_url(force_refresh: bool = False) -> str:
     except Exception:
         pass
 
-    _RESOLVED_BASE_URL = DEFAULT_CLOUD_URL
+    # 2. Test cloud endpoint with strict 0.6s timeout (avoids 10s hang when Render is sleeping)
+    try:
+        r = _SESSION.get(f"{DEFAULT_CLOUD_URL}/health", timeout=0.6)
+        if r.status_code == 200:
+            _RESOLVED_BASE_URL = DEFAULT_CLOUD_URL
+            _LAST_HEALTH_CHECK_TIME = now
+            return DEFAULT_CLOUD_URL
+    except Exception:
+        pass
+
+    _RESOLVED_BASE_URL = LOCAL_URL
     _LAST_HEALTH_CHECK_TIME = now
-    return DEFAULT_CLOUD_URL
+    return LOCAL_URL
 
 def check_health(base_url: Optional[str] = None) -> Dict[str, Any]:
     """Check API server health status."""
