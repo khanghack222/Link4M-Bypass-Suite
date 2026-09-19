@@ -117,11 +117,11 @@ def run(target_link: str = None, headless: bool = None):
                 f"--load-extension={ext_dir}"
             ])
 
-        # Headed is required for extension injection and Cloudflare Turnstile verification
+        # Respect headless setting (Chay an hoan toan neu nguoi dung chon che do Headless)
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             executable_path=c_path if c_path and os.path.exists(c_path) else None,
-            headless=False,
+            headless=headless,
             args=args,
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 800}
