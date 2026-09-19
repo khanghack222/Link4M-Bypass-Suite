@@ -27,25 +27,22 @@ DEAD_DOMAINS_FILE = os.path.join(BASE_DIR, "data", "dead_domains.json")
 # Persistent Blacklist for Dead DNS Domains
 DEFAULT_DEAD_DOMAINS = [
     "go88yt.com", "go88gh.com", "sunwinkt.com", "go88en.com",
-    "sunwinvv.com", "qo88.com", "lo88.com", "88yt.com", "smileitsolutions.com"
+    "sunwinvv.com", "qo88.com", "lo88.com", "88yt.com", "smileitsolutions.com",
+    "adroitengineering.co"
 ]
 
 def load_dead_domains() -> set:
     os.makedirs(os.path.dirname(DEAD_DOMAINS_FILE), exist_ok=True)
+    domains = set(d.lower() for d in DEFAULT_DEAD_DOMAINS)
     if os.path.exists(DEAD_DOMAINS_FILE):
         try:
             with open(DEAD_DOMAINS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
-                    return set(d.lower() for d in data)
+                    domains.update(d.lower() for d in data)
         except Exception:
             pass
-    try:
-        with open(DEAD_DOMAINS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sorted(list(DEFAULT_DEAD_DOMAINS)), f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
-    return set(DEFAULT_DEAD_DOMAINS)
+    return domains
 
 def save_dead_domains(domain_set: set):
     try:
@@ -73,24 +70,27 @@ def is_domain_live(domain: str) -> bool:
     if clean in DEAD_DOMAINS_CACHE:
         print(f"[-] Domain '{clean}' nằm trong Blacklist DNS chết -> bỏ qua tức thì (Zero Check)!")
         return False
+    # Fast DoH query via Google DNS with strict 0.8s timeout
     try:
+        r = http_session.get(f"https://dns.google/resolve?name={clean}&type=A", timeout=0.8)
+        if r.status_code == 200:
+            data = r.json()
+            # Status 3 is NXDOMAIN, or no Answer
+            if data.get("Status") == 3 or not data.get("Answer"):
+                print(f"[-] Google DNS báo domain '{clean}' không tồn tại (NXDOMAIN)")
+                add_to_dead_domains(clean)
+                return False
+            return True
+    except Exception:
+        pass
+    # Fallback to local socket with 0.5s timeout
+    try:
+        orig_to = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(0.5)
         socket.gethostbyname(clean)
+        socket.setdefaulttimeout(orig_to)
         return True
     except Exception:
-        # Fallback to Google DoH to avoid ISP DNS false positives
-        try:
-            import urllib.request, json, ssl
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            req = urllib.request.Request(f"https://dns.google/resolve?name={clean}", headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, context=ctx, timeout=2.0) as r:
-                data = json.loads(r.read().decode("utf-8"))
-                for ans in data.get("Answer", []):
-                    if ans.get("type") == 1:
-                        return True
-        except Exception:
-            pass
         add_to_dead_domains(clean)
         return False
 
@@ -195,6 +195,19 @@ def run(target_url: str = None, headless: bool = None):
                     print(f"🎯 Bắt được chuyển trang đích tức thì: {final_destination_url}")
         page_layma.on("framenavigated", on_nav)
 
+        def resolve_302_url(target_go_url: str):
+            if not target_go_url or not target_go_url.startswith("http"):
+                return None
+            try:
+                r = http_session.get(target_go_url, allow_redirects=False, timeout=3.5)
+                if r.status_code in (301, 302, 303, 307, 308):
+                    loc = r.headers.get("Location")
+                    if loc and "layma.net" not in loc and "/api/traffic/go/" not in loc:
+                        return loc
+            except Exception:
+                pass
+            return None
+
         def on_layma_res(res):
             nonlocal final_destination_url, direct_redirect_url
             u_low = res.url.lower()
@@ -206,6 +219,10 @@ def run(target_url: str = None, headless: bool = None):
                     if u and u.startswith("http"):
                         direct_redirect_url = u
                         print(f"🎯 Nhận redirectUrl từ JSON: {direct_redirect_url}")
+                        loc302 = resolve_302_url(direct_redirect_url)
+                        if loc302:
+                            final_destination_url = loc302
+                            print(f"⚡ [TURBO 302] Bắt link đích siêu tốc: {final_destination_url}")
                 except Exception as e:
                     try:
                         raw = res.text()
@@ -213,6 +230,10 @@ def run(target_url: str = None, headless: bool = None):
                         if m_go:
                             direct_redirect_url = m_go.group(0)
                             print(f"🎯 Bắt được direct_redirect_url từ text: {direct_redirect_url}")
+                            loc302 = resolve_302_url(direct_redirect_url)
+                            if loc302:
+                                final_destination_url = loc302
+                                print(f"⚡ [TURBO 302] Bắt link đích siêu tốc: {final_destination_url}")
                     except Exception:
                         pass
 
@@ -228,7 +249,7 @@ def run(target_url: str = None, headless: bool = None):
 
         print(f"[*] Step 1: Navigating to LayMa shortlink: {target_url}...")
         page_layma.goto(target_url, wait_until="domcontentloaded")
-        time.sleep(2)
+        time.sleep(1.0)
 
         camp_id = page_layma.locator("#campainId").inner_text().strip() if page_layma.locator("#campainId").count() > 0 else ""
         print(f"[+] Campaign ID on LayMa: {camp_id}")
@@ -511,25 +532,29 @@ def run(target_url: str = None, headless: bool = None):
             }}
             return {{ success: false, key: foundKey }};
         }}""")
+        button_click_time = time.time()
+        visit_start_time = visit_start_time or button_click_time
         if clicked_res and clicked_res.get('success'):
             if clicked_res.get('key'):
                 traffic_key = clicked_res['key']
-            print(f"⚡ Kích hoạt nút LẤY MÃ thành công (Key: {traffic_key})! Bắt đầu đếm ngược 60s...")
+            print(f"⚡ Kích hoạt nút LẤY MÃ thành công (Key: {traffic_key})!")
         else:
             print("[!] Thử query selector click nút lấy mã...")
             page_sponsor.evaluate("() => { const b = document.querySelector('[class*=\"Ran\"], button[id], div[id*=\"Az\"], div[id*=\"Jkf\"], div[id*=\"DrD\"], button:has-text(\"LẤY MÃ\"), a:has-text(\"LẤY MÃ\")'); if (b) b.click(); }")
 
-        # Chờ 60s trên trang sponsor theo yêu cầu bắt buộc của máy chủ LayMa
+        print("⚡ [TURBO SONG SONG] Tích luỹ on-site 35s trước khi mở giải sớm QCaptcha...")
+
+        # Chờ 35s đầu để tích luỹ thời gian on-site và trang ổn định
         dir_w = 1
-        for sec in range(61, 0, -1):
+        for sec in range(35, 0, -1):
             time.sleep(1.0)
             if sec % 10 == 0:
-                print(f"  ⌛ Đang chờ máy chủ xác nhận thời gian on-site: còn {sec}s...")
+                print(f"  ⌛ Tích luỹ on-site: còn {sec}s nữa sẽ mở sớm QCaptcha...")
                 dir_w = -dir_w
                 try: page_sponsor.mouse.wheel(0, 150 * dir_w)
                 except Exception: pass
 
-        print("[*] Hết thời gian chờ (60s+)! Mở modal xác thực QCaptcha...")
+        print("[*] Mốc 35s: Mở sớm modal xác thực QCaptcha để giải gối đầu trong khi máy chủ tiếp tục tính 60s...")
         page_sponsor.evaluate("""() => {
             const btns = Array.from(document.querySelectorAll('#xacthucButton, #xacthuc, [class*="xacthuc"], [id*="xacthuc"], button, a, [role="button"]'));
             for (let b of btns) {
@@ -589,7 +614,7 @@ def run(target_url: str = None, headless: bool = None):
         verified_token = None
 
         # Solve QCaptcha loop
-        print("[*] Bắt đầu tự động giải QCaptcha challenge...")
+        print("[*] Bắt đầu tự động giải QCaptcha challenge song song...")
         for round_idx in range(60):
             time.sleep(0.35)
 
@@ -599,6 +624,13 @@ def run(target_url: str = None, headless: bool = None):
             }''')
             if token:
                 print(f"[🎉] QCaptcha Token Verified: {token[:40]}...")
+                # Đảm bảo đủ chuẩn 60.5s on-site theo server LayMa
+                now_elapsed = time.time() - (visit_start_time or button_click_time)
+                if now_elapsed < 60.5:
+                    wait_rem = 60.5 - now_elapsed
+                    print(f"⚡ [TURBO] Đã giải xong QCaptcha sớm (tiết kiệm ~20s)! Chờ thêm {wait_rem:.1f}s để đủ chuẩn 60s server LayMa...")
+                    time.sleep(wait_rem)
+
                 print("[*] Gửi token lên máy chủ lấy mã...")
                 page_sponsor.evaluate('''([tok, key]) => {
                     let el = document.getElementById(key);
@@ -868,16 +900,23 @@ def run(target_url: str = None, headless: bool = None):
 
         # Wait for redirect to final destination url
         print("[*] Đang chờ trình duyệt chuyển hướng đến link đích cuối cùng...")
-        for wait_i in range(80):
+        for wait_i in range(30):
             if final_destination_url and "layma.net" not in final_destination_url and "/api/traffic/go/" not in final_destination_url:
                 break
+
+            if direct_redirect_url and (not final_destination_url or "layma.net" in final_destination_url):
+                loc302 = resolve_302_url(direct_redirect_url)
+                if loc302:
+                    final_destination_url = loc302
+                    print(f"⚡ [TURBO 302] Bắt link đích siêu tốc: {final_destination_url}")
+                    break
 
             curr = page_layma.url
             if curr and curr.startswith("http") and "layma.net" not in curr and "/api/traffic/go/" not in curr:
                 final_destination_url = curr
                 break
 
-            time.sleep(0.5)
+            time.sleep(0.3)
 
         # Fallback only if still on layma and direct_redirect_url was captured
         if (not final_destination_url or "layma.net" in final_destination_url) and direct_redirect_url:
