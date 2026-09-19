@@ -163,58 +163,23 @@ def run(target_link: str = None, headless: bool = None):
             html1 = page1.content()
             log(f"[TAB 1] Da tai DOM ({len(html1)} bytes).")
 
-            # Giai quyet Cloudflare Turnstile ngay khi Tab 1 vua load (Quick check 1.5s, fallback Patchright ngay)
-            log("[TAB 1] Kiem tra Cloudflare Turnstile...")
-            turnstile_token = page1.evaluate("""() => {
-                try {
-                    if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
-                        const t = turnstile.getResponse();
-                        if (t && String(t).length > 20) return String(t);
-                    }
-                } catch (e) {}
-                const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
-                for (const inp of inputs) {
-                    if (inp.value && inp.value.length > 20) return inp.value;
-                }
-                return '';
-            }""")
-            
-            if not turnstile_token or len(turnstile_token) < 20:
-                # Thu click nhe 1 lan trong 1s
-                try:
-                    ts = page1.query_selector('.cf-turnstile')
-                    if ts:
-                        ts.click()
-                except Exception:
-                    pass
-                time.sleep(1)
-                turnstile_token = page1.evaluate("""() => {
-                    const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
-                    for (const inp of inputs) {
-                        if (inp.value && inp.value.length > 20) return inp.value;
-                    }
-                    return '';
-                }""")
-
-            if turnstile_token and len(turnstile_token) > 20:
-                log(f"[TAB 1] Turnstile da co san! Token len: {len(turnstile_token)}")
-            else:
-                try:
-                    from turnstile_solver import get_turnstile_token
-                    sitekey = page1.evaluate("""() => {
-                        let el = document.querySelector('.cf-turnstile') || document.querySelector('[data-sitekey]');
-                        return el ? el.getAttribute('data-sitekey') : '0x4AAAAAAEzmJdRW__FHO9pu';
-                    }""") or "0x4AAAAAAEzmJdRW__FHO9pu"
-                    log(f"[TAB 1] Kich hoat ngay Turnstile Solver (Node.js Patchright)...")
-                    ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=False, headless=False)
-                    if ts_res.get('status') == 'success' and ts_res.get('turnstile_value'):
-                        turnstile_token = ts_res['turnstile_value']
-                        log(f"[TAB 1] Turnstile xac thuc thanh cong qua Patchright! Token len: {len(turnstile_token)}")
-                        page1.evaluate("""(tok) => {
-                            document.querySelectorAll('input[name="cf-turnstile-response"]').forEach(i => i.value = tok);
-                        }""", turnstile_token)
-                except Exception as e:
-                    log(f"[TAB 1] Warning Turnstile solver: {e}")
+            # Cloudflare tren Playwright luon bi block -> Goi truc tiep Node.js Patchright Solver khong can kiem tra
+            try:
+                from turnstile_solver import get_turnstile_token
+                sitekey = page1.evaluate("""() => {
+                    let el = document.querySelector('.cf-turnstile') || document.querySelector('[data-sitekey]');
+                    return el ? el.getAttribute('data-sitekey') : '0x4AAAAAAEzmJdRW__FHO9pu';
+                }""") or "0x4AAAAAAEzmJdRW__FHO9pu"
+                log(f"[TAB 1] Kich hoat truc tiep Turnstile Solver (Node.js Patchright)...")
+                ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=False, headless=False)
+                if ts_res.get('status') == 'success' and ts_res.get('turnstile_value'):
+                    turnstile_token = ts_res['turnstile_value']
+                    log(f"[TAB 1] Turnstile xac thuc thanh cong qua Patchright! Token len: {len(turnstile_token)}")
+                    page1.evaluate("""(tok) => {
+                        document.querySelectorAll('input[name="cf-turnstile-response"]').forEach(i => i.value = tok);
+                    }""", turnstile_token)
+            except Exception as e:
+                log(f"[TAB 1] Warning Turnstile solver: {e}")
 
             final_code = None
             time.sleep(1)
@@ -712,71 +677,21 @@ def run(target_link: str = None, headless: bool = None):
         # -------------------------------------------------------------
         # CLOUDFLARE TURNSTILE TOKEN SYNC & VERIFY
         # -------------------------------------------------------------
-        log("[TAB 1] Kiem tra va dong bo Cloudflare Turnstile token...")
-        current_ts = page1.evaluate("""() => {
-            try {
-                if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
-                    const t = turnstile.getResponse();
-                    if (t && String(t).length > 20) return String(t);
-                }
-            } catch (e) {}
-            const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
-            for (const inp of inputs) {
-                if (inp.value && inp.value.length > 20) return inp.value;
-            }
-            return '';
-        }""")
-        if current_ts and len(current_ts) > 20:
-            turnstile_token = current_ts
-            log(f"[TAB 1] Turnstile san sang tren DOM! Token len: {len(turnstile_token)}")
-        elif turnstile_token:
-            log(f"[TAB 1] Su dung token Turnstile da lay tu Buoc 1! Token len: {len(turnstile_token)}")
-        else:
-            log("[TAB 1] Cho Turnstile xac thuc bo sung...")
-            for sec in range(1, 15):
-                turnstile_token = page1.evaluate("""() => {
-                    try {
-                        if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
-                            const t = turnstile.getResponse();
-                            if (t && String(t).length > 20) return String(t);
-                        }
-                    } catch (e) {}
-                    const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
-                    for (const inp of inputs) {
-                        if (inp.value && inp.value.length > 20) return inp.value;
-                    }
-                    return '';
-                }""")
-                if turnstile_token and len(turnstile_token) > 20:
-                    log(f"[TAB 1] Turnstile xac thuc thanh cong! Token len: {len(turnstile_token)}")
-                    break
-                try:
-                    ts_widget = page1.query_selector('.cf-turnstile')
-                    if ts_widget:
-                        ts_widget.click(timeout=1000)
-                except Exception:
-                    pass
-                for f in page1.frames:
-                    if 'challenges' in f.url:
-                        try:
-                            f.click("body", timeout=1000)
-                        except Exception:
-                            pass
-                time.sleep(1)
-
-        # Neu van chua co token, kich hoat engine giai doc lap Turnstile Solver (Theyka / Patchright)
+        # Dong bo token Turnstile da lay tu Buoc 1
         if not turnstile_token or len(turnstile_token) < 20:
-            log("[TAB 1] Turnstile chua xac thuc tren trang live. Kich hoat Turnstile Solver doc lap (Theyka / Patchright)...")
+            log("[TAB 1] Kich hoat Turnstile Solver doc lap (Node.js Patchright)...")
             try:
                 from turnstile_solver import get_turnstile_token
                 sitekey = page1.evaluate("""() => {
                     let el = document.querySelector('.cf-turnstile') || document.querySelector('[data-sitekey]');
                     return el ? el.getAttribute('data-sitekey') : '0x4AAAAAAEzmJdRW__FHO9pu';
                 }""") or "0x4AAAAAAEzmJdRW__FHO9pu"
-                ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=True, headless=False)
+                ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=False, headless=False)
                 if ts_res.get('status') == 'success' and ts_res.get('turnstile_value'):
                     turnstile_token = ts_res['turnstile_value']
                     log(f"[TAB 1] Turnstile Solver thanh cong! Token len: {len(turnstile_token)}")
+            except Exception as e:
+                log(f"[TAB 1] Warning Turnstile solver: {e}")
             except Exception as e:
                 log(f"[TAB 1] Warning Turnstile Solver fallback: {e}")
 
