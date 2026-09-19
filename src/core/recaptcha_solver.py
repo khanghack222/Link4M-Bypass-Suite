@@ -135,43 +135,21 @@ class RecaptchaAudioSolver:
                     self._sync_tokens(page, token)
                     return {"success": True, "token": token, "type": "instant", "time_ms": elapsed}
 
-                # Locate active visible bframe using evaluated DOM styles
+                # Deterministic 1-to-1 matching: Anchor name a-XXXX maps exactly to bframe c-XXXX
                 active_bframe = None
-                for _ in range(25):
-                    active_idx = page.evaluate("""() => {
-                        const iframes = Array.from(document.querySelectorAll("iframe[src*='recaptcha/api2/bframe'], iframe[src*='recaptcha/enterprise/bframe']"));
-                        for (let i = 0; i < iframes.length; i++) {
-                            const f = iframes[i];
-                            const p = f.parentElement;
-                            const rect = f.getBoundingClientRect();
-                            const pRect = p ? p.getBoundingClientRect() : null;
-                            const style = window.getComputedStyle(f);
-                            const pStyle = p ? window.getComputedStyle(p) : null;
-                            
-                            const isHidden = style.visibility === 'hidden' || style.display === 'none' || (pStyle && (pStyle.visibility === 'hidden' || pStyle.display === 'none' || pStyle.opacity === '0'));
-                            const isOffscreen = rect.top < -3000 || (pRect && pRect.top < -3000);
-                            
-                            const w = rect.width || f.offsetWidth;
-                            const h = rect.height || f.offsetHeight;
-                            if (w > 150 && h > 150 && !isHidden && !isOffscreen) {
-                                return i;
-                            }
-                        }
-                        return -1;
-                    }""")
-                    
-                    if active_idx >= 0:
-                        bframes = page.locator("iframe[src*='recaptcha/api2/bframe'], iframe[src*='recaptcha/enterprise/bframe']").all()
-                        if active_idx < len(bframes):
-                            try:
-                                bframes[active_idx].scroll_into_view_if_needed()
-                            except Exception:
-                                pass
-                            active_bframe = bframes[active_idx].content_frame
-                            if active_bframe:
+                a_name = a.get_attribute("name") or ""
+                target_bname = "c-" + a_name[2:] if a_name.startswith("a-") else None
+
+                for _ in range(20):
+                    if target_bname:
+                        direct_bf = page.locator(f"iframe[name='{target_bname}']")
+                        if direct_bf.count() > 0:
+                            cf_candidate = direct_bf.first.content_frame
+                            if cf_candidate and cf_candidate.locator("#recaptcha-audio-button, .rc-imageselect, #recaptcha-verify-button").count() > 0:
+                                active_bframe = cf_candidate
                                 break
 
-                    # Fallback: check content frames directly
+                    # Secondary: check all bframes on page
                     bframes = page.locator("iframe[src*='recaptcha/api2/bframe'], iframe[src*='recaptcha/enterprise/bframe']").all()
                     for bf in bframes:
                         try:

@@ -158,6 +158,14 @@ def run(target_url: str = None, headless: bool = True):
             try:
                 if not allow_intercept_new_tab:
                     return
+                def on_tab_nav(frame):
+                    nonlocal final_destination_url
+                    if frame == new_p.main_frame:
+                        u = frame.url
+                        if is_valid_destination(u):
+                            final_destination_url = u
+                            log(f"🎉 DESTINATION URL INTERCEPTED FROM NEW TAB NAV: {final_destination_url}")
+                new_p.on("framenavigated", on_tab_nav)
                 new_p.wait_for_load_state("domcontentloaded", timeout=15000)
                 u = new_p.url
                 if is_valid_destination(u):
@@ -166,6 +174,15 @@ def run(target_url: str = None, headless: bool = True):
             except Exception:
                 pass
         context.on("page", on_new_page)
+
+        def on_main_nav(frame):
+            nonlocal final_destination_url
+            if frame == page_link.main_frame:
+                u = frame.url
+                if is_valid_destination(u):
+                    final_destination_url = u
+                    log(f"🎉 DESTINATION URL INTERCEPTED FROM MAIN PAGE NAV: {final_destination_url}")
+        page_link.on("framenavigated", on_main_nav)
 
         api_rejected_captcha = False
         sponsor_campaign_detected = None
@@ -181,13 +198,17 @@ def run(target_url: str = None, headless: bool = True):
                         sponsor_campaign_detected = False
                 except Exception:
                     pass
-            if any(ep in res.url for ep in ["/links/get-link-info", "/links/check-captcha", "/links/go", "/links/verify"]):
+            if any(ep in res.url for ep in ["/links/get-link-info", "/links/check-captcha", "/links/go", "/links/verify", "/api/url/done", "/api/v1/links"]):
                 try:
                     data = res.json()
                     log(f"[+] Intercepted Link4M API response: {data}")
                     if data.get("success") is False:
                         api_rejected_captcha = True
-                    u = data.get("url") or data.get("return") or data.get("link")
+                    u = data.get("url") or data.get("return") or data.get("link") or data.get("redirect") or data.get("redirect_url")
+                    if not u and isinstance(data.get("data"), dict):
+                        u = data["data"].get("url") or data["data"].get("link")
+                    elif not u and isinstance(data.get("data"), str):
+                        u = data["data"]
                     if u and is_valid_destination(u):
                         final_destination_url = u
                         log(f"🎉 DESTINATION URL INTERCEPTED FROM API: {final_destination_url}")
@@ -271,12 +292,8 @@ def run(target_url: str = None, headless: bool = True):
             if isinstance(sponsor_candidates, str):
                 sponsor_candidates = [sponsor_candidates]
 
-            code_found = None
-            for sp_u in sponsor_candidates:
-                log(f"🎉 TARGET SPONSOR WEBSITE FOR THIS MISSION: {sp_u}")
-                code_found = solve_sponsor_quest(context, str(sp_u))
-                if code_found:
-                    break
+            log(f"🎉 TARGET SPONSOR CANDIDATES: {sponsor_candidates}")
+            code_found = solve_sponsor_quest(context, sponsor_candidates)
 
             if not code_found:
                 log("[!] Could not extract mission code. Halting.")
@@ -434,6 +451,10 @@ def run(target_url: str = None, headless: bool = True):
             try:
                 with open(DEST_FILE, "w", encoding="utf-8") as f:
                     f.write(str(final_destination_url))
+                run_id = os.environ.get("BYPASS_RUN_ID")
+                if run_id:
+                    with open(os.path.join(BASE_DIR, f"destination_url-{run_id}.txt"), "w", encoding="utf-8") as f_run:
+                        f_run.write(str(final_destination_url))
                 desk_dest = os.path.expanduser(r"~\Desktop\destination_url.txt")
                 with open(desk_dest, "w", encoding="utf-8") as f_d:
                     f_d.write(str(final_destination_url))

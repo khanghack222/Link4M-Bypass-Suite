@@ -80,7 +80,7 @@ def unmask_domain_candidates(raw_text: str):
     return list(dict.fromkeys(results))
 
 VALID_TLDS = [
-    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'de.com', 'uk.com', 'jpn.com', 'gb.net', 'com', 'net', 'org', 'io', 'cc',
+    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'de.com', 'uk.com', 'jpn.com', 'gb.net', 'jp.net', 'cn.com', 'com', 'net', 'org', 'io', 'cc',
     'me', 'vn', 'tw', 'vip', 'tv', 'co', 'site', 'top', 'online', 'xyz',
     'info', 'biz', 'club', 'games', 'app', 'live', 'ai', 'in', 'us', 'uk'
 ]
@@ -180,8 +180,20 @@ def extract_domain_candidates(ocr_lines):
         score += len(clow)
         return score
 
-    EXCLUDED_DOMAINS = {'gmail.com', 'gmal.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com', 'mail.com', 'link4m.net', 'link4m.com', 'link4m.org', 'link4m.co', 'link4m.me'}
-    candidates = [c for c in candidates if 'google' not in c.lower() and 'link4m' not in c.lower() and c.lower() not in EXCLUDED_DOMAINS]
+    EXCLUDED_DOMAINS = {'gmail.com', 'gmal.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com', 'mail.com', 'link4m.net', 'link4m.com', 'link4m.org', 'link4m.co', 'link4m.me', 'us.org', 'uk.com', 'us.com', 'vn.com'}
+    # Priority 4: Smart OCR self-healing for l <-> i, 1 <-> i / l, 0 <-> o
+    ocr_healed = []
+    for c in list(candidates):
+        variants = set()
+        if 'l' in c: variants.add(c.replace('l', 'i'))
+        if '1' in c: variants.add(c.replace('1', 'i')); variants.add(c.replace('1', 'l'))
+        if '0' in c: variants.add(c.replace('0', 'o'))
+        for v in variants:
+            if v not in candidates and v not in ocr_healed:
+                ocr_healed.append(v)
+    candidates.extend(ocr_healed)
+
+    candidates = [c for c in candidates if 'google' not in c.lower() and 'link4m' not in c.lower() and c.lower() not in EXCLUDED_DOMAINS and len(c.split('.')[0]) >= 3]
     candidates.sort(key=rank_c, reverse=True)
     return candidates
 
@@ -195,9 +207,11 @@ def _probe_single_proto(proto_url: str):
         )
         with urllib.request.urlopen(req, context=_SSL_CTX, timeout=2.5) as resp:
             if resp.getcode() in (200, 301, 302):
+                final_url = resp.geturl() if resp.geturl() else proto_url
+                final_url = final_url.rstrip('/')
                 html = resp.read(65536).decode('utf-8', errors='ignore')
                 has_script = any(k in html.lower() for k in ['traffic', 'widget', 'what-on', 'website-analytics', 'service-v', 'lấy mã', 'lay ma'])
-                return (proto_url, has_script)
+                return (final_url, has_script)
     except Exception:
         pass
     return ("", False)
@@ -601,7 +615,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
     def on_resp(res):
         nonlocal code_found, campaign_dead, code_from_api
         u_lower = res.url.lower()
-        if any(ep in u_lower for ep in ["get_quest_code", "get_code", "ajax_code", "lay_ma", "process-site", "check-site", "iatum"]):
+        if any(ep in u_lower for ep in ["get_quest_code", "get_code", "ajax_code", "lay_ma", "process-code", "process-site", "check-site", "iatum", "ontops"]):
             try:
                 data = None
                 try:
@@ -642,7 +656,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 pass
     page.on("response", on_resp)
 
-    btn_sel = f"[id='{traffic_key}'] button, [id='{traffic_key}'] a, [id='{traffic_key}'], button:has-text('LẤY MÃ'), button:has-text('LAY MA'), a:has-text('LẤY MÃ'), .whatoncode" if traffic_key else "button:has-text('LẤY MÃ'), button:has-text('LAY MA'), a:has-text('LẤY MÃ'), .whatoncode"
+    btn_sel = f"[id='{traffic_key}'] button, [id='{traffic_key}'] a, [id='{traffic_key}'], #traffic-button, .traffic-button, button:has-text('LẤY MÃ'), button:has-text('LAY MA'), a:has-text('LẤY MÃ'), .whatoncode" if traffic_key else "#traffic-button, .traffic-button, button:has-text('LẤY MÃ'), button:has-text('LAY MA'), a:has-text('LẤY MÃ'), .whatoncode"
 
     def prep():
         for _ in range(3):
@@ -690,11 +704,21 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             try:
                 article_candidates = page.evaluate("""(sp_url) => {
                     const links = [];
-                    const origin = new URL(sp_url).origin;
+                    // 1. Direct Step 2 link injected into whatoncode / completed button by widget
+                    const questLink = document.querySelector('.whatoncode a[href], .whatoncode-wrapper a[href], .completed a[href], [class*="whatoncode"] a[href]');
+                    if (questLink && questLink.href && !questLink.href.startsWith('javascript:')) {
+                        const cleanLink = questLink.href.split('#')[0].replace(/\\/$/, '');
+                        if (!cleanLink.includes('tracking') && !cleanLink.includes('tracker')) {
+                            links.push(cleanLink);
+                        }
+                    }
+                    // 2. Scan on-page article links with matching hostname
+                    const host = new URL(sp_url).hostname.replace(/^www\\./, '').toLowerCase();
                     document.querySelectorAll('a[href]').forEach(a => {
                         try {
                             const u = new URL(a.href, window.location.href);
-                            if (u.origin === origin && u.pathname.length > 2 && !u.pathname.includes('wp-admin') && !u.pathname.includes('feed') && !u.href.includes('#')) {
+                            const uHost = u.hostname.replace(/^www\\./, '').toLowerCase();
+                            if (uHost === host && u.pathname.length > 2 && !u.pathname.includes('wp-admin') && !u.pathname.includes('feed') && !u.href.includes('#') && !u.pathname.includes('tracking') && !u.pathname.includes('cdn-cgi')) {
                                 links.push(u.href.replace(/\\/$/, ''));
                             }
                         } catch (e) {}
@@ -716,7 +740,17 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 art_url = f"{article}#ss-{traffic_key}" if traffic_key and "#" not in article else article
             log(f"[*] Navigating to Step {step} article: {art_url}")
             try:
-                page.goto(art_url, wait_until="domcontentloaded", timeout=35000)
+                resp = page.goto(art_url, wait_until="domcontentloaded", timeout=35000)
+                if resp and resp.status in (404, 500, 502, 503):
+                    log(f"[!] Article {art_url} returned {resp.status}, trying fallback article...")
+                    for fallback_cand in (article_candidates or []):
+                        if fallback_cand not in visited and fallback_cand != cand:
+                            art_url = f"{fallback_cand}#ss-{traffic_key}" if traffic_key else fallback_cand
+                            visited.add(fallback_cand)
+                            log(f"[*] Fallback navigating to Step {step} article: {art_url}")
+                            resp2 = page.goto(art_url, wait_until="domcontentloaded", timeout=35000)
+                            if resp2 and resp2.status not in (404, 500, 502, 503):
+                                break
             except Exception:
                 pass
             time.sleep(1.5)
@@ -726,7 +760,10 @@ if (!quest_info && typeof(Storage) !== "undefined") {
 
         btn = page.locator(btn_sel).first
         if btn.count() == 0:
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            try:
+                page.evaluate("if (document.body) window.scrollTo(0, document.body.scrollHeight)")
+            except Exception:
+                pass
             time.sleep(0.4)
             btn = page.locator(btn_sel).first
 
@@ -746,23 +783,46 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             btn.evaluate("el => el.click()")
         time.sleep(0.4)
 
-        sec_dur = page.evaluate(f"() => {{ const el = document.getElementById('{traffic_key}'); return el && el.dataset.time ? parseFloat(el.dataset.time) : (typeof traffic_step_2_wait_time !== 'undefined' && {step} > 1 ? traffic_step_2_wait_time : ({step} > 1 ? 15 : 60)); }}")
+        sec_dur = page.evaluate(f"""() => {{
+            if (typeof counter2 !== 'undefined' && counter2 !== null && counter2 > 0) return parseFloat(counter2);
+            const el = document.getElementById('{traffic_key}');
+            if (el && el.dataset.time) return parseFloat(el.dataset.time);
+            const whaton = document.querySelector('.whatoncode, [class*="whatoncode"]');
+            if (whaton) {{
+                const m = (whaton.innerText || whaton.textContent || '').match(/(\\d+)\\s*(?:giây|s)/i);
+                if (m) return parseFloat(m[1]);
+            }}
+            const tfBtn = document.querySelector('#traffic-button, .traffic-button');
+            if (tfBtn) {{
+                const m = (tfBtn.innerText || '').match(/(\\d+)\\s*(?:giây|s)/i);
+                if (m) return parseFloat(m[1]);
+            }}
+            return (typeof traffic_step_2_wait_time !== 'undefined' && {step} > 1 ? traffic_step_2_wait_time : ({step} > 1 ? 15 : 60));
+        }}""")
         log(f"[*] Step {step}: Countdown duration = {sec_dur}s")
 
         dir_wheel = 1
         start_step_time = time.time()
-        max_ticks = int((sec_dur + 15) * 2)
-        for tick in range(1, max(max_ticks, 40)):
+        max_ticks = int((sec_dur + 35) * 2)
+        for tick in range(1, max(max_ticks, 60)):
             time.sleep(0.5)
-            if tick % 4 == 0:
+            if tick % 3 == 0:
                 dir_wheel = -dir_wheel
                 try: page.mouse.wheel(0, 120 * dir_wheel)
                 except Exception: pass
 
             rem = page.evaluate(f"""() => {{
+                if (typeof counter2 !== 'undefined' && counter2 !== null) return parseFloat(counter2);
+                const whaton = document.querySelector('.whatoncode, [class*="whatoncode"]');
+                if (whaton) {{
+                    const text = whaton.innerText || whaton.textContent || '';
+                    if (text.includes('Mã KM:') || text.includes('Mã:')) return 0.0;
+                    const m = text.match(/(\\d+)\\s*s\\s*\\(/i) || text.match(/(\\d+)\\s*(?:giây|s)/i);
+                    if (m) return parseFloat(m[1]);
+                }}
                 const el = document.getElementById('{traffic_key}');
                 if (el && el.dataset.time) return parseFloat(el.dataset.time);
-                const btn = document.querySelector(".completed, [class*='completed'], [id='{traffic_key}'] button, [id='{traffic_key}'], button");
+                const btn = document.querySelector("#traffic-button, .traffic-button, .completed, [class*='completed'], [id='{traffic_key}'] button, [id='{traffic_key}'], button");
                 if (btn) {{
                     const m = (btn.innerText || '').match(/(\\d+)\\s*(?:giây|s)/i);
                     if (m) return parseFloat(m[1]);
@@ -795,7 +855,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                         page.evaluate(f"""() => {{
                             const el = document.getElementById('{traffic_key}');
                             if (!el || el.dataset.loading !== 'true') {{
-                                const btn = document.querySelector("[id='{traffic_key}'] button, [id='{traffic_key}'] a, .completed");
+                                const btn = document.querySelector(".whatoncode, [id='{traffic_key}'] button, [id='{traffic_key}'] a, .completed");
                                 if (btn && (!btn.innerText || !btn.innerText.includes('Mã KM'))) btn.click();
                             }}
                         }}""")
@@ -809,6 +869,14 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                 break
                             try:
                                 dom_t = page.evaluate(f"""() => {{
+                                    const tfBtn = document.querySelector('#traffic-button, .traffic-button, .traffic-button__content');
+                                    if (tfBtn) {{
+                                        const text = tfBtn.innerText || tfBtn.textContent || '';
+                                        const m = text.match(/(?:M[ãa]\\s*KM|M[ãa]\\s*x[áa]c\\s*nh[ậa]n|Code|M[ãa])[\\s\\:\\-]+([A-Za-z0-9_\\-]{{4,25}})/i);
+                                        if (m) return m[1];
+                                        const t = text.trim();
+                                        if (/^[A-Za-z0-9_\\-]{{4,25}}$/.test(t) && !/lay|ma|click|link|buoc|cho|wait|giay|second|loading|keo/i.test(t)) return t;
+                                    }}
                                     const el = document.getElementById('{traffic_key}');
                                     if (el) {{
                                         const d = el.getElementsByTagName('div')[0];
@@ -832,12 +900,32 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                 break
                     else:
                         log(f"[*] Step {step} countdown finished! Waiting for mission code from API/DOM...")
-                        for _ in range(40):
+                        for wait_i in range(50):
                             time.sleep(0.5)
                             if code_found:
                                 break
+                            if wait_i % 3 == 0:
+                                try:
+                                    page.mouse.wheel(0, 100 if wait_i % 6 == 0 else -100)
+                                    page.evaluate("""() => {
+                                        if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
+                                        else if (typeof checkButtonClick === 'function') checkButtonClick();
+                                        const c = document.querySelector('.whatoncode, .completed, button');
+                                        if (c && (!c.innerText || !c.innerText.includes('Mã KM'))) c.click();
+                                    }""")
+                                except Exception:
+                                    pass
                             try:
                                 dom_t = page.evaluate(f"""() => {{
+                                    // 0. Check traffic-button / best-traffic
+                                    const tfBtn = document.querySelector('#traffic-button, .traffic-button, .traffic-button__content');
+                                    if (tfBtn) {{
+                                        const text = tfBtn.innerText || tfBtn.textContent || '';
+                                        const m = text.match(/(?:M[ãa]\\s*KM|M[ãa]\\s*x[áa]c\\s*nh[ậa]n|Code|M[ãa])[\\s\\:\\-]+([A-Za-z0-9_\\-]{{4,25}})/i);
+                                        if (m) return m[1];
+                                        const t = text.trim();
+                                        if (/^[A-Za-z0-9_\\-]{{4,25}}$/.test(t) && !/lay|ma|click|link|buoc|cho|wait|giay|second|loading|keo/i.test(t)) return t;
+                                    }}
                                     // 1. Check whatoncode
                                     const whaton = document.querySelector('.whatoncode, [class*="whatoncode"], .whatoncode-wrapper');
                                     if (whaton) {{
