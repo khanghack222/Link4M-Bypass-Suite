@@ -656,7 +656,114 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 pass
     page.on("response", on_resp)
 
-    btn_sel = f"[id='{traffic_key}'] button, [id='{traffic_key}'] a, [id='{traffic_key}'], #traffic-button, .traffic-button, button:has-text('LẤY MÃ'), button:has-text('LAY MA'), a:has-text('LẤY MÃ'), .whatoncode" if traffic_key else "#traffic-button, .traffic-button, button:has-text('LẤY MÃ'), button:has-text('LAY MA'), a:has-text('LẤY MÃ'), .whatoncode"
+    def get_button_selectors(tk):
+        sel_list = []
+        if tk:
+            sel_list.extend([
+                f"[id='{tk}'] button",
+                f"[id='{tk}'] a",
+                f"[id='{tk}'] [role='button']",
+                f"[id='{tk}']",
+                f"[data-key='{tk}']",
+                f"#ss-{tk}",
+            ])
+        sel_list.extend([
+            "#traffic-button", ".traffic-button", "[class*='traffic-button']", "[id*='traffic-button']",
+            ".traffic-button__content", "#traffic-button__content",
+            ".whatoncode", "[class*='whatoncode']", "[id*='whatoncode']",
+            "[class*='btn-traffic']", "[id*='btn-traffic']", "[class*='traffic-btn']",
+            "[class*='btn-layma']", "[id*='btn-layma']", "[class*='layma']", "[id*='layma']",
+            "[class*='lay-ma']", "[id*='lay-ma']", "[class*='btn-lay-ma']",
+            "[class*='getcode']", "[id*='getcode']", "[class*='get-code']", "[id*='get-code']",
+            "[class*='lay-code']", "[id*='lay-code']",
+            "button:has-text('LẤY MÃ')", "a:has-text('LẤY MÃ')", "div:has-text('LẤY MÃ')", "span:has-text('LẤY MÃ')",
+            "button:has-text('LAY MA')", "a:has-text('LAY MA')", "div:has-text('LAY MA')",
+            "button:has-text('LẤY CODE')", "a:has-text('LẤY CODE')", "div:has-text('LẤY CODE')",
+            "button:has-text('GET CODE')", "a:has-text('GET CODE')", "div:has-text('GET CODE')",
+            "button:has-text('NHẬN MÃ')", "a:has-text('NHẬN MÃ')", "div:has-text('NHẬN MÃ')",
+            "button:has-text('LẤY PASS')", "a:has-text('LẤY PASS')",
+            "button:has-text('LẤY KEY')", "a:has-text('LẤY KEY')",
+            "button:has-text('BẤM VÀO ĐÂY')", "a:has-text('BẤM VÀO ĐÂY')",
+            "button:has-text('XEM MÃ')", "a:has-text('XEM MÃ')",
+            "button:has-text('TIẾP TỤC')", "a:has-text('TIẾP TỤC')",
+            "button:has-text('CONTINUE')", "a:has-text('CONTINUE')",
+            ".completed", "[class*='completed']",
+            "[data-traffic]", "[data-quest]", "[data-code]"
+        ])
+        return sel_list
+
+    def find_mission_button(timeout_sec=5.0):
+        nonlocal traffic_key
+        start_t = time.time()
+        while time.time() - start_t < timeout_sec:
+            if not traffic_key:
+                try:
+                    dyn_k = page.evaluate("""() => {
+                        if (window.traffic_key) return window.traffic_key;
+                        if (window.whaton_key) return window.whaton_key;
+                        for (let k in localStorage) {
+                            if (k.includes('quest') || k.includes('traffic')) {
+                                try {
+                                    const v = JSON.parse(localStorage.getItem(k));
+                                    if (v && (v.key || v.id)) return v.key || v.id;
+                                } catch (e) {}
+                            }
+                        }
+                        const el = document.querySelector('[data-key], [id*="traffic-button"], .whatoncode, [class*="whatoncode"]');
+                        if (el) return el.dataset.key || el.id || null;
+                        return null;
+                    }""")
+                    if dyn_k:
+                        traffic_key = str(dyn_k)
+                        log(f"[*] Dynamically identified traffic_key: {traffic_key}")
+                except Exception:
+                    pass
+
+            selectors = get_button_selectors(traffic_key)
+            for sel in selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if loc.count() > 0:
+                        return loc
+                except Exception:
+                    pass
+
+            try:
+                js_matched = page.evaluate("""() => {
+                    const textRegex = /l[ấa]y\\s*m[ãa]|lay\\s*ma|get\\s*code|nh[ậa]n\\s*m[ãa]|l[ấa]y\\s*pass|l[ấa]y\\s*key|click\\s*v[àa]o\\s*đ[âa]y|b[ấa]m\\s*v[àa]o\\s*đ[âa]y|nh[ậa]n\\s*code/i;
+                    const candidates = document.querySelectorAll('button, a, div, span, p, [role="button"]');
+                    for (const el of candidates) {
+                        if (el.children.length > 5) continue;
+                        const txt = (el.innerText || el.textContent || '').trim();
+                        if (txt && txt.length < 50 && textRegex.test(txt)) {
+                            el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                            el.setAttribute('data-link4m-matched', 'true');
+                            return true;
+                        }
+                    }
+                    const w = document.querySelector('.whatoncode, [class*="whatoncode"], #traffic-button, .traffic-button, [class*="traffic-button"]');
+                    if (w) {
+                        w.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        w.setAttribute('data-link4m-matched', 'true');
+                        return true;
+                    }
+                    return false;
+                }""")
+                if js_matched:
+                    loc = page.locator("[data-link4m-matched='true']").first
+                    if loc.count() > 0:
+                        return loc
+            except Exception:
+                pass
+
+            elapsed = time.time() - start_t
+            frac = min(1.0, elapsed / timeout_sec)
+            try:
+                page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {frac});")
+            except Exception:
+                pass
+            time.sleep(0.4)
+        return None
 
     def prep():
         for _ in range(3):
@@ -758,19 +865,55 @@ if (!quest_info && typeof(Storage) !== "undefined") {
         prep()
         time.sleep(0.5)
 
-        btn = page.locator(btn_sel).first
-        if btn.count() == 0:
+        btn = find_mission_button(timeout_sec=4.5)
+        if (not btn or btn.count() == 0) and step == 1:
+            log(f"[*] Step 1: Nút chưa xuất hiện trên trang đích, đang tìm bài viết nội bộ trên {sponsor_url}...")
             try:
-                page.evaluate("if (document.body) window.scrollTo(0, document.body.scrollHeight)")
+                art_candidates = page.evaluate("""(sp_url) => {
+                    const host = new URL(sp_url).hostname.replace(/^www\\./, '').toLowerCase();
+                    const links = [];
+                    const selectors = [
+                        'article a[href]', '.post a[href]', '.entry-title a[href]',
+                        'main a[href]', 'h1 a[href]', 'h2 a[href]', 'h3 a[href]',
+                        '.news-item a[href]', '.blog-item a[href]', '.content a[href]',
+                        'a[href]'
+                    ];
+                    for (const sel of selectors) {
+                        document.querySelectorAll(sel).forEach(a => {
+                            try {
+                                const u = new URL(a.href, window.location.href);
+                                const uHost = u.hostname.replace(/^www\\./, '').toLowerCase();
+                                if (uHost === host && u.pathname.length > 3) {
+                                    const path = u.pathname.toLowerCase();
+                                    if (!path.includes('wp-admin') && !path.includes('login') && !path.includes('register')
+                                        && !path.includes('tag') && !path.includes('category') && !path.includes('page')
+                                        && !path.includes('feed') && !path.includes('contact') && !path.includes('about')
+                                        && !path.includes('policy') && !path.includes('terms') && !u.href.includes('#')) {
+                                        links.push(u.href.replace(/\\/$/, ''));
+                                    }
+                                }
+                            } catch (e) {}
+                        });
+                        if (links.length >= 5) break;
+                    }
+                    return Array.from(new Set(links));
+                }""", sponsor_url)
+                if art_candidates:
+                    log(f"[*] Tìm thấy {len(art_candidates)} bài viết tiềm năng. Thử truy cập bài viết đầu tiên: {art_candidates[0]}")
+                    try:
+                        page.goto(art_candidates[0], wait_until="domcontentloaded", timeout=35000)
+                        time.sleep(1.0)
+                        prep()
+                        btn = find_mission_button(timeout_sec=5.0)
+                    except Exception as ea:
+                        log(f"[!] Article nav error: {ea}")
             except Exception:
                 pass
-            time.sleep(0.4)
-            btn = page.locator(btn_sel).first
 
-        if btn.count() == 0:
-            log(f"[!] Step {step}: Button not found, skipping...")
+        if not btn or btn.count() == 0:
+            log(f"[!] Step {step}: Button not found after exhaustive scan, skipping...")
             if step == 1 and not traffic_key:
-                log(f"[!] Bước 1 không có traffic_key và nút nhiệm vụ, dừng trang này để thử ứng viên khác.")
+                log(f"[!] Bước 1 không tìm thấy nút nhiệm vụ trên cả trang chủ lẫn bài viết, chuyển ứng viên khác.")
                 try: page.close()
                 except Exception: pass
                 return None
@@ -778,9 +921,18 @@ if (!quest_info && typeof(Storage) !== "undefined") {
 
         log(f"[+] Step {step}: Button located. Clicking...")
         try:
-            btn.click(force=True)
+            btn.scroll_into_view_if_needed(timeout=2000)
+            btn.click(force=True, timeout=2500)
         except Exception:
-            btn.evaluate("el => el.click()")
+            try:
+                btn.evaluate("el => el.click()")
+            except Exception:
+                pass
+        page.evaluate("""() => {
+            if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
+            else if (typeof checkButtonClick === 'function') checkButtonClick();
+            else if (typeof startCountdown === 'function') startCountdown();
+        }""")
         time.sleep(0.4)
 
         sec_dur = page.evaluate(f"""() => {{
