@@ -125,6 +125,9 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str) -> str:
             if live_u and is_actual_sponsor(live_u):
                 log(f"[+] Found verified live sponsor from domain in keyword: {live_u}")
                 return live_u
+            elif live_u:
+                log(f"[+] Found live domain candidate from keyword: {live_u}")
+                return live_u
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -132,11 +135,13 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str) -> str:
         try:
             live_res = probe_domain_live(c)
             live_url = live_res[0] if isinstance(live_res, tuple) else live_res
-            if live_url and is_actual_sponsor(live_url):
-                return live_url
+            if live_url:
+                if is_actual_sponsor(live_url):
+                    return (live_url, live_url)
+                return (None, live_url)
         except Exception:
             pass
-        return None
+        return (None, None)
 
     # 3. Concurrent slug variants probe
     slugs = generate_slug_variants(kw_clean)
@@ -146,24 +151,39 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str) -> str:
             for tld in ['com', 'vn', 'net', 'org', 'com.vn', 'info']:
                 slug_candidates.append(f"{slug}.{tld}")
 
+    fallback_slug_live = []
     if slug_candidates:
         with ThreadPoolExecutor(max_workers=min(20, len(slug_candidates))) as ex:
             futures = [ex.submit(check_candidate_worker, c) for c in slug_candidates[:25]]
             for fut in as_completed(futures):
-                res = fut.result()
-                if res:
-                    log(f"[+] Found verified live sponsor from slug: {res}")
-                    return res
+                verified, live = fut.result()
+                if verified:
+                    log(f"[+] Found verified live sponsor from slug: {verified}")
+                    return verified
+                if live and live not in fallback_slug_live:
+                    fallback_slug_live.append(live)
 
     if not img_url:
+        if fallback_slug_live:
+            log(f"[+] Fallback to live sponsor candidate from slug (no image): {fallback_slug_live[0]}")
+            return fallback_slug_live[0]
         return None
 
+    # Normalize image URL
+    norm_img = img_url.strip()
+    if norm_img.startswith("//"):
+        norm_img = "https:" + norm_img
+    elif norm_img.startswith("/"):
+        norm_img = "https://gtraffic.io" + norm_img
+    elif not norm_img.startswith("http"):
+        norm_img = "https://cdn.gtraffic.io/" + norm_img.lstrip("/")
+
     # 4. OCR on campaign image & Parallel probe of all candidates
-    log(f"[*] Downloading campaign image for OCR: {img_url}")
+    log(f"[*] Downloading campaign image for OCR: {norm_img}")
     temp_img = os.path.join(ROOT_DIR, "data", "temp", "gtraffic_camp.png")
     os.makedirs(os.path.dirname(temp_img), exist_ok=True)
     try:
-        req = urllib.request.Request(img_url, headers={
+        req = urllib.request.Request(norm_img, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://gtraffic.io/"
         })
@@ -185,21 +205,32 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str) -> str:
                     filtered_candidates.extend(['timvanphong.com.vn', 'chothuevanphong.com.vn', 'thuevanphong.com.vn'])
         filtered_candidates = list(dict.fromkeys(filtered_candidates))
 
+        fallback_img_live = []
         if filtered_candidates:
             log(f"[*] Fast parallel probing {len(filtered_candidates)} candidates from image...")
             with ThreadPoolExecutor(max_workers=min(25, len(filtered_candidates))) as ex:
                 futures = {ex.submit(check_candidate_worker, c): c for c in filtered_candidates}
                 for fut in as_completed(futures):
-                    res = fut.result()
-                    if res:
-                        log(f"[+] Found verified live sponsor from image: {res}")
-                        return res
+                    verified, live = fut.result()
+                    if verified:
+                        log(f"[+] Found verified live sponsor from image: {verified}")
+                        return verified
+                    if live and live not in fallback_img_live:
+                        fallback_img_live.append(live)
+
+            if fallback_img_live:
+                log(f"[+] Fallback to live sponsor candidate from image: {fallback_img_live[0]}")
+                return fallback_img_live[0]
     except Exception as e:
         log(f"[!] OCR resolution note: {e}")
     finally:
         if os.path.exists(temp_img):
             try: os.remove(temp_img)
             except Exception: pass
+
+    if fallback_slug_live:
+        log(f"[+] Fallback to live sponsor candidate from slug: {fallback_slug_live[0]}")
+        return fallback_slug_live[0]
 
     return None
 
@@ -407,19 +438,28 @@ def run(target_url: str = None, headless: bool = True):
             time.sleep(0.1)
 
         if not campaign_info.get("url_dr") and not sponsor_domain:
-            if not campaign_info.get("keyword_text") or not campaign_info.get("source"):
+            for _ in range(20):
                 try:
                     dom_camp = page1.evaluate("""() => {
-                        const img = document.querySelector('img[src*="cdn.gtraffic.io"]')?.src || '';
-                        const kw = document.querySelector('.keyword-text, [class*="keyword"]')?.innerText || '';
+                        let img = '';
+                        let kw = '';
+                        const imgEl = document.querySelector('img[src*="cdn.gtraffic.io"], img[src*="gtraffic"], img[src*="campaign"], img[src*="storage"], img[src*="uploads"], .instruction img, #instruction img, img');
+                        if (imgEl && imgEl.src && !imgEl.src.endsWith('.svg')) img = imgEl.src;
+
+                        const kwEl = document.querySelector('.keyword-text, [class*="keyword"], #keyword, input[readonly], .copy-text, [data-keyword], .step-1 strong, .step-1 b, h3, h4');
+                        if (kwEl) kw = (kwEl.innerText || kwEl.value || kwEl.textContent || '').trim();
+
                         return { img, kw };
                     }""")
                     if dom_camp.get("img") and not campaign_info.get("source"):
                         campaign_info["source"] = dom_camp["img"]
                     if dom_camp.get("kw") and not campaign_info.get("keyword_text"):
                         campaign_info["keyword_text"] = dom_camp["kw"].strip()
+                    if campaign_info.get("source") and campaign_info.get("keyword_text"):
+                        break
                 except Exception:
                     pass
+                time.sleep(0.2)
 
         # Resolve sponsor domain
         if not sponsor_domain:
@@ -431,6 +471,58 @@ def run(target_url: str = None, headless: bool = True):
                 img = campaign_info.get("source", "")
                 log(f"[TAB 1] Active Campaign: '{kw}' | Image: {img}")
                 sponsor_domain = resolve_sponsor_domain(kw, img)
+
+        # In-page canvas OCR fallback if sponsor_domain is still None
+        if not sponsor_domain:
+            try:
+                b64_img = page1.evaluate("""() => {
+                    const img = document.querySelector('img[src*="gtraffic"], img[src*="cdn"], .instruction img, img');
+                    if (!img || img.naturalWidth === 0) return null;
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.naturalWidth;
+                    canvas.height = img.naturalHeight;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    return canvas.toDataURL('image/png').split(',')[1];
+                }""")
+                if b64_img:
+                    import base64
+                    temp_canvas = os.path.join(ROOT_DIR, "data", "temp", "canvas_gtraffic.png")
+                    os.makedirs(os.path.dirname(temp_canvas), exist_ok=True)
+                    with open(temp_canvas, "wb") as f_c:
+                        f_c.write(base64.b64decode(b64_img))
+                    ocr = get_ocr()
+                    res_c, _ = ocr(temp_canvas)
+                    lines_c = [l[1] for l in (res_c or [])]
+                    cands_c = extract_domain_candidates(lines_c)
+                    for cc in cands_c:
+                        live_res = probe_domain_live(cc)
+                        live_u = live_res[0] if isinstance(live_res, tuple) else live_res
+                        if live_u:
+                            sponsor_domain = live_u
+                            log(f"[+] Recovered sponsor domain via canvas OCR: {sponsor_domain}")
+                            break
+                    if os.path.exists(temp_canvas):
+                        try: os.remove(temp_canvas)
+                        except Exception: pass
+            except Exception as e_canvas:
+                log(f"[*] Canvas OCR note: {e_canvas}")
+
+        # Page text domain fallback
+        if not sponsor_domain:
+            try:
+                p_text = page1.evaluate("() => document.body ? document.body.innerText : ''")
+                cands_page = extract_domain_candidates(p_text.splitlines())
+                for cp in cands_page:
+                    if "gtraffic" not in cp.lower() and "google" not in cp.lower():
+                        live_res = probe_domain_live(cp)
+                        live_u = live_res[0] if isinstance(live_res, tuple) else live_res
+                        if live_u:
+                            sponsor_domain = live_u
+                            log(f"[+] Recovered sponsor domain from Gtraffic page text: {sponsor_domain}")
+                            break
+            except Exception:
+                pass
 
         if not sponsor_domain:
             log("[!] Could not determine sponsor website. Halting.")
@@ -567,6 +659,50 @@ def run(target_url: str = None, headless: bool = True):
                 break
             page2.mouse.wheel(0, 500)
             time.sleep(0.3)
+
+        if not btn:
+            log("[TAB 2] Button not found on sponsor landing page, scanning for articles...")
+            try:
+                art_cands = page2.evaluate("""(sp_url) => {
+                    const host = new URL(sp_url).hostname.replace(/^www\\./, '').toLowerCase();
+                    const links = [];
+                    document.querySelectorAll('article a[href], .post a[href], h1 a[href], h2 a[href], h3 a[href], main a[href], a[href]').forEach(a => {
+                        try {
+                            const u = new URL(a.href, window.location.href);
+                            const uHost = u.hostname.replace(/^www\\./, '').toLowerCase();
+                            if (uHost === host && u.pathname.length > 3 && !u.pathname.includes('wp-admin') && !u.href.includes('#')) {
+                                links.push(u.href.replace(/\\/$/, ''));
+                            }
+                        } catch (e) {}
+                    });
+                    return Array.from(new Set(links));
+                }""", sponsor_domain)
+                if art_cands:
+                    log(f"[TAB 2] Navigating to article on sponsor site: {art_cands[0]}")
+                    try:
+                        page2.goto(art_cands[0], wait_until="domcontentloaded", timeout=30000)
+                        time.sleep(1.5)
+                        try:
+                            page2.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            time.sleep(1)
+                        except Exception:
+                            pass
+                        for _ in range(15):
+                            candidates = page2.locator(btn_selector)
+                            for idx in range(candidates.count()):
+                                c_el = candidates.nth(idx)
+                                box = c_el.bounding_box()
+                                if box and (box['height'] > 5 or box['width'] > 5):
+                                    btn = c_el
+                                    break
+                            if btn:
+                                break
+                            page2.mouse.wheel(0, 500)
+                            time.sleep(0.3)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         # Trigger click with JavaScript for all button variants
         try:
@@ -797,6 +933,12 @@ def run(target_url: str = None, headless: bool = True):
             try:
                 with open(DEST_FILE, "w", encoding="utf-8") as f:
                     f.write(str(final_destination))
+                run_id = os.environ.get("BYPASS_RUN_ID")
+                if run_id:
+                    with open(os.path.join(ROOT_DIR, f"destination_url-{run_id}.txt"), "w", encoding="utf-8") as f_run:
+                        f_run.write(str(final_destination))
+                with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f_d:
+                    f_d.write(str(final_destination))
                 desk = os.path.expanduser(r"~\Desktop\destination_url.txt")
                 with open(desk, "w", encoding="utf-8") as fd:
                     fd.write(str(final_destination))
