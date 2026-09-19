@@ -16,6 +16,10 @@ from playwright.sync_api import sync_playwright
 from config import CHROME_PATH, BASE_DIR, LOG_FILE, DEST_FILE, CODE_FILE, log, copy_to_clipboard
 from recaptcha_solver import RecaptchaAudioSolver
 from sponsor import detect_sponsor_domain, solve_sponsor_quest
+try:
+    from brain import get_brain
+except ImportError:
+    from src.core.brain import get_brain
 
 def is_valid_destination(u: str) -> bool:
     if not u or not u.startswith("http"):
@@ -42,6 +46,7 @@ def run(target_url: str = None, headless: bool = True):
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         f.write("=== STARTING DYNAMIC E2E AUTOMATION ===\n")
 
+    brain = get_brain()
     log(f"[*] Target Link4M URL: {target_url}")
     log(f"[*] Starting automation engine (Headless: {headless})...")
 
@@ -434,7 +439,6 @@ def run(target_url: str = None, headless: bool = True):
                     f_d.write(str(final_destination_url))
             except Exception:
                 pass
-            copy_to_clipboard(str(final_destination_url))
         else:
             log("[!] Warning: Destination URL still points to link4m or not unlocked.")
 
@@ -445,8 +449,7 @@ def run(target_url: str = None, headless: bool = True):
 
         log("[*] Full automation completed successfully.")
         try:
-            from brain import get_brain
-            log(get_brain().get_summary_report())
+            log(brain.get_summary_report())
         except Exception:
             pass
         time.sleep(1.5)
