@@ -85,6 +85,7 @@ CAMPAIGN_RULES = [
     (['thoitiet', 'thời tiết', 'thoitiethomnay'], ['https://thoitiethomnay.org']),
     (['eric ly', 'ericly'], ['https://ericly.net']),
     (['188 bet', '188bet', 'bet188', 'bet 188', 'agobet'], ['https://agobet.cc']),
+    (['incafe', 'in cafe', 'cafe'], ['https://incafe.com.co']),
 ]
 
 def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None) -> str:

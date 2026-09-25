@@ -117,9 +117,11 @@ class FlowDirector:
     def determine_best_engine(self, url: str) -> str:
         """Phân loại và điều hướng runner với trọng số học từ lịch sử."""
         u = url.lower()
+        if any(k in u for k in ["link999.app", "link999", "uptolink", "octolink", "linkhuongdan"]):
+            return "LINK999"
         if any(k in u for k in ["gtraffic.io", "direct.gtraffic.io", "dr-client"]):
             return "GTRAFFIC"
-        if any(k in u for k in ["bbmkts.com", "bbmkts"]):
+        if any(k in u for k in ["bbmkts.com", "bbmkts", "yeumoney.com", "yeumoney"]):
             return "BBMKTS"
         if any(k in u for k in ["layma.net", "layma"]):
             return "LAYMA"

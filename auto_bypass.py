@@ -220,7 +220,7 @@ def execute_bypass(target_url: str, headless: bool = True) -> str:
         else:
             print(f"[-] Không tìm thấy {octo_js}")
 
-    if category == "GTRAFFIC":
+    elif category == "GTRAFFIC":
         # 0.1. Zero-Click Fast API Probe for GTraffic Direct Link Leak (0.2s)
         try:
             import urllib.request, json
@@ -312,7 +312,7 @@ def run_loop_watcher(headless: bool = True):
             curr_url = get_clipboard_url()
             if curr_url and curr_url != last_url:
                 cat = classify_url(curr_url)
-                if cat != "OCTOLINK":
+                if cat != "TRAFFICVN":
                     print(f"\n  {BG_BLUE} 📥 PHÁT HIỆN LINK MỚI: {C_RESET} {C_BOLD}{C_CYAN}{curr_url}{C_RESET}")
                     last_url = curr_url
                     res = execute_bypass(curr_url, headless=headless)

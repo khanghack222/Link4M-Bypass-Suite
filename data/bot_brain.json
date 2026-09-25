@@ -5,7 +5,7 @@
     "total_success": 2,
     "total_heals": 1,
     "time_saved_sec": 0.0,
-    "last_updated": 1789783571
+    "last_updated": 1790328006
   },
   "domain_intelligence": {
     "tructiepkeobongda.com": {
@@ -594,6 +594,105 @@
       "duration": 152.97,
       "heals": 0,
       "timestamp": 1789783571
+    },
+    {
+      "session_id": "sess_1790324561171",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": true,
+      "duration": 26.8,
+      "heals": 0,
+      "timestamp": 1790324587
+    },
+    {
+      "session_id": "sess_1790324596900",
+      "platform": "LINK999",
+      "sponsor": null,
+      "success": false,
+      "duration": 34.5,
+      "heals": 0,
+      "timestamp": 1790324631
+    },
+    {
+      "session_id": "sess_1790324830874",
+      "platform": "LINK999",
+      "sponsor": null,
+      "success": false,
+      "duration": 3.56,
+      "heals": 0,
+      "timestamp": 1790324834
+    },
+    {
+      "session_id": "sess_1790324842730",
+      "platform": "LAYMA",
+      "sponsor": null,
+      "success": false,
+      "duration": 84.21,
+      "heals": 0,
+      "timestamp": 1790324926
+    },
+    {
+      "session_id": "sess_1790325992573",
+      "platform": "LAYMA",
+      "sponsor": null,
+      "success": true,
+      "duration": 109.99,
+      "heals": 0,
+      "timestamp": 1790326102
+    },
+    {
+      "session_id": "sess_1790326121087",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": false,
+      "duration": 80.99,
+      "heals": 0,
+      "timestamp": 1790326202
+    },
+    {
+      "session_id": "sess_1790326852594",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 50.89,
+      "heals": 0,
+      "timestamp": 1790326903
+    },
+    {
+      "session_id": "sess_1790327188655",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": true,
+      "duration": 92.72,
+      "heals": 0,
+      "timestamp": 1790327281
+    },
+    {
+      "session_id": "sess_1790327300777",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": false,
+      "duration": 155.39,
+      "heals": 0,
+      "timestamp": 1790327456
+    },
+    {
+      "session_id": "sess_1790327600680",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": false,
+      "duration": 51.26,
+      "heals": 0,
+      "timestamp": 1790327651
+    },
+    {
+      "session_id": "sess_1790327858980",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": false,
+      "duration": 147.99,
+      "heals": 0,
+      "timestamp": 1790328006
     }
   ],
   "blacklist": [

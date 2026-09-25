@@ -171,7 +171,7 @@ def run(target_link: str = None, headless: bool = None):
                     return el ? el.getAttribute('data-sitekey') : '0x4AAAAAAEzmJdRW__FHO9pu';
                 }""") or "0x4AAAAAAEzmJdRW__FHO9pu"
                 log(f"[TAB 1] Kich hoat truc tiep Turnstile Solver (Node.js Patchright)...")
-                ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=False, headless=False)
+                ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=False, headless=headless)
                 if ts_res.get('status') == 'success' and ts_res.get('turnstile_value'):
                     turnstile_token = ts_res['turnstile_value']
                     log(f"[TAB 1] Turnstile xac thuc thanh cong qua Patchright! Token len: {len(turnstile_token)}")
@@ -194,41 +194,35 @@ def run(target_link: str = None, headless: bool = None):
                 log(f"[NHAN DIEN] Chien dich VUOT THANG tu van ban DOM Buoc 5! Ma mac dinh: >>> {final_code} <<<")
 
             img_u = None
-            # 1. Tìm trực tiếp URL ảnh canvas hoặc ảnh hướng dẫn bước 4 qua evaluate trên page1
+            # 1. Tìm trực tiếp URL ảnh canvas từ script chứa imgCanvas hoặc thẻ canvas (ƯU TIÊN TUYỆT ĐỐI)
             try:
-                img_u = page1.evaluate("""() => {
-                    for (let s of document.querySelectorAll('script')) {
-                        let txt = s.textContent || s.innerHTML || '';
-                        if (txt.includes('imgCanvas') || txt.includes('canvas')) {
-                            let m = txt.match(/['"](https?:\/\/[^'"]*uploads\/[^'"]+)['"]/);
-                            if (!m) m = txt.match(/['"](\/uploads\/[^'"]+)['"]/);
-                            if (m) return m[1];
-                        }
-                    }
-                    let imgs = Array.from(document.querySelectorAll('img[src*="uploads/img_"]'));
-                    for (let img of imgs) {
-                        let src = img.getAttribute('src') || img.src;
-                        if (src) return src;
-                    }
-                    return null;
-                }""")
+                for s in re.findall(r'<script[^>]*>(.*?)</script>', html1, re.S):
+                    if 'imgCanvas' in s or 'canvas' in s:
+                        m = re.search(r'[\'"](https?://[^\'"]*uploads/img_[^\'"]+)[\'"]', s)
+                        if not m:
+                            m = re.search(r'[\'"](/uploads/img_[^\'"]+)[\'"]', s)
+                        if m:
+                            img_u = m.group(1)
+                            log(f"[TAB 1] Tìm thấy ảnh Canvas gốc trong script: {img_u}")
+                            break
             except Exception:
                 pass
 
-            # 2. Fallback tìm qua regex trong html1
             if not img_u:
-                for s in re.findall(r'<script[^>]*>(.*?)</script>', html1, re.S):
-                    if 'imgCanvas' in s or 'canvas' in s:
-                        m = re.search(r'[\'"](https?://[^\'"]*uploads/[^\'"]+)[\'"]', s)
-                        if not m:
-                            m = re.search(r'[\'"](/uploads/[^\'"]+)[\'"]', s)
-                        if m:
-                            img_u = m.group(1)
-                            break
-            if not img_u:
-                all_step_imgs = re.findall(r'[\'"](https?://[^\'"]*uploads/img_[^\'"]+)[\'"]', html1)
-                if all_step_imgs:
-                    img_u = all_step_imgs[-1]
+                try:
+                    img_u = page1.evaluate("""() => {
+                        for (let s of document.querySelectorAll('script')) {
+                            let txt = s.textContent || s.innerHTML || '';
+                            if (txt.includes('imgCanvas') || txt.includes('canvas')) {
+                                let m = txt.match(/['"](https?:\\/\\/[^'"]*uploads\\/img_[^'"]+)['"]/);
+                                if (!m) m = txt.match(/['"](\\/uploads\\/img_[^'"]+)['"]/);
+                                if (m) return m[1];
+                            }
+                        }
+                        return null;
+                    }""")
+                except Exception:
+                    pass
 
             if not final_code and img_u:
                 if not img_u.startswith('http'):
@@ -240,9 +234,10 @@ def run(target_link: str = None, headless: bool = None):
                     urllib.request.urlretrieve(img_u, tmp_img)
                     from PIL import Image
                     im = Image.open(tmp_img)
+                    is_tutorial_screenshot = (im.size[1] > 120 and im.size[0] > 350)
                     lines, _ = get_ocr()(tmp_img)
                     all_text = ' '.join([l[1] for l in (lines or [])])
-                    log(f"[OCR CANVAS] {all_text}")
+                    log(f"[OCR CANVAS] (Kích thước {im.size}): {all_text}")
 
                     # 1. Bóc tách chiến dịch Vượt thẳng TrafficSEO ("Tra...25" / "Hệ thống SEO" / "không phải code chờ giây")
                     if ('Tra' in all_text and '25' in all_text) or any(k in all_text.lower() for k in ['trafficseo', 'he thong seo', 'khong phai code cho giay', 'khong phai ma cho giay', 'o mau vang']) or any(k in html1.lower() for k in ['không phải chờ', 'không phải code chờ giây']):
@@ -255,24 +250,34 @@ def run(target_link: str = None, headless: bool = None):
                             final_code = "trafficseo2025"
                         log(f"[NHAN DIEN] Chien dich VUOT THANG (TrafficSEO)! Ma: >>> {final_code} <<<")
 
-                    # 2. Bóc tách MST / Mã số thuế / Code từ all_text
+                    # 2. Bóc tách MST / Mã số thuế / Mã KM / Code từ all_text
                     if not final_code:
-                        m_mst = re.search(r'(?:MST|MÃ\s*SỐ\s*THUẾ|MÃ|CODE)[:\s]*([0-9A-Za-z]+)', all_text, re.I)
+                        m_mst = re.search(r'(?:MST|MÃ\s*SỐ\s*THUẾ|MÃ\s*(?:KM|KHUYẾN\s*MÃI|GIẢM\s*GIÁ)?|MA\s*(?:KM)?|CODE|KM)[:\s]*([0-9A-Za-z]+)', all_text, re.I)
                         if m_mst and len(m_mst.group(1).strip()) >= 5:
                             cand = m_mst.group(1).strip()
-                            if cand.lower() not in ['code', 'nhap', 'dung', 'sai']:
-                                final_code = cand.lower()
-                                log(f"[NHAN DIEN] Chien dich Co san ma tren anh (MST/Code)! Ma: >>> {final_code} <<<")
+                            if cand.lower() not in ['code', 'nhap', 'dung', 'sai', 'khuyen', 'khuyenmai']:
+                                final_code = cand
+                                log(f"[NHAN DIEN] Chien dich Co san ma tren anh (MST/Code/KM)! Ma: >>> {final_code} <<<")
 
-                    # 3. Bóc tách chuỗi số 8-14 ký tự (ví dụ: mã số thuế 0311949753)
-                    if not final_code:
-                        m_num = re.search(r'\b\d{8,14}\b', all_text)
+                    # 2.1 Bóc tách chuỗi hỗn hợp chữ và số từ 6-25 ký tự trên ảnh (ví dụ: Anvu313km5thng) - CHỈ KHI KHÔNG PHẢI ẢNH CHỤP MÀN HÌNH HƯỚNG DẪN
+                    if not final_code and not is_tutorial_screenshot:
+                        m_mix = re.findall(r'\b[A-Za-z0-9]{6,25}\b', all_text)
+                        for word in m_mix:
+                            if any(c.isdigit() for c in word) and any(c.isalpha() for c in word):
+                                if word.lower() not in ['bbmkts', 'google', 'traffic', 'chrome']:
+                                    final_code = word
+                                    log(f"[NHAN DIEN] Chien dich Co san ma tren anh (Chuoi hon hop chu so): >>> {final_code} <<<")
+                                    break
+
+                    # 3. Bóc tách chuỗi số 8-14 ký tự (ví dụ: mã số thuế 0311949753) - CHỈ KHI LÀ ẢNH BADGE HOẶC CÓ CHỮ MST
+                    if not final_code and (not is_tutorial_screenshot or 'mst' in all_text.lower() or 'mã số thuế' in all_text.lower()):
+                        m_num = re.search(r'(?:MST[:\s]*)?(\b\d{8,14}\b)', all_text)
                         if m_num:
-                            final_code = m_num.group(0).strip()
+                            final_code = m_num.group(1).strip()
                             log(f"[NHAN DIEN] Chien dich Co san ma tren anh (Chuoi so MST)! Ma: >>> {final_code} <<<")
 
                     # 4. Bóc tách theo bounding box của từng dòng
-                    if not final_code and lines:
+                    if not final_code and lines and not is_tutorial_screenshot:
                         for l in lines:
                             txt_raw = l[1].strip()
                             m_sub = re.search(r'(?:MST[:\s]*)?([0-9]{8,12})', txt_raw, re.I)
@@ -595,20 +600,20 @@ def run(target_link: str = None, headless: bool = None):
                                 break
 
                     # Neu nut chua dem nguoc sau vai giay, kich hoat click truc tiep
-                    if i in [3, 6, 9] and txt.strip() == 'LẤY MÃ':
+                    if i in [2, 4, 6, 8, 10] and ('LẤY MÃ' in txt_upper or 'LAY MA' in txt_upper or 'GET CODE' in txt_upper):
                         try:
                             bb.evaluate("el => { el.click(); el.dispatchEvent(new MouseEvent('click', {bubbles: true})); }")
                         except Exception:
                             pass
 
-                    # Neu sau 15s nut van giu nguyen chu 'LAY MA' (khong he thay doi text), moi thoat
-                    if i >= 15 and not abx_code and txt.strip() == 'LẤY MÃ' and not any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'S', 'GIÂY']):
+                    # Neu sau 20s nut van giu nguyen chu 'LAY MA' (khong he thay doi text), moi thoat
+                    if i >= 20 and not abx_code and ('LẤY MÃ' in txt_upper or 'LAY MA' in txt_upper) and not any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'S', 'GIÂY']):
                         log("[TAB 2] Button khong dem nguoc tren web nay, chuyen sang thu web khac...")
                         break
 
                     # Kiem tra neu trang doi tac yeu cau chuyen sang Buoc 2 (2-in-1)
-                    if 'Nhấn vào đây' in txt or 'tiếp tục' in txt:
-                        link2 = page2.query_selector('a[href*="traffic="]') or bb.query_selector('a')
+                    if any(k in txt_upper for k in ['NHẤN VÀO ĐÂY', 'NHAN VAO DAY', 'TIẾP TỤC', 'TIEP TUC', 'BƯỚC 2', 'BUOC 2', '(2/2)']):
+                        link2 = page2.query_selector('a[href*="traffic="]') or page2.query_selector('a[href*="step="]') or bb.query_selector('a')
                         if link2:
                             next_u = link2.get_attribute('href')
                             log(f"[TAB 2] Chuyen tiep sang trang Buoc 2: {next_u}")
@@ -628,8 +633,9 @@ def run(target_link: str = None, headless: bool = None):
                                     pass
                             continue
 
-                    # Kiem tra ma tren button
-                    if not any(k in txt_upper for k in ['ĐỢI', 'CHỜ', 'SAU', 'S', 'GIÂY']) and txt.strip() != 'LẤY MÃ' and len(txt) >= 4:
+                    # Kiem tra ma tren button (CHI CHAP NHAN KHI KHONG PHAI LA PROMPT / CHI DAN)
+                    is_prompt = any(k in txt_upper for k in ['LẤY MÃ', 'LAY MA', 'NHẤN', 'NHAN', 'BẤM', 'BAM', 'CLICK', 'TIẾP TỤC', 'TIEP TUC', 'BƯỚC', 'BUOC', 'STEP', 'CHỜ', 'CHO', 'ĐỢI', 'DOI', 'SAU', 'GIÂY', 'GIAY', 'VUI LÒNG'])
+                    if not is_prompt and len(txt) >= 4 and not bool(re.search(r'\b\d+s\b', txt, re.I)):
                         final_code = txt
                         log(f"\n==================================================")
                         log(f"   [TAB 2] DA LAY DUOC MA THANH CONG: >>> {final_code} <<<")
@@ -686,7 +692,7 @@ def run(target_link: str = None, headless: bool = None):
                     let el = document.querySelector('.cf-turnstile') || document.querySelector('[data-sitekey]');
                     return el ? el.getAttribute('data-sitekey') : '0x4AAAAAAEzmJdRW__FHO9pu';
                 }""") or "0x4AAAAAAEzmJdRW__FHO9pu"
-                ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=False, headless=False)
+                ts_res = get_turnstile_token(url="https://bbmkts.com", sitekey=sitekey, debug=False, headless=headless)
                 if ts_res.get('status') == 'success' and ts_res.get('turnstile_value'):
                     turnstile_token = ts_res['turnstile_value']
                     log(f"[TAB 1] Turnstile Solver thanh cong! Token len: {len(turnstile_token)}")
@@ -710,98 +716,24 @@ def run(target_link: str = None, headless: bool = None):
 
         time.sleep(1)
 
-        final_code = final_code.strip().lower()
-        log(f"[TAB 1] Gui request submit ma '{final_code}' truc tiep qua fetch...")
-        res = page1.evaluate("""async ({code, forcedToken}) => {
-            let token = '';
-            let type = '';
-            let tokenInp = document.querySelector('input[name="token"]');
-            if (tokenInp) token = tokenInp.value;
-            
-            let scripts = Array.from(document.querySelectorAll('script')).map(s => s.textContent || s.innerHTML || '');
-            for (let s of scripts) {
-                let m = s.match(/token:\\s*['"]([A-Za-z0-9._=-]+)['"]/);
-                if (m) {
-                    token = m[1];
-                    if (s.includes("type: 'available'")) type = 'available';
-                    break;
-                }
-            }
-
-            // Điền trực tiếp vào ô input trên giao diện DOM
+        final_code = final_code.strip()
+        log(f"[TAB 1] Dien ma '{final_code}' va kich hoat submit tu nhien qua form...")
+        page1.evaluate("""({code, forcedToken}) => {
             let codeInp = document.querySelector('input[name="code"]');
             if (codeInp) {
                 codeInp.value = code;
                 codeInp.dispatchEvent(new Event('input', { bubbles: true }));
                 codeInp.dispatchEvent(new Event('change', { bubbles: true }));
             }
-
-            let fm = document.getElementById('fm');
-            let sendCode = async (c) => {
-                let body = new URLSearchParams();
-                body.append('code', c.trim().toLowerCase());
-                if (token) body.append('token', token);
-                if (type) body.append('type', type);
-                if (fm) {
-                    for (let el of fm.elements) {
-                        if (el.name && el.name !== 'code' && !body.has(el.name)) {
-                            body.append(el.name, el.value);
-                        }
-                    }
-                }
-                
-                let cfToken = forcedToken || '';
-                if (!cfToken) {
-                    try {
-                        if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
-                            cfToken = turnstile.getResponse() || '';
-                        }
-                    } catch(e) {}
-                }
-                if (!cfToken) {
-                    let cfInputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
-                    for (let inp of cfInputs) {
-                        if (inp.value) { cfToken = inp.value; break; }
-                    }
-                }
-                if (cfToken) {
-                    body.set('cf-turnstile-response', cfToken);
-                }
-
-                let r = await fetch('https://bbmkts.com/link/submit', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    body: body.toString()
-                });
-                let json = await r.json();
-                return { ok: true, data: json, status: r.status };
-            };
-
-            try {
-                let res = await sendCode(code);
-                return res;
-            } catch (e) {
-                return { ok: false, error: e.toString() };
+            if (forcedToken) {
+                document.querySelectorAll('input[name="cf-turnstile-response"]').forEach(i => i.value = forcedToken);
+            }
+            let btn = document.getElementById('formgetlink') || document.getElementById('check222') || document.querySelector('button[type="submit"]');
+            if (btn) {
+                btn.disabled = false;
+                btn.click();
             }
         }""", {"code": final_code, "forcedToken": cf_solved_token})
-        log(f"[TAB 1] Ket qua submit: {res}")
-        if res and res.get('ok') and isinstance(res.get('data'), dict) and res['data'].get('url'):
-            final_destination = res['data']['url']
-            log(f"[TAB 1] Phat hien link dich tu API: {final_destination}")
-        elif res and res.get('ok') and isinstance(res.get('data'), str) and res['data'].startswith('http'):
-            final_destination = res['data']
-            log(f"[TAB 1] Phat hien link dich: {final_destination}")
-        else:
-            check_btn = page1.query_selector('#formgetlink') or page1.query_selector('#check222') or page1.query_selector('button[type="submit"]')
-            if check_btn:
-                log("[TAB 1] Mo khoa va click nut submit (#formgetlink / #check222)...")
-                page1.evaluate("""() => {
-                    let b = document.getElementById('formgetlink') || document.getElementById('check222') || document.querySelector('button[type="submit"]');
-                    if (b) { b.disabled = false; b.click(); }
-                }""")
 
         # -------------------------------------------------------------
         # TRICH XUAT VA GIAI MA LINK NGOAI CUOI CUNG

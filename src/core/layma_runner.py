@@ -181,6 +181,232 @@ def run(target_url: str = None, headless: bool = None):
             } catch (e) {}
         """)
 
+        def route_frame_js(route):
+            res = route.fetch()
+            text = res.text()
+            text = text.replace("function automationProbe() {", "function automationProbe() { return { artifacts: [], missingApis: [] };")
+            text = text.replace("function webglInfo() {", "function webglInfo() { return { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)' };")
+            text = text.replace("webdriver: navigator.webdriver === true,", "webdriver: false,")
+            text = text.replace("untrustedEvents: behavior.untrustedEvents,", "untrustedEvents: 0,")
+            text = text.replace("mouseEvents: behavior.mouseEvents,", "mouseEvents: 142,")
+            text = text.replace("solveMs: Math.round(performance.now() - state.startedAt),", "solveMs: Math.max(3800, Math.round(performance.now() - state.startedAt)),")
+            text = text.replace("const state = {", "window.__qc_state = null; const state = window.__qc_state = {")
+            text = text.replace("async function skipType(reason) {", "window.__qc_skip = skipType; async function skipType(reason) {")
+            text = text.replace("async function submit(override, extra = {}) {", "window.__qc_submit = submit; async function submit(override, extra = {}) {")
+            route.fulfill(response=res, body=text)
+
+        context.route("**/frame.js", route_frame_js)
+
+        def solve_qcaptcha_in_page(target_page, max_rounds=50):
+            cf = None
+            for _ in range(15):
+                for f in target_page.frames:
+                    if any(k in f.url for k in ['sslip.io', 'frame.html']) and not f.is_detached():
+                        cf = f
+                        break
+                if cf:
+                    break
+                time.sleep(0.25)
+
+            if not cf:
+                try:
+                    frame_el = target_page.wait_for_selector('iframe[src*="sslip.io"], iframe[src*="frame.html"]', state="attached", timeout=4000)
+                    if frame_el:
+                        cf = frame_el.content_frame()
+                except Exception:
+                    pass
+
+            if cf:
+                try:
+                    cf.wait_for_selector('#box', state="attached", timeout=5000)
+                    time.sleep(0.3)
+                    print("[*] Nhấn checkbox xác thực 'Tôi là con người'...")
+                    cf.evaluate("() => { const b = document.getElementById('box'); if (b) b.click(); }")
+                    try: cf.click('#box', force=True, timeout=1500)
+                    except Exception: pass
+                except Exception:
+                    pass
+
+            def get_qc_frame():
+                for f in target_page.frames:
+                    if any(k in f.url for k in ['sslip.io', 'frame.html']) and not f.is_detached():
+                        return f
+                return None
+
+            last_cid = None
+            for round_idx in range(max_rounds):
+                time.sleep(0.35)
+
+                token = target_page.evaluate('''() => {
+                    const api = window.hcaptcha || window.qcaptcha;
+                    return api && typeof api.getResponse === 'function' ? api.getResponse() : null;
+                }''')
+                if token:
+                    return token
+
+                cur_cf = get_qc_frame()
+                if not cur_cf:
+                    continue
+
+                try:
+                    ch_info = cur_cf.evaluate('''() => {
+                        if (window.__qc_state && window.__qc_state.challenge) {
+                            const ch = window.__qc_state.challenge;
+                            return {
+                                cid: ch.cid,
+                                type: ch.type,
+                                spec: ch.spec,
+                                assets: (ch.assets || []).map(a => a.url)
+                            };
+                        }
+                        return null;
+                    }''')
+                except Exception:
+                    ch_info = None
+
+                if not ch_info:
+                    continue
+
+                if ch_info['cid'] == last_cid:
+                    time.sleep(0.3)
+                    continue
+
+                c_type = ch_info['type']
+                assets = ch_info['assets']
+                spec = ch_info['spec'] or {}
+                q_text = (spec.get('questionKey') or spec.get('question', {}).get('vi', '') or '').lower()
+                last_cid = ch_info['cid']
+                print(f"[+] Nhận dạng Challenge: {c_type} ('{q_text}')")
+
+                shape_map = {
+                    'tam giác': 'triangle', 'triangle': 'triangle',
+                    'vuông': 'rectangle', 'square': 'rectangle', 'chữ nhật': 'rectangle', 'rectangle': 'rectangle',
+                    'lục giác': 'hexagon', 'hexagon': 'hexagon',
+                    'ngũ giác': 'pentagon', 'pentagon': 'pentagon',
+                    'ngôi sao': 'star', 'star': 'star',
+                    'tròn': 'circle', 'circle': 'circle',
+                    'chữ thập': 'cross', 'cross': 'cross'
+                }
+                detected_shape = None
+                for k_shape, s_name in shape_map.items():
+                    if k_shape in q_text:
+                        detected_shape = s_name
+                        break
+
+                is_supported_grid = (c_type in ['grid3x3', 'oddoneout', 'countshapes'])
+
+                import urllib.parse
+                parsed_cf = urllib.parse.urlsplit(cur_cf.url)
+                base_frame_url = f"{parsed_cf.scheme}://{parsed_cf.netloc}"
+
+                if is_supported_grid:
+                    target = []
+                    full_asset_urls = [base_frame_url + u if u.startswith('/') else u for u in assets]
+
+                    try:
+                        from qcaptcha_engine import extract_tile_features, solve_qcaptcha_tiles
+                        def fetch_tile_bytes(idx_url):
+                            idx, u = idx_url
+                            if u.startswith('/'):
+                                u = base_frame_url + u
+                            try:
+                                headers = {'Referer': cur_cf.url, 'Origin': base_frame_url}
+                                r = http_session.get(u, headers=headers, timeout=4)
+                                return (idx, extract_tile_features(r.content))
+                            except Exception:
+                                return (idx, {"shape": "unknown", "area": 0.0, "valid": False})
+
+                        args_list = [(i, u) for i, u in enumerate(assets)]
+                        features_tuples = list(executor.map(fetch_tile_bytes, args_list))
+                        features_tuples.sort(key=lambda x: x[0])
+                        features = [f[1] for f in features_tuples]
+
+                        target = solve_qcaptcha_tiles(features, question_text=q_text, challenge_type=c_type, spec=spec)
+                        if target:
+                            print(f"   [Engine v4.0] Đáp án giải tự động: {target}")
+                    except Exception as e_engine:
+                        print(f"   [Engine v4.0] Fallback: {e_engine}")
+
+                    if not target:
+                        try:
+                            from captcha_api_client import solve_qcaptcha
+                            target_query_shape = detected_shape or "star"
+                            cv_res = solve_qcaptcha(full_asset_urls, target_shape=target_query_shape, min_confidence=0.55)
+                            if cv_res and cv_res.get('correct_indices'):
+                                target = cv_res['correct_indices']
+                                print(f"   [Cloud API CV] Nhận diện {target_query_shape}: {target}")
+                        except Exception:
+                            pass
+
+                    if not target:
+                        print(f"   [!] Đổi câu hỏi khác...")
+                        try:
+                            cur_cf.evaluate('''() => {
+                                if (typeof window.__qc_skip === 'function') window.__qc_skip();
+                            }''')
+                        except Exception: pass
+                        time.sleep(0.3)
+                        continue
+
+                    print(f"   ➔ Đáp án chọn: {target}")
+                    try:
+                        cur_cf.evaluate('''(ans) => {
+                            if (typeof window.__qc_submit === 'function') window.__qc_submit(ans);
+                        }''', target)
+                    except Exception: pass
+                    time.sleep(0.3)
+
+                elif c_type == 'order':
+                    target = []
+                    try:
+                        from qcaptcha_engine import extract_tile_features, solve_qcaptcha_tiles
+                        def fetch_tile_bytes(idx_url):
+                            idx, u = idx_url
+                            if u.startswith('/'):
+                                u = base_frame_url + u
+                            try:
+                                headers = {'Referer': cur_cf.url, 'Origin': base_frame_url}
+                                r = http_session.get(u, headers=headers, timeout=4)
+                                return (idx, extract_tile_features(r.content))
+                            except Exception:
+                                return (idx, {"shape": "unknown", "area": 0.0, "valid": False})
+
+                        args_list = [(i, u) for i, u in enumerate(assets)]
+                        features_tuples = list(executor.map(fetch_tile_bytes, args_list))
+                        features_tuples.sort(key=lambda x: x[0])
+                        features = [f[1] for f in features_tuples]
+                        target = solve_qcaptcha_tiles(features, question_text=q_text, challenge_type="order", spec=spec)
+                    except Exception:
+                        pass
+
+                    if not target:
+                        try:
+                            cur_cf.evaluate('''() => {
+                                if (typeof window.__qc_skip === 'function') window.__qc_skip();
+                            }''')
+                        except Exception: pass
+                        time.sleep(0.3)
+                        continue
+
+                    print(f"   ➔ Thứ tự sắp xếp: {target}")
+                    try:
+                        cur_cf.evaluate('''(ans) => {
+                            if (typeof window.__qc_submit === 'function') window.__qc_submit(ans);
+                        }''', target)
+                    except Exception: pass
+                    time.sleep(0.3)
+
+                else:
+                    print(f"   ➔ Đổi dạng challenge không hỗ trợ ({c_type})...")
+                    try:
+                        cur_cf.evaluate('''() => {
+                            if (typeof window.__qc_skip === 'function') window.__qc_skip();
+                        }''')
+                    except Exception: pass
+                    time.sleep(0.2)
+
+            return None
+
         # 1. Open LayMa page
         page_layma = context.new_page()
         final_destination_url = None
@@ -397,20 +623,6 @@ def run(target_url: str = None, headless: bool = None):
         page_sponsor = context.new_page()
         extracted_layma_code = None
 
-        def route_frame_js(route):
-            res = route.fetch()
-            text = res.text()
-            text = text.replace("function automationProbe() {", "function automationProbe() { return { artifacts: [], missingApis: [] };")
-            text = text.replace("function webglInfo() {", "function webglInfo() { return { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)' };")
-            text = text.replace("webdriver: navigator.webdriver === true,", "webdriver: false,")
-            text = text.replace("untrustedEvents: behavior.untrustedEvents,", "untrustedEvents: 0,")
-            text = text.replace("mouseEvents: behavior.mouseEvents,", "mouseEvents: 142,")
-            text = text.replace("solveMs: Math.round(performance.now() - state.startedAt),", "solveMs: Math.max(3800, Math.round(performance.now() - state.startedAt)),")
-            text = text.replace("const state = {", "window.__qc_state = null; const state = window.__qc_state = {")
-            text = text.replace("async function skipType(reason) {", "window.__qc_skip = skipType; async function skipType(reason) {")
-            text = text.replace("async function submit(override, extra = {}) {", "window.__qc_submit = submit; async function submit(override, extra = {}) {")
-            route.fulfill(response=res, body=text)
-
         def route_traffic_js(route):
             res = route.fetch()
             text = res.text()
@@ -448,7 +660,6 @@ def run(target_url: str = None, headless: bool = None):
             text = re.sub(r"checkClickManHinh\w*\([^)]*\);\s*return true;", "return false;", text)
             route.fulfill(response=res, body=text)
 
-        page_sponsor.route("**/frame.js", route_frame_js)
         page_sponsor.route("**/Traffic/Index/*", route_traffic_js)
         page_sponsor.route("**/traffic/index/*", route_traffic_js)
         page_sponsor.route("**/best-traffic.pages.dev/traffic.js", route_traffic_js)
@@ -473,11 +684,24 @@ def run(target_url: str = None, headless: bool = None):
         page_sponsor.on("response", on_sponsor_res)
 
         print(f"[*] Step 2: Navigating to sponsor: https://{sponsor_domain} with Google Referer...")
-        page_sponsor.goto(
-            f"https://{sponsor_domain}",
-            referer="https://www.google.com/",
-            wait_until="domcontentloaded"
-        )
+        try:
+            page_sponsor.goto(
+                f"https://{sponsor_domain}",
+                referer="https://www.google.com/",
+                wait_until="domcontentloaded",
+                timeout=35000
+            )
+        except Exception as e_sp:
+            print(f"[!] Warning on HTTPS goto ({e_sp}), retrying HTTP...")
+            try:
+                page_sponsor.goto(
+                    f"http://{sponsor_domain}",
+                    referer="https://www.google.com/",
+                    wait_until="domcontentloaded",
+                    timeout=35000
+                )
+            except Exception as e_sp2:
+                print(f"[!] Warning on HTTP retry: {e_sp2}")
         time.sleep(2)
 
         # Dynamically detect traffic_key from page scripts
@@ -574,253 +798,37 @@ def run(target_url: str = None, headless: bool = None):
             });
         }""")
 
-        cf = None
-        try:
-            for _ in range(20):
-                for f in page_sponsor.frames:
-                    if any(k in f.url for k in ['sslip.io', 'frame.html']):
-                        if not f.is_detached():
-                            cf = f
-                            break
-                if cf:
-                    break
-                time.sleep(0.3)
+        # Solve QCaptcha on sponsor
+        print("[*] Bắt đầu tự động giải QCaptcha challenge song song trên sponsor...")
+        verified_token = solve_qcaptcha_in_page(page_sponsor, max_rounds=60)
+        if verified_token:
+            print(f"[🎉] QCaptcha Token Verified: {verified_token[:40]}...")
+            now_elapsed = time.time() - (visit_start_time or button_click_time)
+            if now_elapsed < 60.5:
+                wait_rem = 60.5 - now_elapsed
+                print(f"⚡ [TURBO] Đã giải xong QCaptcha sớm (tiết kiệm ~20s)! Chờ thêm {wait_rem:.1f}s để đủ chuẩn 60s server LayMa...")
+                time.sleep(wait_rem)
 
-            if not cf:
-                frame_el = page_sponsor.wait_for_selector('iframe[src*="sslip.io"], iframe[src*="frame.html"]', state="attached", timeout=8000)
-                if frame_el:
-                    cf = frame_el.content_frame()
-
-            if cf:
-                try:
-                    cf.wait_for_selector('#box', state="attached", timeout=8000)
-                    time.sleep(0.5)
-                    print("[*] Nhấn checkbox xác thực 'Tôi là con người'...")
-                    cf.evaluate("() => { const b = document.getElementById('box'); if (b) b.click(); }")
-                    try: cf.click('#box', force=True, timeout=2000)
-                    except Exception: pass
-                except Exception as e_box:
-                    print(f"[!] Warning clicking #box: {e_box}")
-        except Exception as e:
-            print(f"[!] Warning waiting for frame/box: {e}")
-
-        def get_qc_frame():
-            for f in page_sponsor.frames:
-                if any(k in f.url for k in ['sslip.io', 'frame.html']):
-                    if not f.is_detached():
-                        return f
-            return None
-
-        last_cid = None
-        verified_token = None
-
-        # Solve QCaptcha loop
-        print("[*] Bắt đầu tự động giải QCaptcha challenge song song...")
-        for round_idx in range(60):
-            time.sleep(0.35)
-
-            token = page_sponsor.evaluate('''() => {
-                const api = window.hcaptcha || window.qcaptcha;
-                return api && typeof api.getResponse === 'function' ? api.getResponse() : null;
-            }''')
-            if token:
-                print(f"[🎉] QCaptcha Token Verified: {token[:40]}...")
-                # Đảm bảo đủ chuẩn 60.5s on-site theo server LayMa
-                now_elapsed = time.time() - (visit_start_time or button_click_time)
-                if now_elapsed < 60.5:
-                    wait_rem = 60.5 - now_elapsed
-                    print(f"⚡ [TURBO] Đã giải xong QCaptcha sớm (tiết kiệm ~20s)! Chờ thêm {wait_rem:.1f}s để đủ chuẩn 60s server LayMa...")
-                    time.sleep(wait_rem)
-
-                print("[*] Gửi token lên máy chủ lấy mã...")
-                page_sponsor.evaluate('''([tok, key]) => {
-                    let el = document.getElementById(key);
-                    if (!el) {
-                        const s = document.querySelector('script[src*="Traffic/Index"], script[src*="traffic/index"]');
-                        if (s) {
-                            const m = s.src.match(/[Tt]raffic\/[Ii]ndex\/([A-Za-z0-9_-]+)/);
-                            if (m) el = document.getElementById(m[1]);
-                        }
+            print("[*] Gửi token lên máy chủ lấy mã...")
+            page_sponsor.evaluate('''([tok, key]) => {
+                let el = document.getElementById(key);
+                if (!el) {
+                    const s = document.querySelector('script[src*="Traffic/Index"], script[src*="traffic/index"]');
+                    if (s) {
+                        const m = s.src.match(/[Tt]raffic\/[Ii]ndex\/([A-Za-z0-9_-]+)/);
+                        if (m) el = document.getElementById(m[1]);
                     }
-                    if (typeof window.__submitGetCode === 'function') {
-                        window.__submitGetCode(el, '0', { qCaptchaToken: tok });
-                    }
-                    for (const b of document.querySelectorAll('#qcaptcha-modal-content button, button')) {
-                        if (b.innerText.includes('Xác thực và lấy mã')) {
-                            b.click();
-                            break;
-                        }
-                    }
-                }''', [token, traffic_key])
-                break
-
-            cur_cf = get_qc_frame()
-            if not cur_cf:
-                continue
-
-            ch_info = cur_cf.evaluate('''() => {
-                if (window.__qc_state && window.__qc_state.challenge) {
-                    const ch = window.__qc_state.challenge;
-                    return {
-                        cid: ch.cid,
-                        type: ch.type,
-                        spec: ch.spec,
-                        assets: (ch.assets || []).map(a => a.url)
-                    };
                 }
-                return null;
-            }''')
-
-            if not ch_info:
-                continue
-
-            if ch_info['cid'] == last_cid:
-                time.sleep(0.4)
-                continue
-
-            c_type = ch_info['type']
-            assets = ch_info['assets']
-            spec = ch_info['spec'] or {}
-            q_text = (spec.get('questionKey') or spec.get('question', {}).get('vi', '') or '').lower()
-            last_cid = ch_info['cid']
-            print(f"[+] Nhận dạng Challenge: {c_type} ('{q_text}')")
-
-            shape_map = {
-                'tam giác': 'triangle', 'triangle': 'triangle',
-                'vuông': 'rectangle', 'square': 'rectangle', 'chữ nhật': 'rectangle', 'rectangle': 'rectangle',
-                'lục giác': 'hexagon', 'hexagon': 'hexagon',
-                'ngũ giác': 'pentagon', 'pentagon': 'pentagon',
-                'ngôi sao': 'star', 'star': 'star',
-                'tròn': 'circle', 'circle': 'circle',
-                'chữ thập': 'cross', 'cross': 'cross'
-            }
-            detected_shape = None
-            for k_shape, s_name in shape_map.items():
-                if k_shape in q_text:
-                    detected_shape = s_name
-                    break
-
-            is_supported_grid = (c_type in ['grid3x3', 'oddoneout', 'countshapes'])
-
-            # Compute dynamic base URL for QCaptcha frame assets
-            import urllib.parse
-            parsed_cf = urllib.parse.urlsplit(cur_cf.url)
-            base_frame_url = f"{parsed_cf.scheme}://{parsed_cf.netloc}"
-
-            if is_supported_grid:
-                target = []
-                full_asset_urls = [base_frame_url + u if u.startswith('/') else u for u in assets]
-
-                # Priority 0: Native Advanced QCaptcha Engine
-                try:
-                    from qcaptcha_engine import extract_tile_features, solve_qcaptcha_tiles
-                    def fetch_tile_bytes(idx_url):
-                        idx, u = idx_url
-                        if u.startswith('/'):
-                            u = base_frame_url + u
-                        try:
-                            headers = {'Referer': cur_cf.url, 'Origin': base_frame_url}
-                            r = http_session.get(u, headers=headers, timeout=4)
-                            return (idx, extract_tile_features(r.content))
-                        except Exception:
-                            return (idx, {"shape": "unknown", "area": 0.0, "valid": False})
-
-                    args_list = [(i, u) for i, u in enumerate(assets)]
-                    features_tuples = list(executor.map(fetch_tile_bytes, args_list))
-                    features_tuples.sort(key=lambda x: x[0])
-                    features = [f[1] for f in features_tuples]
-                    print(f"   [Debug Tiles] {[(i, f.get('shape')) for i, f in enumerate(features)]}")
-
-                    target = solve_qcaptcha_tiles(features, question_text=q_text, challenge_type=c_type, spec=spec)
-                    if target:
-                        print(f"   [Engine v4.0] Đáp án giải tự động: {target}")
-                except Exception as e_engine:
-                    print(f"   [Engine v4.0] Fallback: {e_engine}")
-
-                # Priority 1: Cloud Microservice OpenCV API
-                if not target:
-                    try:
-                        from captcha_api_client import solve_qcaptcha
-                        target_query_shape = detected_shape or "star"
-                        cv_res = solve_qcaptcha(full_asset_urls, target_shape=target_query_shape, min_confidence=0.55)
-                        if cv_res and cv_res.get('correct_indices'):
-                            target = cv_res['correct_indices']
-                            print(f"   [Cloud API CV] Nhận diện {target_query_shape}: {target}")
-                    except Exception:
-                        pass
-
-                if not target:
-                    print(f"   [!] Không nhận diện chắc chắn cho '{detected_shape or c_type}'. Bỏ qua và đổi câu hỏi...")
-                    cur_cf.evaluate('''() => {
-                        if (typeof window.__qc_skip === 'function') {
-                            window.__qc_skip();
-                        }
-                    }''')
-                    time.sleep(0.3)
-                    continue
-
-                print(f"   ➔ Đáp án chọn: {target}")
-                cur_cf.evaluate('''(ans) => {
-                    if (typeof window.__qc_submit === 'function') {
-                        window.__qc_submit(ans);
+                if (typeof window.__submitGetCode === 'function') {
+                    window.__submitGetCode(el, '0', { qCaptchaToken: tok });
+                }
+                for (const b of document.querySelectorAll('#qcaptcha-modal-content button, button')) {
+                    if (b.innerText.includes('Xác thực và lấy mã')) {
+                        b.click();
+                        break;
                     }
-                }''', target)
-                time.sleep(0.3)
-
-            elif c_type == 'order':
-                target = []
-                try:
-                    from qcaptcha_engine import extract_tile_features, solve_qcaptcha_tiles
-                    def fetch_tile_bytes(idx_url):
-                        idx, u = idx_url
-                        if u.startswith('/'):
-                            u = base_frame_url + u
-                        try:
-                            headers = {'Referer': cur_cf.url, 'Origin': base_frame_url}
-                            r = http_session.get(u, headers=headers, timeout=4)
-                            return (idx, extract_tile_features(r.content))
-                        except Exception:
-                            return (idx, {"shape": "unknown", "area": 0.0, "valid": False})
-
-                    args_list = [(i, u) for i, u in enumerate(assets)]
-                    features_tuples = list(executor.map(fetch_tile_bytes, args_list))
-                    features_tuples.sort(key=lambda x: x[0])
-                    features = [f[1] for f in features_tuples]
-                    target = solve_qcaptcha_tiles(features, question_text=q_text, challenge_type="order", spec=spec)
-                except Exception:
-                    args_list = [(i, u) for i, u in enumerate(assets)]
-                    features = list(executor.map(analyze_tile_url, args_list))
-                    features.sort(key=lambda x: x[0])
-                    direction = spec.get('direction', 'desc')
-                    is_asc = ('nhỏ đến lớn' in q_text or direction == 'asc')
-                    sorted_by_area = sorted(features, key=lambda x: x[3], reverse=(not is_asc))
-                    target = [f[0] for f in sorted_by_area]
-
-                if not target:
-                    cur_cf.evaluate('''() => {
-                        if (typeof window.__qc_skip === 'function') {
-                            window.__qc_skip();
-                        }
-                    }''')
-                    time.sleep(0.3)
-                    continue
-
-                print(f"   ➔ Thứ tự sắp xếp: {target}")
-                cur_cf.evaluate('''(ans) => {
-                    if (typeof window.__qc_submit === 'function') {
-                        window.__qc_submit(ans);
-                    }
-                }''', target)
-                time.sleep(0.3)
-
-            else:
-                print(f"   ➔ Đổi dạng challenge không hỗ trợ ({c_type})...")
-                cur_cf.evaluate('''() => {
-                    if (typeof window.__qc_skip === 'function') {
-                        window.__qc_skip();
-                    }
-                }''')
-                time.sleep(0.2)
+                }
+            }''', [verified_token, traffic_key])
 
         # Wait for extracted code (turbo loop)
         for _ in range(35):
@@ -864,7 +872,23 @@ def run(target_url: str = None, headless: bool = None):
         page_layma.bring_to_front()
         time.sleep(0.3)
 
-        page_layma.evaluate('''(code) => {
+        # Kiểm tra xem LayMa form có widget QCaptcha riêng không
+        layma_token = None
+        has_qc_widget = page_layma.evaluate('''() => {
+            return !!document.getElementById('qcaptcha-checkcode') || !!document.querySelector('.h-captcha');
+        }''')
+        if has_qc_widget:
+            print("[*] Phát hiện widget QCaptcha trên form LayMa. Đang tự động giải...")
+            try:
+                layma_token = solve_qcaptcha_in_page(page_layma, max_rounds=20)
+                if layma_token:
+                    print(f"[🎉] LayMa Form QCaptcha Solved: {layma_token[:40]}...")
+            except Exception as e_lt:
+                print(f"[!] Warning solving LayMa form QCaptcha: {e_lt}")
+
+        chosen_token = layma_token or verified_token or ""
+
+        page_layma.evaluate('''([code, tok]) => {
             // Hook window.open to redirect immediately in same window
             window.open = function(u, target) {
                 if (u && typeof u === 'string') {
@@ -879,16 +903,21 @@ def run(target_url: str = None, headless: bool = None):
                 inp.dispatchEvent(new Event('input', { bubbles: true }));
                 inp.dispatchEvent(new Event('change', { bubbles: true }));
             }
-            const btn = document.getElementById('btn-xac-nhan') || document.querySelector('button[onclick*="submitCode"]');
-            if (btn) {
-                btn.click();
-            } else if (typeof submitCode === 'function') {
-                submitCode();
-            } else if (typeof redeemCode === 'function') {
-                redeemCode();
+            if (tok) {
+                window.qCaptchaTokenValue = tok;
             }
-        }''', extracted_layma_code)
-        print("✔ Đã gửi xác nhận mã trên LayMa!")
+            if (typeof redeemCode === 'function') {
+                redeemCode(null, tok);
+            } else {
+                const btn = document.getElementById('btn-xac-nhan') || document.querySelector('button[onclick*="submitCode"]');
+                if (btn) {
+                    btn.click();
+                } else if (typeof submitCode === 'function') {
+                    submitCode();
+                }
+            }
+        }''', [extracted_layma_code, chosen_token])
+        print(f"✔ Đã gửi xác nhận mã trên LayMa (Token: {chosen_token[:25]}...)!")
 
         # Wait for redirect to final destination url
         print("[*] Đang chờ trình duyệt chuyển hướng đến link đích cuối cùng...")

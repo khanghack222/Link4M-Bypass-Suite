@@ -56,7 +56,8 @@ if __name__ == '__main__':
     elif '/go/' in input_url:
         print("[*] Link shortlink nhiệm vụ. Đang gọi engine bypass...")
         import subprocess
-        subprocess.run([sys.executable, r"C:\Users\XUAN\.gemini\antigravity\brain\362dca6b-a89c-49af-a584-be1fb70ebdc3\scratch\final_bypass_100.py", input_url])
+        auto_bypass_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "auto_bypass.py")
+        subprocess.run([sys.executable, auto_bypass_path, input_url])
     else:
         # Thu decode truc tiep neu la chuoi ma hoa
         try:

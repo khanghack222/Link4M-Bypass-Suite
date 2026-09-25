@@ -138,13 +138,17 @@ async function runBypass(octolinkUrl, options = {}, onLog = console.log) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       '--window-size=1280,850'
     ]
   });
 
   try {
     const page = (await browser.pages())[0] || await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
     const attachHooks = async (p) => {
       await p.evaluateOnNewDocument(() => {
@@ -153,6 +157,10 @@ async function runBypass(octolinkUrl, options = {}, onLog = console.log) {
           sessionStorage.setItem('from_google', '1');
         } catch (e) {}
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        if (window.navigator && window.navigator.webkitTemporaryStorage) {
+          window.navigator.webkitTemporaryStorage.queryUsageAndQuota = (s) => { if (typeof s === 'function') s(0, 500*1024*1024*1024); };
+        }
+        window.detectIncognito = async () => ({ isPrivate: false, browserName: 'Chrome' });
 
         // Hook Canvas arc để bám theo vòng tròn Captcha di chuyển theo thời gian thực
         window.__targetCircle = null;
@@ -1402,15 +1410,20 @@ async function runBypass(octolinkUrl, options = {}, onLog = console.log) {
 
     if (isSuccess) {
       try {
+        const rootDir = path.resolve(__dirname, '..', '..');
         const destPaths = [
+          path.join(rootDir, 'destination_url.txt'),
+          path.join(rootDir, 'DESTINATION_FINAL_URL.txt'),
           path.join(__dirname, '..', 'destination_url.txt'),
-          path.join('C:\\Users\\XUAN\\.gemini\\antigravity\\scratch\\Link4M_Bypass_Suite', 'destination_url.txt'),
-          path.join('C:\\Users\\XUAN\\.gemini\\antigravity\\scratch\\Link4M-Bypass-Suite-Release', 'destination_url.txt')
+          'C:\\Users\\XUAN\\.gemini\\antigravity\\scratch\\Link4M_Bypass_Suite\\destination_url.txt',
+          'C:\\Users\\XUAN\\.gemini\\antigravity\\scratch\\Link4M_Bypass_Suite\\DESTINATION_FINAL_URL.txt'
         ];
         for (const dp of destPaths) {
-          if (fs.existsSync(path.dirname(dp))) {
-            fs.writeFileSync(dp, finalUrl, 'utf-8');
-          }
+          try {
+            if (fs.existsSync(path.dirname(dp))) {
+              fs.writeFileSync(dp, finalUrl, 'utf-8');
+            }
+          } catch (e) {}
         }
       } catch (e) {}
     }

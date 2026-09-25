@@ -13,6 +13,8 @@ import urllib.request
 import urllib.parse
 from typing import Optional
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # API Tokens cấu hình mặc định
 LINK999_API_TOKEN = os.environ.get("LINK999_API_TOKEN", "b9987ec5d707c668cfeee32ea6492b62bced266c")
 LAYMA_API_TOKEN = os.environ.get("LAYMA_API_TOKEN", "050dc0233de6e4566264724bf5c94687")
@@ -96,3 +98,15 @@ if __name__ == "__main__":
         print(f"[+] Link999 / UpToLink: {l999}")
     except Exception as e:
         print(f"[-] Link999 error: {e}")
+
+    try:
+        layma = create_layma_shortlink(dest)
+        print(f"[+] LayMa: {layma}")
+    except Exception as e:
+        print(f"[-] LayMa error: {e}")
+
+    try:
+        l4m = create_link4m_shortlink(dest)
+        print(f"[+] Link4M: {l4m}")
+    except Exception as e:
+        print(f"[-] Link4M error: {e}")
