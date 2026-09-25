@@ -213,20 +213,21 @@ def run(target_url: str = None, headless: bool = None):
             u_low = res.url.lower()
             if "checkcode" in u_low:
                 try:
-                    data = res.json()
-                    print(f"[+] LayMa checkcode response: {data}")
-                    u = data.get("redirectUrl") or data.get("RedirectUrl") or data.get("url")
-                    if u and u.startswith("http"):
-                        direct_redirect_url = u
-                        print(f"🎯 Nhận redirectUrl từ JSON: {direct_redirect_url}")
-                        loc302 = resolve_302_url(direct_redirect_url)
-                        if loc302:
-                            final_destination_url = loc302
-                            print(f"⚡ [TURBO 302] Bắt link đích siêu tốc: {final_destination_url}")
-                except Exception as e:
+                    status = res.status
+                    raw_text = res.text()
+                    print(f"[+] LayMa checkcode (Status {status}): {raw_text[:200]}")
                     try:
-                        raw = res.text()
-                        m_go = re.search(r"https?://[^\s\"\'<>]*/api/traffic/go/[A-Za-z0-9_\-]+", raw)
+                        data = res.json()
+                        u = data.get("redirectUrl") or data.get("RedirectUrl") or data.get("url")
+                        if u and u.startswith("http"):
+                            direct_redirect_url = u
+                            print(f"🎯 Nhận redirectUrl từ JSON: {direct_redirect_url}")
+                            loc302 = resolve_302_url(direct_redirect_url)
+                            if loc302:
+                                final_destination_url = loc302
+                                print(f"⚡ [TURBO 302] Bắt link đích siêu tốc: {final_destination_url}")
+                    except Exception:
+                        m_go = re.search(r"https?://[^\s\"\'<>]*/api/traffic/go/[A-Za-z0-9_\-]+", raw_text)
                         if m_go:
                             direct_redirect_url = m_go.group(0)
                             print(f"🎯 Bắt được direct_redirect_url từ text: {direct_redirect_url}")
@@ -234,8 +235,8 @@ def run(target_url: str = None, headless: bool = None):
                             if loc302:
                                 final_destination_url = loc302
                                 print(f"⚡ [TURBO 302] Bắt link đích siêu tốc: {final_destination_url}")
-                    except Exception:
-                        pass
+                except Exception as e:
+                    pass
 
             if "api/traffic/go/" in u_low:
                 try:
@@ -699,22 +700,27 @@ def run(target_url: str = None, headless: bool = None):
                     detected_shape = s_name
                     break
 
-            is_odd_one_out = (c_type == 'oddoneout' or 'khác nhóm' in q_text or 'khác' in q_text)
-            is_grid = (c_type in ['grid3x3', 'oddoneout', 'countshapes'] or 'chọn tất cả' in q_text or 'bấm vào' in q_text)
+            is_supported_grid = (c_type in ['grid3x3', 'oddoneout', 'countshapes'])
 
-            if is_grid:
+            # Compute dynamic base URL for QCaptcha frame assets
+            import urllib.parse
+            parsed_cf = urllib.parse.urlsplit(cur_cf.url)
+            base_frame_url = f"{parsed_cf.scheme}://{parsed_cf.netloc}"
+
+            if is_supported_grid:
                 target = []
-                full_asset_urls = ['https://frame.103-141-140-153.sslip.io' + u if u.startswith('/') else u for u in assets]
+                full_asset_urls = [base_frame_url + u if u.startswith('/') else u for u in assets]
 
-                # Priority 0: Native Advanced QCaptcha Engine (Sub-pixel, Multi-feature & Outlier Clustering)
+                # Priority 0: Native Advanced QCaptcha Engine
                 try:
                     from qcaptcha_engine import extract_tile_features, solve_qcaptcha_tiles
                     def fetch_tile_bytes(idx_url):
                         idx, u = idx_url
                         if u.startswith('/'):
-                            u = 'https://frame.103-141-140-153.sslip.io' + u
+                            u = base_frame_url + u
                         try:
-                            r = http_session.get(u, timeout=4)
+                            headers = {'Referer': cur_cf.url, 'Origin': base_frame_url}
+                            r = http_session.get(u, headers=headers, timeout=4)
                             return (idx, extract_tile_features(r.content))
                         except Exception:
                             return (idx, {"shape": "unknown", "area": 0.0, "valid": False})
@@ -723,6 +729,7 @@ def run(target_url: str = None, headless: bool = None):
                     features_tuples = list(executor.map(fetch_tile_bytes, args_list))
                     features_tuples.sort(key=lambda x: x[0])
                     features = [f[1] for f in features_tuples]
+                    print(f"   [Debug Tiles] {[(i, f.get('shape')) for i, f in enumerate(features)]}")
 
                     target = solve_qcaptcha_tiles(features, question_text=q_text, challenge_type=c_type, spec=spec)
                     if target:
@@ -743,7 +750,14 @@ def run(target_url: str = None, headless: bool = None):
                         pass
 
                 if not target:
-                    target = [0]
+                    print(f"   [!] Không nhận diện chắc chắn cho '{detected_shape or c_type}'. Bỏ qua và đổi câu hỏi...")
+                    cur_cf.evaluate('''() => {
+                        if (typeof window.__qc_skip === 'function') {
+                            window.__qc_skip();
+                        }
+                    }''')
+                    time.sleep(0.3)
+                    continue
 
                 print(f"   ➔ Đáp án chọn: {target}")
                 cur_cf.evaluate('''(ans) => {
@@ -760,9 +774,10 @@ def run(target_url: str = None, headless: bool = None):
                     def fetch_tile_bytes(idx_url):
                         idx, u = idx_url
                         if u.startswith('/'):
-                            u = 'https://frame.103-141-140-153.sslip.io' + u
+                            u = base_frame_url + u
                         try:
-                            r = http_session.get(u, timeout=4)
+                            headers = {'Referer': cur_cf.url, 'Origin': base_frame_url}
+                            r = http_session.get(u, headers=headers, timeout=4)
                             return (idx, extract_tile_features(r.content))
                         except Exception:
                             return (idx, {"shape": "unknown", "area": 0.0, "valid": False})
@@ -781,6 +796,15 @@ def run(target_url: str = None, headless: bool = None):
                     sorted_by_area = sorted(features, key=lambda x: x[3], reverse=(not is_asc))
                     target = [f[0] for f in sorted_by_area]
 
+                if not target:
+                    cur_cf.evaluate('''() => {
+                        if (typeof window.__qc_skip === 'function') {
+                            window.__qc_skip();
+                        }
+                    }''')
+                    time.sleep(0.3)
+                    continue
+
                 print(f"   ➔ Thứ tự sắp xếp: {target}")
                 cur_cf.evaluate('''(ans) => {
                     if (typeof window.__qc_submit === 'function') {
@@ -790,7 +814,7 @@ def run(target_url: str = None, headless: bool = None):
                 time.sleep(0.3)
 
             else:
-                print(f"   ➔ Đổi dạng challenge ({c_type})...")
+                print(f"   ➔ Đổi dạng challenge không hỗ trợ ({c_type})...")
                 cur_cf.evaluate('''() => {
                     if (typeof window.__qc_skip === 'function') {
                         window.__qc_skip();
@@ -849,27 +873,19 @@ def run(target_url: str = None, headless: bool = None):
                 return null;
             };
 
-            // Hook resolveCheckCodeRedirect to navigate immediately without waiting
-            const oldResolve = window.resolveCheckCodeRedirect;
-            window.resolveCheckCodeRedirect = function(res) {
-                const u = oldResolve ? oldResolve(res) : (typeof res === 'string' ? res : (res && res.redirectUrl));
-                if (u && typeof u === 'string') {
-                    window.location.href = u;
-                }
-                return u;
-            };
-
             const inp = document.getElementById('codeInput') || document.querySelector('input[name="code"]');
             if (inp) {
                 inp.value = code;
                 inp.dispatchEvent(new Event('input', { bubbles: true }));
                 inp.dispatchEvent(new Event('change', { bubbles: true }));
             }
-            if (typeof redeemCode === 'function') {
+            const btn = document.getElementById('btn-xac-nhan') || document.querySelector('button[onclick*="submitCode"]');
+            if (btn) {
+                btn.click();
+            } else if (typeof submitCode === 'function') {
+                submitCode();
+            } else if (typeof redeemCode === 'function') {
                 redeemCode();
-            } else {
-                const btn = document.getElementById('btn-xac-nhan') || document.querySelector('button[onclick*="submitCode"]');
-                if (btn) btn.click();
             }
         }''', extracted_layma_code)
         print("✔ Đã gửi xác nhận mã trên LayMa!")
@@ -911,15 +927,19 @@ def run(target_url: str = None, headless: bool = None):
             print("[!] Đang kiểm tra DOM phản hồi của LayMa...")
             try:
                 dom_status = page_layma.evaluate('''() => {
+                    const nb = document.getElementById('noidung');
                     const th = document.getElementById('thongbao');
                     const cd = document.getElementById('countRedirect');
                     return {
-                        thongbao: th ? th.innerText : null,
-                        countRedirect: cd ? cd.innerText : null,
+                        noidung: nb ? nb.innerText.trim() : null,
+                        thongbao: th ? th.innerText.trim() : null,
+                        countRedirect: cd ? cd.innerText.trim() : null,
                         url: window.location.href
                     };
                 }''')
                 print(f"[!] DOM status: {dom_status}")
+                if dom_status and dom_status.get('noidung'):
+                    print(f"⚠ LayMa thông báo: {dom_status['noidung']}")
                 if dom_status and dom_status.get('url') and "layma.net" not in dom_status['url'] and "/api/traffic/go/" not in dom_status['url']:
                     final_destination_url = dom_status['url']
             except Exception:
@@ -952,6 +972,8 @@ def run(target_url: str = None, headless: bool = None):
                 pass
         else:
             print("[!] Không lấy được link đích cuối cùng.")
+            if 'dom_status' in locals() and dom_status and dom_status.get('noidung'):
+                print(f"[!] Nguyên nhân từ LayMa: {dom_status['noidung']}")
 
         time.sleep(2)
         browser.close()

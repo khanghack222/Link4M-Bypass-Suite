@@ -26,41 +26,45 @@ SHAPES = ["circle", "triangle", "rectangle", "pentagon", "hexagon", "star", "cro
 def extract_tile_features(image_bytes: bytes) -> Dict[str, Any]:
     """
     Trích xuất vector đặc trưng hình học từ ảnh tile (RGB -> HSV -> Contours -> Features).
+    Tích hợp đa đặc trưng: vertices, circularity, solidity, aspect_ratio, extent, defects.
     """
     try:
-        im = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-        arr = np.array(im)
+        # Native decode
+        arr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if arr is None:
+            im = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+            arr = cv2.cvtColor(np.array(im), cv2.COLOR_RGB2BGR)
+
         h, w, _ = arr.shape
 
-        # 1. Trích xuất mask đối tượng (loại bỏ nền trắng/sáng hoặc nền trong suốt)
-        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
-        mask = ~((hsv[:, :, 1] < 35) & (hsv[:, :, 2] > 210)) & (hsv[:, :, 2] > 30)
-        mask_u8 = mask.astype(np.uint8) * 255
-
-        # Lọc nhiễu morphological
+        # Trích xuất mask đối tượng (loại trừ nền sáng/trắng)
+        hsv = cv2.cvtColor(arr, cv2.COLOR_BGR2HSV)
+        mask = ((hsv[:, :, 1] > 25) | (hsv[:, :, 2] < 170)).astype(np.uint8) * 255
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN, kernel)
+        mask_clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-        contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(mask_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
-            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+            gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
             _, mask_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
             contours, _ = cv2.findContours(mask_otsu, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if not contours:
             return {
                 "num_vertices": 0, "circularity": 0.0, "area": 0.0,
-                "solidity": 0.0, "aspect_ratio": 1.0, "shape": "unknown", "valid": False
+                "solidity": 0.0, "aspect_ratio": 1.0, "extent": 0.0,
+                "defects": 0, "shape": "unknown", "valid": False
             }
 
         c = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(c)
-        peri = cv2.arcLength(c, True)
+        area = float(cv2.contourArea(c))
+        peri = float(cv2.arcLength(c, True))
 
-        if peri == 0 or area < 15:
+        if peri == 0 or area < 25:
             return {
                 "num_vertices": 0, "circularity": 0.0, "area": area,
-                "solidity": 0.0, "aspect_ratio": 1.0, "shape": "unknown", "valid": False
+                "solidity": 0.0, "aspect_ratio": 1.0, "extent": 0.0,
+                "defects": 0, "shape": "unknown", "valid": False
             }
 
         approx = cv2.approxPolyDP(c, 0.032 * peri, True)
@@ -69,27 +73,42 @@ def extract_tile_features(image_bytes: bytes) -> Dict[str, Any]:
         circ = (4.0 * np.pi * area) / (peri * peri)
 
         hull = cv2.convexHull(c)
-        hull_area = cv2.contourArea(hull)
-        solidity = float(area / hull_area) if hull_area > 0 else 0.0
+        hull_area = float(cv2.contourArea(hull))
+        solidity = (area / hull_area) if hull_area > 0 else 0.0
 
         x, y, bw, bh = cv2.boundingRect(c)
-        aspect_ratio = float(bw) / bh if bh > 0 else 1.0
+        aspect_ratio = float(min(bw, bh)) / max(bw, bh) if max(bw, bh) > 0 else 1.0
+        extent = float(area / (bw * bh)) if (bw * bh) > 0 else 0.0
+
+        defects_count = 0
+        try:
+            hull_idx = cv2.convexHull(c, returnPoints=False)
+            if len(hull_idx) > 3 and len(c) > 3:
+                defects = cv2.convexityDefects(c, hull_idx)
+                if defects is not None:
+                    min_dim = min(bw, bh)
+                    for i in range(defects.shape[0]):
+                        _, _, _, d = defects[i, 0]
+                        if (d / 256.0) > (min_dim * 0.12):
+                            defects_count += 1
+        except Exception:
+            defects_count = 0
 
         shape = "unknown"
-        if circ > 0.82 and solidity > 0.88:
-            shape = "circle"
-        elif num_v == 3:
-            shape = "triangle"
-        elif num_v == 4:
-            shape = "rectangle"
-        elif num_v == 5:
-            shape = "pentagon"
-        elif num_v == 6:
-            shape = "hexagon"
-        elif num_v in [8, 10, 12] or (num_v >= 7 and solidity < 0.65 and circ < 0.5):
-            shape = "star"
-        elif num_v in [8, 12] or (solidity < 0.75 and aspect_ratio > 0.7 and aspect_ratio < 1.3):
+        if (defects_count == 4 and solidity > 0.60) or (num_v in (11, 12) and 0.60 <= solidity <= 0.82):
             shape = "cross"
+        elif defects_count >= 5 or (solidity <= 0.65 and circ < 0.50) or (num_v == 10 and solidity < 0.68):
+            shape = "star"
+        elif num_v == 3 or (solidity >= 0.82 and circ <= 0.72 and num_v <= 5 and 0.35 <= extent <= 0.70):
+            shape = "triangle"
+        elif num_v == 4 and solidity >= 0.86 and extent >= 0.68:
+            shape = "rectangle"
+        elif num_v in (5, 6, 7) and solidity >= 0.85 and 0.68 <= circ <= 0.87 and aspect_ratio >= 0.70:
+            shape = "hexagon"
+        elif solidity >= 0.88 and (circ >= 0.80 or (circ >= 0.75 and num_v >= 8)) and aspect_ratio >= 0.72:
+            shape = "circle"
+        elif defects_count >= 3 and solidity <= 0.75:
+            shape = "cross" if solidity > 0.62 else "star"
 
         return {
             "num_vertices": num_v,
@@ -97,19 +116,23 @@ def extract_tile_features(image_bytes: bytes) -> Dict[str, Any]:
             "area": round(area, 1),
             "solidity": round(solidity, 3),
             "aspect_ratio": round(aspect_ratio, 3),
+            "extent": round(extent, 3),
+            "defects": defects_count,
             "shape": shape,
             "valid": True
         }
     except Exception:
         return {
             "num_vertices": 0, "circularity": 0.0, "area": 0.0,
-            "solidity": 0.0, "aspect_ratio": 1.0, "shape": "unknown", "valid": False
+            "solidity": 0.0, "aspect_ratio": 1.0, "extent": 0.0,
+            "defects": 0, "shape": "unknown", "valid": False
         }
 
 
 def solve_qcaptcha_tiles(tile_features: List[Dict[str, Any]], question_text: str, challenge_type: str, spec: Dict[str, Any]) -> List[int]:
     """
     Quy nạp logic chọn đáp án chính xác từ vector đặc trưng 9 tiles.
+    Trả về [] nếu không nhận diện chắc chắn (để hệ thống skip challenge an toàn).
     """
     q_low = (question_text or "").lower()
     is_odd_one_out = (challenge_type == "oddoneout" or "khác nhóm" in q_low or "khác" in q_low)
@@ -176,7 +199,7 @@ def solve_qcaptcha_tiles(tile_features: List[Dict[str, Any]], question_text: str
             max_outlier_idx = int(np.argmax(distances))
             return [max_outlier_idx]
 
-        return [0]
+        return []
 
     # 2. DẠNG ORDER (Sắp xếp theo thứ tự kích thước)
     if challenge_type == "order":
@@ -193,29 +216,46 @@ def solve_qcaptcha_tiles(tile_features: List[Dict[str, Any]], question_text: str
         c = f.get("circularity", 0.0)
         s = f.get("solidity", 0.0)
         shp = f.get("shape", "unknown")
+        ext = f.get("extent", 0.0)
 
-        if target_shape == "triangle" and (v == 3 or shp == "triangle"):
-            matched_indices.append(idx)
-        elif target_shape == "rectangle" and (v == 4 or shp == "rectangle"):
-            matched_indices.append(idx)
-        elif target_shape == "pentagon" and (v == 5 or shp == "pentagon"):
-            matched_indices.append(idx)
-        elif target_shape == "hexagon" and (v == 6 or shp == "hexagon"):
-            matched_indices.append(idx)
-        elif target_shape == "circle" and (c > 0.8 or shp == "circle"):
-            matched_indices.append(idx)
-        elif target_shape == "star" and (shp == "star" or (v in [8, 10, 12] and s < 0.65)):
-            matched_indices.append(idx)
-        elif target_shape == "cross" and (shp == "cross" or (v in [8, 12] and s < 0.75)):
-            matched_indices.append(idx)
+        if target_shape == "triangle":
+            if shp == "triangle" or (v in [3, 4, 5] and s >= 0.82 and c <= 0.72):
+                matched_indices.append(idx)
+        elif target_shape == "rectangle":
+            if shp == "rectangle" or (v == 4 and s >= 0.86 and ext >= 0.68):
+                matched_indices.append(idx)
+        elif target_shape == "pentagon":
+            if shp == "pentagon" or (v == 5 and s >= 0.85):
+                matched_indices.append(idx)
+        elif target_shape == "hexagon":
+            if shp == "hexagon" or (v in [5, 6, 7] and s >= 0.85 and 0.68 <= c <= 0.88):
+                matched_indices.append(idx)
+        elif target_shape == "circle":
+            if shp == "circle" or (c >= 0.78 and s >= 0.88):
+                matched_indices.append(idx)
+        elif target_shape == "star":
+            if shp == "star" or (s <= 0.65 and c <= 0.52) or f.get("defects", 0) >= 4:
+                matched_indices.append(idx)
+        elif target_shape == "cross":
+            if shp == "cross" or (v in [8, 11, 12] and 0.60 <= s <= 0.82) or f.get("defects", 0) == 4:
+                matched_indices.append(idx)
 
     if matched_indices:
-        if any(w in q_low for w in ["hai ", " 2 ", "hai chữ"]):
-            matched_indices = matched_indices[:2]
-        elif any(w in q_low for w in ["ba ", " 3 ", "ba chữ"]):
-            matched_indices = matched_indices[:3]
-        elif any(w in q_low for w in ["một ", " 1 ", "một chữ"]):
-            matched_indices = matched_indices[:1]
+        req_count = None
+        if any(w in q_low for w in ["hai ", " 2 ", "hai chữ", "2 hình", "2 ô"]):
+            req_count = 2
+        elif any(w in q_low for w in ["ba ", " 3 ", "ba chữ", "3 hình", "3 ô"]):
+            req_count = 3
+        elif any(w in q_low for w in ["bốn ", " 4 ", "bốn chữ", "4 hình", "4 ô"]):
+            req_count = 4
+        elif any(w in q_low for w in ["một ", " 1 ", "một chữ", "1 hình", "1 ô"]):
+            req_count = 1
+
+        if req_count is not None:
+            if len(matched_indices) < req_count:
+                return []  # Không đủ số lượng yêu cầu, bỏ qua để không đoán sai
+            return matched_indices[:req_count]
+
         return matched_indices
 
-    return [0]
+    return []

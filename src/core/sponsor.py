@@ -80,8 +80,9 @@ def unmask_domain_candidates(raw_text: str):
     return list(dict.fromkeys(results))
 
 VALID_TLDS = [
-    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'de.com', 'uk.com', 'jpn.com', 'gb.net', 'jp.net', 'cn.com', 'com', 'net', 'org', 'io', 'cc',
-    'me', 'vn', 'tw', 'vip', 'tv', 'co', 'site', 'top', 'online', 'xyz',
+    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'de.com', 'uk.com', 'jpn.com', 'gb.net', 'jp.net', 'cn.com',
+    'in.net', 'com.co', 'co.in', 'net.in', 'stridewalk.in', 'org.vn', 'edu.vn', 'pro', 'fun', 'bet', 'asia',
+    'com', 'net', 'org', 'io', 'cc', 'me', 'vn', 'tw', 'vip', 'tv', 'co', 'site', 'top', 'online', 'xyz',
     'info', 'biz', 'club', 'games', 'app', 'live', 'ai', 'in', 'us', 'uk'
 ]
 TLD_REGEX = '|'.join([re.escape(t) for t in sorted(VALID_TLDS, key=len, reverse=True)])
@@ -98,6 +99,36 @@ def extract_domain_candidates(ocr_lines):
             t = str(item[1]).strip()
             if t:
                 raw_texts.append(t)
+
+    # Synthesize candidates from detected TLDs and distinct words (handles masked SERP snippets)
+    all_words = []
+    detected_tlds = []
+    stopwords = {'http', 'https', 'www', 'link', 'vao', 'cung', 'cap', 'moi', 'nhat', '2026', '2025', 'cho', 'mobile', 'truy', 'nhanh', 'dinh', 'chinh', 'vietnam', 'google', 'search', 'hướng', 'dẫn'}
+    for txt in raw_texts:
+        for tld in VALID_TLDS:
+            if tld in txt.lower() and tld not in detected_tlds:
+                detected_tlds.append(tld)
+        for w in re.findall(r'[a-zA-Z0-9]+', txt):
+            w_l = w.lower()
+            if len(w_l) >= 4 and not w_l.isdigit() and w_l not in stopwords:
+                all_words.append(w_l)
+        # Split PascalCase / camelCase
+        for w in re.findall(r'[A-Z][a-z0-9]+', txt):
+            wl = w.lower()
+            if len(wl) >= 4 and not wl.isdigit() and wl not in stopwords:
+                all_words.append(wl)
+    all_words = list(dict.fromkeys(all_words))
+
+    # Priority gambling/shortlink TLDs
+    priority_tlds = ['com.co', 'com', 'com.vn', 'co', 'in', 'net', 'org', 'in.net', 'top', 'vip']
+    for tld in priority_tlds:
+        if tld not in detected_tlds:
+            detected_tlds.append(tld)
+
+    for tld in detected_tlds:
+        for w in all_words:
+            if not w.endswith(f".{tld}") and f"{w}.{tld}" not in candidates:
+                candidates.append(f"{w}.{tld}")
 
     # Expand texts with OCR typo corrections
     texts = []
@@ -163,12 +194,22 @@ def extract_domain_candidates(ocr_lines):
                 if 'link4m' not in d and len(d) >= 4 and d not in candidates:
                     candidates.append(d)
 
+    url_prefixes = []
+    for txt in raw_texts:
+        for m in re.finditer(r'https?:\/\/([a-zA-Z0-9\-]+)', txt, re.IGNORECASE):
+            p = m.group(1).lower()
+            if p not in ['www', 'http', 'https'] and len(p) >= 2:
+                url_prefixes.append(p)
+
     # Phân hạng candidate: ưu tiên tuyệt đối domain có Website: hoặc https:// trong OCR
     def rank_c(c):
         score = 0
         clow = c.lower()
         if 'google' in clow or 'link4m' in clow:
             return -9999
+        for p in url_prefixes:
+            if clow.startswith(p):
+                score += 1000
         for txt in texts:
             tlow = txt.lower().replace(' ', '')
             if f"https://{clow}" in tlow or f"http://{clow}" in tlow or f"website:{clow}" in tlow:
