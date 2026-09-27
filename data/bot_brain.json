@@ -1,11 +1,11 @@
 {
   "version": "2.0.0-adaptive",
   "stats": {
-    "total_runs": 7,
+    "total_runs": 8,
     "total_success": 2,
-    "total_heals": 1,
+    "total_heals": 2,
     "time_saved_sec": 0.0,
-    "last_updated": 1790328006
+    "last_updated": 1790474940
   },
   "domain_intelligence": {
     "tructiepkeobongda.com": {
@@ -340,13 +340,15 @@
       "traffic_key": "gcFOGozc",
       "network": "what-on.com",
       "success_count": 1,
-      "fail_count": 0,
+      "fail_count": 1,
       "ip": "172.67.218.14",
       "default_steps": 2,
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790474940
     },
     "soccervirtualcup.com": {
       "domain": "soccervirtualcup.com",

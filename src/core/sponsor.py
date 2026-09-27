@@ -100,35 +100,12 @@ def extract_domain_candidates(ocr_lines):
             if t:
                 raw_texts.append(t)
 
-    # Synthesize candidates from detected TLDs and distinct words (handles masked SERP snippets)
-    all_words = []
+    # Extract candidate TLDs for domain unmasking or regex
     detected_tlds = []
-    stopwords = {'http', 'https', 'www', 'link', 'vao', 'cung', 'cap', 'moi', 'nhat', '2026', '2025', 'cho', 'mobile', 'truy', 'nhanh', 'dinh', 'chinh', 'vietnam', 'google', 'search', 'hướng', 'dẫn'}
     for txt in raw_texts:
         for tld in VALID_TLDS:
             if tld in txt.lower() and tld not in detected_tlds:
                 detected_tlds.append(tld)
-        for w in re.findall(r'[a-zA-Z0-9]+', txt):
-            w_l = w.lower()
-            if len(w_l) >= 4 and not w_l.isdigit() and w_l not in stopwords:
-                all_words.append(w_l)
-        # Split PascalCase / camelCase
-        for w in re.findall(r'[A-Z][a-z0-9]+', txt):
-            wl = w.lower()
-            if len(wl) >= 4 and not wl.isdigit() and wl not in stopwords:
-                all_words.append(wl)
-    all_words = list(dict.fromkeys(all_words))
-
-    # Priority gambling/shortlink TLDs
-    priority_tlds = ['com.co', 'com', 'com.vn', 'co', 'in', 'net', 'org', 'in.net', 'top', 'vip']
-    for tld in priority_tlds:
-        if tld not in detected_tlds:
-            detected_tlds.append(tld)
-
-    for tld in detected_tlds:
-        for w in all_words:
-            if not w.endswith(f".{tld}") and f"{w}.{tld}" not in candidates:
-                candidates.append(f"{w}.{tld}")
 
     # Expand texts with OCR typo corrections
     texts = []
@@ -291,6 +268,88 @@ def probe_domain_live(domain: str):
         return (f"https://{domain}", True)
     return ("", False)
 
+def extract_search_queries(all_texts: list) -> list:
+    """
+    Extract target search query from Link4M quest instructions or SERP preview text.
+    """
+    queries = []
+    patterns = [
+        r'(?:từ\s*khóa|tu\s*khoa|keyword|từ\s*khoá)\s*[:\-\.]?\s*["\'“]?([^"\'”\n\r]{3,60})["\'”]',
+        r'(?:tìm\s*kiếm|tim\s*kiem|search)\s*[:\-\.]?\s*["\'“]?([^"\'”\n\r]{3,60})["\'”]',
+        r'bước\s*2\s*[:\-\.]?\s*(?:vào\s*google(?:\.com)?\s*tìm\s*(?:kiếm)?\s*)?[:\-\.]?\s*["\'“]?([^"\'”\n\r]{3,60})["\'”]',
+        r'(?:copy\s*từ\s*khóa|sao\s*chép\s*từ\s*khóa)\s*[:\-\.]?\s*["\'“]?([^"\'”\n\r]{3,60})["\'”]',
+    ]
+    for txt in all_texts:
+        for p in patterns:
+            m = re.search(p, txt, flags=re.IGNORECASE)
+            if m:
+                q = m.group(1).strip()
+                q = re.sub(r'^(?:từ\s*khóa|tìm\s*kiếm|bước\s*2)\s*[:\-\.]?\s*', '', q, flags=re.IGNORECASE).strip()
+                if len(q) >= 3 and not any(k in q.lower() for k in ['google', 'bước', 'link4m', 'xác nhận']) and q not in queries:
+                    queries.append(q)
+
+    # Secondary check: natural search phrases in Vietnamese instructions
+    for txt in all_texts:
+        clean = txt.strip()
+        words = clean.split()
+        if 2 <= len(words) <= 6:
+            if not any(k in clean.lower() for k in ['http', 'www', '>', '<', '{', '}', 'bước', 'buoc', 'nhấp', 'click', 'mã', 'giây', 'link4m', 'traffic', 'code', 'token', 'xác nhận']):
+                if re.match(r'^[a-zA-Z0-9\sàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ\-]+$', clean):
+                    if len(clean) >= 6 and clean not in queries:
+                        queries.append(clean)
+    return queries
+
+def search_google_for_sponsor(context, query: str) -> list:
+    """
+    Directly query Google Search using a stealth tab in context to get real organic sponsor domains in seconds.
+    """
+    log(f"[*] 🔍 AI Google Search: Đang truy vấn trực tiếp Google cho từ khóa: '{query}'...")
+    search_page = None
+    results = []
+    try:
+        search_page = context.new_page()
+        url = f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}&hl=vi&gl=vn"
+        search_page.goto(url, wait_until="domcontentloaded", timeout=12000)
+        time.sleep(1.0)
+
+        found_domains = search_page.evaluate("""() => {
+            const doms = [];
+            const blacklist = [
+                'google.', 'youtube.com', 'facebook.com', 'tiktok.com', 
+                'instagram.com', 'twitter.com', 'x.com', 'wikipedia.org', 
+                'pinterest.com', 'reddit.com', 'linkedin.com', 'link4m.',
+                'microsoft.com', 'apple.com', 'shopee.vn', 'lazada.vn'
+            ];
+            const links = document.querySelectorAll('div#search a[href], div#rso a[href], div.g a[href], a[jsname]');
+            links.forEach(a => {
+                const href = a.href || '';
+                try {
+                    const u = new URL(href);
+                    if (u.protocol.startsWith('http')) {
+                        const host = u.hostname.toLowerCase().replace(/^www\\./, '');
+                        if (!blacklist.some(b => host.includes(b)) && host.includes('.')) {
+                            if (!doms.includes(host)) {
+                                doms.push(host);
+                            }
+                        }
+                    }
+                } catch(e) {}
+            });
+            return doms;
+        }""")
+        if found_domains:
+            log(f"[+] 🔍 Google Search tìm thấy {len(found_domains)} domain hữu cơ: {found_domains[:6]}")
+            results.extend(found_domains)
+    except Exception as e:
+        log(f"[!] Lỗi truy vấn Google: {e}")
+    finally:
+        if search_page:
+            try:
+                search_page.close()
+            except Exception:
+                pass
+    return results
+
 def detect_sponsor_domain(page_link):
     all_texts = []
     base64_images = []
@@ -352,8 +411,20 @@ def detect_sponsor_domain(page_link):
 
     candidates = extract_domain_candidates(all_texts + cloud_texts)
 
-    # Phase 2: Automatic Fallback to Local RapidOCR if Cloud API returned no viable candidates
-    if not candidates and valid_imgs:
+    # Phase 1.5: Tận dụng AI Google Search trực tiếp bằng từ khóa nhiệm vụ
+    google_candidates = []
+    search_queries = extract_search_queries(all_texts + cloud_texts)
+    if search_queries and hasattr(page_link, 'context'):
+        for sq in search_queries[:2]:
+            g_doms = search_google_for_sponsor(page_link.context, sq)
+            for gd in g_doms:
+                if gd not in google_candidates:
+                    google_candidates.append(gd)
+            if google_candidates:
+                break
+
+    # Phase 2: Automatic Fallback to Local RapidOCR if Cloud API & Google returned no candidates
+    if not candidates and not google_candidates and valid_imgs:
         log("[!] Cloud OCR chưa đủ dữ liệu, tự động kích hoạt Local RapidOCR AI...")
         ocr = get_ocr()
         for idx_img, img_bytes in enumerate(valid_imgs):
@@ -385,18 +456,30 @@ def detect_sponsor_domain(page_link):
             except Exception:
                 pass
         candidates = extract_domain_candidates(all_texts)
+        if not google_candidates and hasattr(page_link, 'context'):
+            fallback_queries = extract_search_queries(all_texts)
+            if fallback_queries:
+                google_candidates = search_google_for_sponsor(page_link.context, fallback_queries[0])
     else:
         all_texts.extend(cloud_texts)
         log(f"[+] Cloud OCR hoàn tất siêu tốc ({len(cloud_texts)} dòng chữ trích xuất).")
 
+    # Đưa các domain từ Google Search lên ưu tiên hàng đầu tuyệt đối
+    for gd in reversed(google_candidates):
+        if gd in candidates:
+            candidates.remove(gd)
+        candidates.insert(0, gd)
+
     brain = get_brain()
     candidates = brain.prioritize_candidates(candidates)
-    log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (sau khi lọc Brain & giải mã mask): {candidates}")
+    log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (sau khi ưu tiên Google Search & Brain): {candidates}")
 
     # Sắp xếp và phân hạng các ứng viên:
     def rank_candidate(c):
         score = 0
         clow = c.lower()
+        if clow in google_candidates:
+            score += 3000
         prof = brain.get_domain_profile(clow)
         if prof and prof.get("success_count", 0) > 0:
             score += 1000 + prof.get("success_count", 0) * 50
@@ -420,11 +503,14 @@ def detect_sponsor_domain(page_link):
     # Probe live domain: domains with verified active sponsor scripts get TOP priority!
     script_urls = []
     live_urls = []
-    for c in candidates:
+    # Cap at top 12 candidates to prevent any long probe delays
+    for c in candidates[:12]:
         live_url, has_sc = probe_domain_live(c)
         if live_url:
             if has_sc and live_url not in script_urls:
                 script_urls.append(live_url)
+                # Đã tìm thấy website đích có script nhiệm vụ, hoàn tất probe ngay lập tức!
+                break
             elif live_url not in live_urls:
                 live_urls.append(live_url)
 
@@ -451,11 +537,12 @@ def detect_sponsor_domain(page_link):
         candidates_local = brain.prioritize_candidates(candidates_local)
         candidates_local.sort(key=rank_candidate, reverse=True)
         log(f"[*] Trích xuất ứng viên từ RapidOCR: {candidates_local}")
-        for c in candidates_local:
+        for c in candidates_local[:12]:
             live_url, has_sc = probe_domain_live(c)
             if live_url:
                 if has_sc and live_url not in script_urls:
                     script_urls.append(live_url)
+                    break
                 elif live_url not in live_urls:
                     live_urls.append(live_url)
         final_live = script_urls + [u for u in live_urls if u not in script_urls]
