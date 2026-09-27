@@ -353,4 +353,22 @@ client.on("messageCreate", async (message) => {
     }
 });
 
+// Keep-alive HTTP Server cho Render Web Service (Free Tier)
+const http = require("http");
+const PORT = process.env.PORT || 10000;
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+        status: "online",
+        bot: client.user ? client.user.tag : "connecting",
+        uptime: Math.round(process.uptime()),
+        queue: queue.length,
+        activeWorkers
+    }));
+});
+
+server.listen(PORT, () => {
+    console.log(`[HTTP] Keep-alive Web Service listening on port ${PORT}`);
+});
+
 client.login(TOKEN);
