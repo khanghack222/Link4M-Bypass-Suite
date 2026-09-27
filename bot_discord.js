@@ -272,9 +272,10 @@ async function executeBypassTask(task) {
 
 // Đăng ký Slash Command khi Bot Ready
 client.once("ready", async () => {
+    const appId = client.user.id;
     console.log(`\n======================================================`);
     console.log(`🤖 Discord Bot đã đăng nhập thành công: ${client.user.tag}`);
-    console.log(`✦ Client ID: ${CLIENT_ID}`);
+    console.log(`✦ Application ID: ${appId}`);
     console.log(`✦ Max Concurrent Jobs: ${MAX_CONCURRENT}`);
     console.log(`======================================================\n`);
 
@@ -282,7 +283,7 @@ client.once("ready", async () => {
         const rest = new REST({ version: "10" }).setToken(TOKEN);
         console.log("[REST] Đang đăng ký Global Slash Commands...");
         await rest.put(
-            Routes.applicationCommands(CLIENT_ID),
+            Routes.applicationCommands(appId),
             { body: commands }
         );
         console.log("[REST] Đã đăng ký Slash Commands (/bypass, /status) thành công!");
