@@ -11,6 +11,8 @@ build_dist/
 destination_url.txt
 extracted_code.txt
 .venv/
+node_modules/
+.env
 trafficvn_profile/
 test_profile/
 data/
