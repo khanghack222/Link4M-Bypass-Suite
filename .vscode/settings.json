@@ -1,0 +1,9 @@
+{
+    "python.defaultInterpreterPath": "C:\\Users\\XUAN\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/src/core",
+        "C:\\Users\\XUAN\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages"
+    ]
+}

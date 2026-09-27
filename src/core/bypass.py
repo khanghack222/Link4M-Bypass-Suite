@@ -85,11 +85,18 @@ def run(target_url: str = None, headless: bool = True):
             ignore_https_errors=True
         )
         context.add_init_script("""
-            // 1. Quota & Webdriver bypass
+            // 1. Quota & Webdriver & Incognito bypass
+            window.detectIncognito = async function() {
+                return { isPrivate: false, browserName: 'Chrome' };
+            };
             if (window.navigator && window.navigator.webkitTemporaryStorage) {
-                window.navigator.webkitTemporaryStorage.queryUsageAndQuota = (s) => { if (typeof s === 'function') s(0, 500*1024*1024*1024); };
+                window.navigator.webkitTemporaryStorage.queryUsageAndQuota = function(success, error) {
+                    if (typeof success === 'function') success(0, 100 * 1024 * 1024 * 1024);
+                };
             }
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.mouse_scroll = true;
+            window.traffic_click = true;
 
             // 2. Fake Google Referrer
             try {
@@ -326,11 +333,15 @@ def run(target_url: str = None, headless: bool = True):
                 document.querySelectorAll('.modal-backdrop, #ad_banner, [id*="google_ads"], [class*="overlay"], iframe[id*="aswift"]').forEach(el => el.remove());
             }""")
 
-            # Giải reCAPTCHA chính xác trên form nhập mã (#recaptcha hoặc #recaptcha-2)
+            # Giải reCAPTCHA chính xác trên form nhập mã (#main-form hoặc #recaptcha)
             try:
-                recaptcha_target = "#recaptcha, #recaptcha-2" if page_link.locator("#recaptcha, #recaptcha-2").count() > 0 else None
+                recaptcha_target = "#main-form, #recaptcha, #recaptcha-2"
                 res_solve = get_solver().solve_on_page(page_link, container_selector=recaptcha_target)
                 log(f"[+] Smart solver result: {res_solve}")
+                if not res_solve.get("success"):
+                    time.sleep(1.2)
+                    res_solve = get_solver().solve_on_page(page_link, container_selector=recaptcha_target)
+                    log(f"[+] Smart solver retry result: {res_solve}")
             except Exception as e:
                 log(f"[!] AI solver note: {e}")
 
@@ -354,9 +365,16 @@ def run(target_url: str = None, headless: bool = True):
                         } catch (e) {}
                     }
 
-                    // Hỗ trợ đồng thời cả #main-form và #main-form-2
-                    const forms = document.querySelectorAll('#main-form, #main-form-2, form');
-                    forms.forEach(f => {
+                    // Ưu tiên submit form chính #main-form
+                    const targetForms = [];
+                    const mainF = document.querySelector('#main-form');
+                    if (mainF) targetForms.push(mainF);
+                    else {
+                        const allF = document.querySelectorAll('#main-form-2, form');
+                        allF.forEach(f => targetForms.push(f));
+                    }
+
+                    targetForms.forEach(f => {
                         const inp = f.querySelector("input[name='password'], input.password, #password, #password-2, [placeholder*='Nhập mã']");
                         if (inp) {
                             inp.value = code;

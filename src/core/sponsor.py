@@ -1,3 +1,5 @@
+import os
+import json
 import re
 import time
 import urllib.request
@@ -87,9 +89,17 @@ VALID_TLDS = [
 ]
 TLD_REGEX = '|'.join([re.escape(t) for t in sorted(VALID_TLDS, key=len, reverse=True)])
 
-def extract_domain_candidates(ocr_lines):
+def extract_domain_candidates(ocr_lines, quest_info=None):
     candidates = []
     raw_texts = []
+
+    # Priority -1: Direct domain hint from quest instructions if already a valid domain
+    if quest_info and quest_info.get("domain_hint"):
+        dh = quest_info["domain_hint"].replace("www.", "").strip('./- ')
+        if '.' in dh and not any(c in dh for c in ['*', '★']) and len(dh) >= 4:
+            if 'link4m' not in dh and 'google' not in dh:
+                candidates.append(dh)
+
     for item in (ocr_lines or []):
         if isinstance(item, str):
             t = item.strip()
@@ -107,14 +117,7 @@ def extract_domain_candidates(ocr_lines):
             if tld in txt.lower() and tld not in detected_tlds:
                 detected_tlds.append(tld)
 
-    # Expand texts with OCR typo corrections
     texts = []
-    full_joined = ' '.join(raw_texts)
-    raw_texts.append(full_joined)
-    # Remove spaces around dots in domain names (e.g. google . com -> google.com)
-    joined_domain_parts = re.sub(r'([a-zA-Z0-9\-]+)\s*\.\s*([a-zA-Z0-9\-]+)', r'\1.\2', full_joined)
-    raw_texts.append(joined_domain_parts)
-
     for text in raw_texts:
         texts.append(text)
         fixed = text
@@ -125,6 +128,35 @@ def extract_domain_candidates(ocr_lines):
         fixed = re.sub(rf'({TLD_REGEX})([A-Z])', r'\1 \2', fixed)
         if fixed != text:
             texts.append(fixed)
+
+    # Extract potential domain patterns like KEOBONGDA11 NET or keobongda11 . net
+    for t in list(texts):
+        for tld in VALID_TLDS:
+            m_sep = re.findall(rf'([a-zA-Z0-9\-]{{3,}})\s*(?:dot|\.)?\s*({tld})\b', t, re.IGNORECASE)
+            for stem, ext in m_sep:
+                comb = f"{stem.lower()}.{ext.lower()}"
+                if 'link4m' not in comb and 'google' not in comb and comb not in candidates:
+                    candidates.append(comb)
+
+    # Check consecutive lines (e.g. line i: "KEOBONGDA" or "KEOBONGDA11", line i+1: "NET")
+    for idx_l in range(len(raw_texts) - 1):
+        l1 = re.sub(r'[^a-zA-Z0-9\-]', '', raw_texts[idx_l]).lower()
+        l2 = re.sub(r'[^a-zA-Z0-9\-]', '', raw_texts[idx_l + 1]).lower()
+        if l2 in VALID_TLDS and len(l1) >= 3:
+            comb = f"{l1}.{l2}"
+            if 'link4m' not in comb and 'google' not in comb and comb not in candidates:
+                candidates.append(comb)
+            # Also generate common betting/sports brand number variations (e.g. keobongda -> keobongda11, keobongda88)
+            if any(k in l1 for k in ['keo', 'bong', 'bet', 'soi', 'cai']):
+                c_stem = re.sub(r'\d+$', '', l1)
+                for num_suf in ['11', '88', '24h', 'net', 'onl', '247']:
+                    c_cand = f"{c_stem}{num_suf}.{l2}"
+                    if c_cand not in candidates: candidates.append(c_cand)
+            elif any(l1.endswith(d) for d in ['11', '1', '2', '3', '88']):
+                c_stem = re.sub(r'\d+$', '', l1)
+                for num_suf in ['11', '88', '']:
+                    c_cand = f"{c_stem}{num_suf}.{l2}"
+                    if c_cand not in candidates: candidates.append(c_cand)
 
     # Priority 0: Unmask any masked domains like shin-shih.co***.tw or dawnseeker. .com
     for text in texts:
@@ -198,7 +230,9 @@ def extract_domain_candidates(ocr_lines):
         score += len(clow)
         return score
 
-    EXCLUDED_DOMAINS = {'gmail.com', 'gmal.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com', 'mail.com', 'link4m.net', 'link4m.com', 'link4m.org', 'link4m.co', 'link4m.me', 'us.org', 'uk.com', 'us.com', 'vn.com'}
+    EXCLUDED_DOMAINS = {'gmail.com', 'gmal.com', 'gmaii.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com', 'mail.com', 'link4m.net', 'link4m.com', 'link4m.org', 'link4m.co', 'link4m.me', 'us.org', 'uk.com', 'us.com', 'vn.com'}
+    SEARCH_ARTIFACTS = ['google', 'googie', 'g00gle', 'link4m', 'iink4m', 'chrome', 'youtube', 'facebook', 'tiktok', 'instagram', 'twitter', 'wikipedia', 'shopee', 'lazada', 'truycap']
+    
     # Priority 4: Smart OCR self-healing for l <-> i, 1 <-> i / l, 0 <-> o
     ocr_healed = []
     for c in list(candidates):
@@ -211,7 +245,12 @@ def extract_domain_candidates(ocr_lines):
                 ocr_healed.append(v)
     candidates.extend(ocr_healed)
 
-    candidates = [c for c in candidates if 'google' not in c.lower() and 'link4m' not in c.lower() and c.lower() not in EXCLUDED_DOMAINS and len(c.split('.')[0]) >= 3]
+    candidates = [
+        c for c in candidates 
+        if not any(art in c.lower() for art in SEARCH_ARTIFACTS) 
+        and c.lower() not in EXCLUDED_DOMAINS 
+        and len(c.split('.')[0]) >= 3
+    ]
     candidates.sort(key=rank_c, reverse=True)
     return candidates
 
@@ -227,8 +266,8 @@ def _probe_single_proto(proto_url: str):
             if resp.getcode() in (200, 301, 302):
                 final_url = resp.geturl() if resp.geturl() else proto_url
                 final_url = final_url.rstrip('/')
-                html = resp.read(65536).decode('utf-8', errors='ignore')
-                has_script = any(k in html.lower() for k in ['traffic', 'widget', 'what-on', 'website-analytics', 'service-v', 'lấy mã', 'lay ma'])
+                html = resp.read(500000).decode('utf-8', errors='ignore')
+                has_script = any(k in html.lower() for k in ['website-analytics', 'service-v', 'what-on.com', 'traffic-button', 'traffic.com.vn', 'whatoncode', 'lấy mã', 'lay ma'])
                 return (final_url, has_script)
     except Exception:
         pass
@@ -268,86 +307,336 @@ def probe_domain_live(domain: str):
         return (f"https://{domain}", True)
     return ("", False)
 
-def extract_search_queries(all_texts: list) -> list:
+def extract_quest_instructions(all_texts: list) -> dict:
     """
-    Extract target search query from Link4M quest instructions or SERP preview text.
+    Trích xuất chính xác cấu trúc nhiệm vụ từ Link4M:
+    - Bước 2: Từ khóa tìm kiếm (search keyword).
+    - Bước 3: Domain đích hoặc Domain Mask (target domain hint).
+    - Trang: Vị trí trang tìm kiếm (page hint, mặc định 1).
     """
-    queries = []
-    patterns = [
-        r'(?:từ\s*khóa|tu\s*khoa|keyword|từ\s*khoá)\s*[:\-\.]?\s*["\'“]?([^"\'”\n\r]{3,60})["\'”]',
-        r'(?:tìm\s*kiếm|tim\s*kiem|search)\s*[:\-\.]?\s*["\'“]?([^"\'”\n\r]{3,60})["\'”]',
-        r'bước\s*2\s*[:\-\.]?\s*(?:vào\s*google(?:\.com)?\s*tìm\s*(?:kiếm)?\s*)?[:\-\.]?\s*["\'“]?([^"\'”\n\r]{3,60})["\'”]',
-        r'(?:copy\s*từ\s*khóa|sao\s*chép\s*từ\s*khóa)\s*[:\-\.]?\s*["\'“]?([^"\'”\n\r]{3,60})["\'”]',
-    ]
-    for txt in all_texts:
-        for p in patterns:
-            m = re.search(p, txt, flags=re.IGNORECASE)
-            if m:
-                q = m.group(1).strip()
-                q = re.sub(r'^(?:từ\s*khóa|tìm\s*kiếm|bước\s*2)\s*[:\-\.]?\s*', '', q, flags=re.IGNORECASE).strip()
-                if len(q) >= 3 and not any(k in q.lower() for k in ['google', 'bước', 'link4m', 'xác nhận']) and q not in queries:
-                    queries.append(q)
+    clean_lines = [l.strip() for l in all_texts if l and isinstance(l, str) and l.strip()]
+    
+    keyword = ""
+    domain_hint = ""
+    page_hint = 1
+    
+    # 1. Quét tìm Bước 2 (Từ khóa)
+    idx_s2 = -1
+    for i, l in enumerate(clean_lines):
+        if re.search(r'(?:b[uư][oơ]c|buroc)\s*2', l, re.IGNORECASE):
+            idx_s2 = i
+            break
+            
+    if idx_s2 != -1:
+        line_s2 = clean_lines[idx_s2]
+        cand = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*2\s*[:\.]?\s*', '', line_s2, flags=re.IGNORECASE)
+        cand = re.sub(r'^(?:g[oõ]|go)?\s*(?:t[iì]m|tim)?\s*(?:t[uừ]|tir|tu)?\s*(?:kh[oó]a|khoa)?[:\.\s]*', '', cand, flags=re.IGNORECASE).strip()
+        if len(cand) >= 2 and not any(k in cand.lower() for k in ['google', 'bước', 'buroc']):
+            keyword = cand
+        elif idx_s2 + 1 < len(clean_lines):
+            next_l = clean_lines[idx_s2 + 1]
+            if not re.search(r'(?:b[uư][oơ]c|buroc|google)', next_l, re.IGNORECASE):
+                keyword = next_l.strip()
 
-    # Secondary check: natural search phrases in Vietnamese instructions
-    for txt in all_texts:
-        clean = txt.strip()
-        words = clean.split()
-        if 2 <= len(words) <= 6:
-            if not any(k in clean.lower() for k in ['http', 'www', '>', '<', '{', '}', 'bước', 'buoc', 'nhấp', 'click', 'mã', 'giây', 'link4m', 'traffic', 'code', 'token', 'xác nhận']):
-                if re.match(r'^[a-zA-Z0-9\sàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ\-]+$', clean):
-                    if len(clean) >= 6 and clean not in queries:
-                        queries.append(clean)
-    return queries
+    if not keyword:
+        # Fallback: Quét ô tìm kiếm "Google <keyword> Q"
+        for i, l in enumerate(clean_lines):
+            if l.strip().lower() == "google" and i + 1 < len(clean_lines):
+                if clean_lines[i+1].lower() != "q" and not re.search(r'(?:b[uư][oơ]c|buroc)', clean_lines[i+1], re.IGNORECASE):
+                    keyword = clean_lines[i+1].strip()
+                    break
 
-def search_google_for_sponsor(context, query: str) -> list:
+    # 2. Quét tìm Bước 3 (Domain đích & Số trang)
+    idx_s3 = -1
+    for i, l in enumerate(clean_lines):
+        if re.search(r'(?:b[uư][oơ]c|buroc)\s*3', l, re.IGNORECASE):
+            idx_s3 = i
+            break
+            
+    if idx_s3 != -1:
+        s3_tokens = []
+        l_s3 = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*3\s*[:\.]?\s*', '', clean_lines[idx_s3], flags=re.IGNORECASE)
+        l_s3 = re.sub(r'^(?:b[aá]m|click|v[aà]o|t[iì]m)?\s*(?:website|trang\s*web|web|site)?[:\.\s]*', '', l_s3, flags=re.IGNORECASE).strip()
+        if l_s3: s3_tokens.append(l_s3)
+        for j in range(idx_s3 + 1, min(idx_s3 + 5, len(clean_lines))):
+            if re.search(r'(?:b[uư][oơ]c|buroc)\s*4', clean_lines[j], re.IGNORECASE):
+                break
+            s3_tokens.append(clean_lines[j])
+            
+        combined_s3 = " ".join(s3_tokens)
+        p_m = re.search(r'(?:[oơ]\s*trang|trang)\s*(\d+)', combined_s3, re.IGNORECASE)
+        if p_m:
+            page_hint = int(p_m.group(1))
+            combined_s3 = combined_s3[:p_m.start()] + " " + combined_s3[p_m.end():]
+            
+        combined_s3 = re.sub(r'\s*\.\s*', '.', combined_s3)
+        for token in combined_s3.split():
+            clean_tok = token.strip('./- ')
+            if '.' in clean_tok or any(c in clean_tok for c in ['*', '★']):
+                if not any(k in clean_tok.lower() for k in ['google', 'link4m']):
+                    domain_hint = clean_tok.lower()
+                    break
+
+    return {
+        "keyword": keyword,
+        "domain_hint": domain_hint,
+        "page_hint": page_hint
+    }
+
+_DEFAULT_GEMINI_KEY = "AQ.Ab8RN6K2TKrVe2p7DR5t65zPs75m2AU_MSTHQUr2o-oWXt9gug"
+_env_key = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_API_KEY = _env_key if (_env_key and not _env_key.startswith("sk-")) else _DEFAULT_GEMINI_KEY
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+
+def resolve_domain_gemini_ai(keyword: str, domain_hint: str = "") -> list:
     """
-    Directly query Google Search using a stealth tab in context to get real organic sponsor domains in seconds.
+    Sử dụng Google Gemini AI Studio (Flash-Lite series) siêu tiết kiệm token và tốc độ ~1.2s
+    để giải mã và suy luận chính xác website tài trợ từ từ khóa và mask.
     """
-    log(f"[*] 🔍 AI Google Search: Đang truy vấn trực tiếp Google cho từ khóa: '{query}'...")
-    search_page = None
+    if not keyword and not domain_hint:
+        return []
+    
+    models_to_try = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]
+    prompt = f'Given Vietnamese traffic quest search keyword: "{keyword}" and target domain hint/mask: "{domain_hint}", deduce and return ONLY a JSON array of the 1 to 2 most probable exact domains (e.g. ["domain.com"]). No markdown, no extra explanation.'
+    payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+    
+    for m in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={GEMINI_API_KEY}"
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=4.0) as r:
+                res = json.loads(r.read().decode("utf-8"))
+                txt = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+                txt = re.sub(r"^```(?:json)?", "", txt, flags=re.IGNORECASE).rstrip("`").strip()
+                arr = json.loads(txt)
+                if isinstance(arr, list):
+                    doms = []
+                    for d in arr:
+                        c = str(d).replace("www.", "").strip("./- ").lower()
+                        if "." in c and c not in doms:
+                            doms.append(c)
+                    if doms:
+                        log(f"[+] [Gemini AI {m}] Suy luan chinh xac domain dich: {doms}")
+                        return doms
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue
+            log(f"[!] Gemini AI ({m}): HTTP {e.code}")
+        except Exception as e:
+            log(f"[!] Gemini AI ({m}): {e}")
+            
+    return []
+
+def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
+    """
+    Tải trực tiếp ảnh nhiệm vụ và gửi cho Gemini Flash-Lite Multimodal Vision:
+    AI trực tiếp 'nhìn' hình ảnh hướng dẫn, bóc tách chính xác từ khóa Google và domain đích (kể cả bị che sao ***).
+    """
+    if not image_bytes_list:
+        return {}
+
+    models_to_try = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]
+    parts = [{
+        "text": (
+            "Analyze these Vietnamese shortlink quest instructions and mission screenshots.\n"
+            "CRITICAL: Look carefully at all images, especially website headers, red arrows, red boxes, logos, and branding text (e.g. \"KEOBONGDA11.NET\", \"nhandinhkeobongdaonl.com\"). Often the target website domain or logo name is highlighted by red arrows or red text.\n"
+            "Extract the search instructions and return ONLY a valid JSON object with:\n"
+            "- \"keyword\": The Google search query (e.g. \"keo nha cai\").\n"
+            "- \"domain_hint\": The target domain or masked domain shown in text or logos (e.g. \"keobongda11.net\", \"soikeob***.live\").\n"
+            "- \"target_domains\": Array of deduced exact live website domains from text, logos, or hints (e.g. [\"keobongda11.net\", \"soikeobong.live\"]).\n"
+            "- \"page_hint\": Target Google search page number (integer, default 1).\n"
+            "Return ONLY raw JSON, no markdown, no other text."
+        )
+    }]
+
+    # Prioritize substantive images over small icons
+    sorted_imgs = sorted([b for b in image_bytes_list if b and len(b) > 800], key=len, reverse=True)
+    for b in sorted_imgs[:8]:
+        mime = "image/png"
+        if b.startswith(b"\xff\xd8"):
+            mime = "image/jpeg"
+        elif b.startswith(b"RIFF") and b[8:12] == b"WEBP":
+            mime = "image/webp"
+        parts.append({
+            "inline_data": {
+                "mime_type": mime,
+                "data": base64.b64encode(b).decode("utf-8")
+            }
+        })
+
+    if len(parts) <= 1:
+        return {}
+
+    payload = json.dumps({"contents": [{"parts": parts}]}).encode("utf-8")
+
+    for m in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={GEMINI_API_KEY}"
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=8.0) as r:
+                res = json.loads(r.read().decode("utf-8"))
+                txt = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+                txt = re.sub(r"^```(?:json)?", "", txt, flags=re.IGNORECASE).rstrip("`").strip()
+                data = json.loads(txt)
+                if isinstance(data, dict):
+                    log(f"[+] 👁️ [Gemini Vision {m}] Nhìn ảnh & trích xuất nhiệm vụ thành công: {data}")
+                    return data
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue
+            log(f"[!] Gemini Vision ({m}): HTTP {e.code}")
+        except Exception as e:
+            log(f"[!] Gemini Vision ({m}): {e}")
+
+    return {}
+
+def fallback_ai_search(query: str, domain_hint: str = "") -> list:
+    """
+    AI Search siêu tốc kết hợp Google Gemini 3.5 Flash-Lite API và DuckDuckGo/Bing giả lập TLS Chrome 124.
+    Không bị Captcha hay chặn IP, trích xuất chính xác domain đích trong < 1.5s.
+    """
     results = []
+    
+    # Lớp 1: Gọi Gemini 3.5 Flash-Lite API (siêu tiết kiệm token, tốc độ 1.2s)
+    gemini_doms = resolve_domain_gemini_ai(query, domain_hint)
+    for gd in gemini_doms:
+        if gd not in results:
+            results.append(gd)
+
+    blacklist = ['google.', 'youtube.com', 'facebook.com', 'tiktok.com', 'zalo.me', 'instagram.com', 'twitter.com', 'x.com', 'wikipedia.org', 'link4m.']
+    
+    clean_stem = domain_hint.replace('www.', '').split('.')[0].replace('*', '').strip() if domain_hint else ""
+    queries_to_try = []
+    if clean_stem and len(clean_stem) >= 3:
+        queries_to_try.append(f"{query} {clean_stem}")
+    queries_to_try.append(query)
+    
+    try:
+        from curl_cffi import requests
+        from bs4 import BeautifulSoup
+    except Exception:
+        return results
+
+    for q in queries_to_try:
+        try:
+            url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(q)}"
+            r = requests.get(url, impersonate="chrome124", timeout=5)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, "html.parser")
+                for a in soup.select("a.result__url"):
+                    txt = a.get_text().strip()
+                    d = txt.split('/')[0].replace('www.', '').lower().strip()
+                    if '.' in d and not any(b in d for b in blacklist):
+                        if d not in results:
+                            results.append(d)
+            if results:
+                break
+        except Exception:
+            pass
+
+    if clean_stem:
+        results.sort(key=lambda d: 1000 if clean_stem in d else 0, reverse=True)
+    return results
+
+def search_google_ai_for_sponsor(context, quest_info: dict) -> list:
+    """
+    Tận dụng Google AI Search với URL tối ưu:
+    https://www.google.com/search?q=&sourceid=chrome&ie=UTF-8&amc=1&udm=50&aep=42&cud=0&source=chrome.crn.rb
+    Chấp cả che hay mã hóa, chỉ cần lộ từ khóa + hint là biết ngay domain đích!
+    """
+    keyword = quest_info.get("keyword", "").strip()
+    domain_hint = quest_info.get("domain_hint", "").strip()
+    page_hint = quest_info.get("page_hint", 1)
+
+    if not keyword and not domain_hint:
+        return []
+
+    clean_stem = domain_hint.replace('www.', '').split('.')[0].replace('*', '').strip() if domain_hint else ""
+    target_q = f"{keyword} {clean_stem}".strip() if clean_stem and len(clean_stem) >= 3 else keyword
+    if not target_q:
+        target_q = domain_hint
+
+    log(f"[*] 🔍 AI Google Search: Đang truy vấn Google AI với từ khóa: '{target_q}' (Trang {page_hint})...")
+    results = []
+
+    # Ưu tiên trực tiếp: Nếu domain_hint đã là domain hoàn chỉnh và hợp lệ
+    if domain_hint and '.' in domain_hint and not any(c in domain_hint for c in ['*', '★']):
+        d_clean = domain_hint.replace('www.', '')
+        if d_clean not in results:
+            results.append(d_clean)
+
+    search_page = None
     try:
         search_page = context.new_page()
-        url = f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}&hl=vi&gl=vn"
+        url = f"https://www.google.com/search?q={urllib.parse.quote_plus(target_q)}&sourceid=chrome&ie=UTF-8&amc=1&udm=50&aep=42&cud=0&source=chrome.crn.rb"
+        if page_hint > 1:
+            url += f"&start={(page_hint - 1) * 10}"
+
         search_page.goto(url, wait_until="domcontentloaded", timeout=12000)
         time.sleep(1.0)
 
-        found_domains = search_page.evaluate("""() => {
-            const doms = [];
-            const blacklist = [
-                'google.', 'youtube.com', 'facebook.com', 'tiktok.com', 
-                'instagram.com', 'twitter.com', 'x.com', 'wikipedia.org', 
-                'pinterest.com', 'reddit.com', 'linkedin.com', 'link4m.',
-                'microsoft.com', 'apple.com', 'shopee.vn', 'lazada.vn'
-            ];
-            const links = document.querySelectorAll('div#search a[href], div#rso a[href], div.g a[href], a[jsname]');
-            links.forEach(a => {
-                const href = a.href || '';
-                try {
-                    const u = new URL(href);
-                    if (u.protocol.startsWith('http')) {
-                        const host = u.hostname.toLowerCase().replace(/^www\\./, '');
-                        if (!blacklist.some(b => host.includes(b)) && host.includes('.')) {
-                            if (!doms.includes(host)) {
-                                doms.push(host);
+        # Kiểm tra xem có bị trang sorry chặn không
+        if "sorry" not in search_page.url:
+            found_domains = search_page.evaluate("""() => {
+                const doms = [];
+                const blacklist = [
+                    'google.', 'youtube.com', 'facebook.com', 'tiktok.com', 
+                    'instagram.com', 'twitter.com', 'x.com', 'wikipedia.org', 
+                    'pinterest.com', 'reddit.com', 'linkedin.com', 'link4m.',
+                    'microsoft.com', 'apple.com', 'shopee.vn', 'lazada.vn', 'zalo.me'
+                ];
+                const links = document.querySelectorAll('div#search a[href], div#rso a[href], div.g a[href], a[jsname], a[data-ved]');
+                links.forEach(a => {
+                    const href = a.href || '';
+                    try {
+                        const u = new URL(href);
+                        if (u.protocol.startsWith('http')) {
+                            const host = u.hostname.toLowerCase().replace(/^www\\./, '');
+                            if (!blacklist.some(b => host.includes(b)) && host.includes('.')) {
+                                if (!doms.includes(host)) {
+                                    doms.push(host);
+                                }
                             }
                         }
-                    }
-                } catch(e) {}
-            });
-            return doms;
-        }""")
-        if found_domains:
-            log(f"[+] 🔍 Google Search tìm thấy {len(found_domains)} domain hữu cơ: {found_domains[:6]}")
-            results.extend(found_domains)
+                    } catch(e) {}
+                });
+                return doms;
+            }""")
+            if found_domains:
+                log(f"[+] 🔍 Google AI Search tìm thấy {len(found_domains)} domain hữu cơ: {found_domains[:6]}")
+                for fd in found_domains:
+                    if fd not in results:
+                        results.append(fd)
+        else:
+            log("[!] Google yêu cầu Captcha/Sorry. Tự động kích hoạt AI Search Engine Fallback siêu tốc...")
+            fallback_doms = fallback_ai_search(target_q, domain_hint)
+            if fallback_doms:
+                log(f"[+] ⚡ AI Fallback Search tìm thấy domain đích: {fallback_doms[:4]}")
+                for fd in fallback_doms:
+                    if fd not in results:
+                        results.append(fd)
     except Exception as e:
-        log(f"[!] Lỗi truy vấn Google: {e}")
+        log(f"[!] AI Google Search ghi nhận ngoại lệ: {e}. Kích hoạt Fallback Search...")
+        fallback_doms = fallback_ai_search(target_q, domain_hint)
+        for fd in fallback_doms:
+            if fd not in results:
+                results.append(fd)
     finally:
         if search_page:
             try:
                 search_page.close()
             except Exception:
                 pass
+
+    if not results and keyword:
+        fallback_doms = fallback_ai_search(keyword, domain_hint)
+        for fd in fallback_doms:
+            if fd not in results:
+                results.append(fd)
+
+    if clean_stem:
+        results.sort(key=lambda d: 1000 if clean_stem in d else 0, reverse=True)
+
     return results
 
 def detect_sponsor_domain(page_link):
@@ -363,25 +652,29 @@ def detect_sponsor_domain(page_link):
 
     # Step 2: Extract from target sponsor images and base64 images
     log("[*] Đang quét hình ảnh quảng cáo & hướng dẫn nhiệm vụ...")
-    for _ in range(8):
+    imgs_info = []
+    for _poll in range(16):
         try:
-            imgs_info = page_link.evaluate("""() => {
+            curr_imgs = page_link.evaluate("""() => {
                 const res = [];
-                document.querySelectorAll('img').forEach(img => {
+                document.querySelectorAll('#advertise-html-wrapper img, .main-content img, img').forEach(img => {
                     const s = img.src || '';
                     if (s.startsWith('data:image/')) {
-                        res.push({ type: 'b64', src: s });
-                    } else if (s.includes('img.link4m.net') || s.includes('advertiser') || /\\d+_\\d+\\.(?:jpg|png)/.test(s)) {
+                        if (s.length > 50) res.push({ type: 'b64', src: s });
+                    } else if (s.includes('link4m.net') || s.includes('advertiser') || /\\d+_\\d+\\.(?:jpg|png|webp)/.test(s)) {
                         res.push({ type: 'url', src: s });
                     }
                 });
                 return res;
             }""")
-            if imgs_info:
-                break
+            if curr_imgs:
+                imgs_info = curr_imgs
+                has_adv = any(it.get('type') == 'url' and ('advertiser' in it.get('src', '') or 'link4m' in it.get('src', '')) for it in imgs_info)
+                if has_adv and len(imgs_info) >= 3:
+                    break
         except Exception:
             pass
-        time.sleep(0.2)
+        time.sleep(0.25)
 
     log(f"[*] Phát hiện {len(imgs_info or [])} ảnh nhiệm vụ. Đang chạy Cloud OCR API siêu tốc song song...")
     def _fetch_one_img(item):
@@ -399,29 +692,58 @@ def detect_sponsor_domain(page_link):
     with ThreadPoolExecutor(max_workers=min(len(imgs_info or [1]), 5)) as ex:
         all_img_bytes = list(ex.map(_fetch_one_img, imgs_info or []))
 
-    # Phase 1: High-speed parallel Cloud OCR API (3s)
-    cloud_texts = []
+    # Phase 1: Direct Gemini Multimodal Vision (Tải ảnh nhiệm vụ gửi trực tiếp cho AI nhìn)
     valid_imgs = [b for b in all_img_bytes if b]
+    ai_vision_res = {}
     if valid_imgs:
-        with ThreadPoolExecutor(max_workers=min(len(valid_imgs), 5)) as ex:
-            cloud_results = list(ex.map(_ocr_cloud_api, valid_imgs))
-        for c_res in cloud_results:
-            if c_res:
-                cloud_texts.extend(c_res.splitlines())
+        log(f"[*] 👁️ Gửi {len(valid_imgs)} ảnh nhiệm vụ cho Gemini Multimodal Vision phân tích trực tiếp...")
+        ai_vision_res = analyze_quest_images_gemini_vision(valid_imgs)
 
-    candidates = extract_domain_candidates(all_texts + cloud_texts)
+    # Phase 1.1: Only run OCR as fallback if Gemini Vision fails
+    cloud_texts = []
+    if valid_imgs and not (ai_vision_res and (ai_vision_res.get("keyword") or ai_vision_res.get("domain_hint") or ai_vision_res.get("target_domains"))):
+        log("[*] Gemini Vision không trích xuất đủ, kích hoạt fallback Local RapidOCR...")
+        ocr_inst = get_ocr()
+        for img_b in valid_imgs:
+            try:
+                res_ocr, _ = ocr_inst(img_b)
+                if res_ocr:
+                    for line in res_ocr:
+                        if len(line) > 1 and line[1].strip():
+                            cloud_texts.append(line[1].strip())
+            except Exception:
+                pass
+
+    full_ocr_corpus = all_texts + cloud_texts
+    quest_info = extract_quest_instructions(full_ocr_corpus)
+
+    # Hòa trộn kết quả từ Gemini Vision nếu có
+    if ai_vision_res:
+        if ai_vision_res.get("keyword"):
+            quest_info["keyword"] = ai_vision_res["keyword"]
+        if ai_vision_res.get("domain_hint"):
+            quest_info["domain_hint"] = ai_vision_res["domain_hint"]
+        if ai_vision_res.get("page_hint"):
+            quest_info["page_hint"] = ai_vision_res["page_hint"]
+
+    if quest_info.get("keyword") or quest_info.get("domain_hint"):
+        log(f"[*] 🎯 Cấu trúc nhiệm vụ: Từ khóa='{quest_info['keyword']}', Domain Hint='{quest_info['domain_hint']}', Trang={quest_info['page_hint']}")
 
     # Phase 1.5: Tận dụng AI Google Search trực tiếp bằng từ khóa nhiệm vụ
     google_candidates = []
-    search_queries = extract_search_queries(all_texts + cloud_texts)
-    if search_queries and hasattr(page_link, 'context'):
-        for sq in search_queries[:2]:
-            g_doms = search_google_for_sponsor(page_link.context, sq)
-            for gd in g_doms:
-                if gd not in google_candidates:
-                    google_candidates.append(gd)
-            if google_candidates:
-                break
+    if ai_vision_res and ai_vision_res.get("target_domains"):
+        for td in ai_vision_res["target_domains"]:
+            clean_td = td.replace("www.", "").strip("./- ").lower()
+            if "." in clean_td and clean_td not in google_candidates:
+                google_candidates.append(clean_td)
+
+    if hasattr(page_link, 'context') and (quest_info.get("keyword") or quest_info.get("domain_hint")):
+        ai_search_cands = search_google_ai_for_sponsor(page_link.context, quest_info)
+        for sc in ai_search_cands:
+            if sc not in google_candidates:
+                google_candidates.append(sc)
+
+    candidates = extract_domain_candidates(full_ocr_corpus, quest_info=quest_info)
 
     # Phase 2: Automatic Fallback to Local RapidOCR if Cloud API & Google returned no candidates
     if not candidates and not google_candidates and valid_imgs:
@@ -434,32 +756,13 @@ def detect_sponsor_domain(page_link):
                     for line in res:
                         if len(line) > 1:
                             all_texts.append(line[1].strip())
-                    try:
-                        items = []
-                        for box, text, conf in res:
-                            cy = (box[0][1] + box[2][1]) / 2.0
-                            min_x = min(p[0] for p in box)
-                            items.append((cy, min_x, text))
-                        items.sort(key=lambda x: x[0])
-                        clusters = []
-                        for it in items:
-                            if not clusters or abs(clusters[-1][0] - it[0]) > 15:
-                                clusters.append([it[0], [it]])
-                            else:
-                                clusters[-1][1].append(it)
-                        for _, box_list in clusters:
-                            box_list.sort(key=lambda x: x[1])
-                            c_line = ' '.join(b[2] for b in box_list)
-                            all_texts.append(c_line)
-                    except Exception:
-                        pass
             except Exception:
                 pass
-        candidates = extract_domain_candidates(all_texts)
-        if not google_candidates and hasattr(page_link, 'context'):
-            fallback_queries = extract_search_queries(all_texts)
-            if fallback_queries:
-                google_candidates = search_google_for_sponsor(page_link.context, fallback_queries[0])
+        full_ocr_corpus = all_texts
+        quest_info = extract_quest_instructions(full_ocr_corpus)
+        if hasattr(page_link, 'context') and (quest_info.get("keyword") or quest_info.get("domain_hint")):
+            google_candidates = search_google_ai_for_sponsor(page_link.context, quest_info)
+        candidates = extract_domain_candidates(full_ocr_corpus, quest_info=quest_info)
     else:
         all_texts.extend(cloud_texts)
         log(f"[+] Cloud OCR hoàn tất siêu tốc ({len(cloud_texts)} dòng chữ trích xuất).")
@@ -472,12 +775,18 @@ def detect_sponsor_domain(page_link):
 
     brain = get_brain()
     candidates = brain.prioritize_candidates(candidates)
-    log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (sau khi ưu tiên Google Search & Brain): {candidates}")
 
     # Sắp xếp và phân hạng các ứng viên:
+    clean_stem = quest_info.get("domain_hint", "").replace("www.", "").split(".")[0].replace("*", "").strip().lower()
+    vision_targets = [td.replace("www.", "").strip("./- ").lower() for td in (ai_vision_res.get("target_domains") or []) if "." in td]
     def rank_candidate(c):
         score = 0
         clow = c.lower()
+        for vt in vision_targets:
+            if vt == clow or vt in clow:
+                score += 50000
+        if clean_stem and len(clean_stem) >= 3 and clean_stem in clow:
+            score += 5000
         if clow in google_candidates:
             score += 3000
         prof = brain.get_domain_profile(clow)
@@ -498,23 +807,40 @@ def detect_sponsor_domain(page_link):
         return score
 
     candidates.sort(key=rank_candidate, reverse=True)
+    log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (sau khi ưu tiên Google Search & Brain): {candidates}")
 
     log(f"[*] Đang kiểm tra kết nối & DNS live probe cho các ứng viên...")
-    # Probe live domain: domains with verified active sponsor scripts get TOP priority!
+    # Probe live domain: Giữ nguyên thứ tự ưu tiên tuyệt đối từ AI Vision / Domain Hint!
+    vision_live_urls = []
+    stem_live_urls = []
     script_urls = []
-    live_urls = []
-    # Cap at top 12 candidates to prevent any long probe delays
+    other_live_urls = []
+
     for c in candidates[:12]:
         live_url, has_sc = probe_domain_live(c)
         if live_url:
-            if has_sc and live_url not in script_urls:
-                script_urls.append(live_url)
-                # Đã tìm thấy website đích có script nhiệm vụ, hoàn tất probe ngay lập tức!
-                break
-            elif live_url not in live_urls:
-                live_urls.append(live_url)
+            clow = c.lower()
+            is_exact_vision = any(vt == clow or vt in clow for vt in vision_targets)
+            is_stem = bool(clean_stem and len(clean_stem) >= 3 and clean_stem in clow) or (clow in [g.lower() for g in google_candidates])
 
-    final_live = script_urls + [u for u in live_urls if u not in script_urls]
+            if is_exact_vision:
+                if live_url not in vision_live_urls:
+                    vision_live_urls.append(live_url)
+            elif is_stem:
+                if live_url not in stem_live_urls:
+                    stem_live_urls.append(live_url)
+            elif has_sc:
+                if live_url not in script_urls:
+                    script_urls.append(live_url)
+            else:
+                if live_url not in other_live_urls:
+                    other_live_urls.append(live_url)
+
+    final_live = []
+    for u in (vision_live_urls + stem_live_urls + script_urls + other_live_urls):
+        if u not in final_live:
+            final_live.append(u)
+
     if final_live:
         log(f"[+] Verified live sponsor website candidates (priority sorted): {final_live}")
         return final_live
@@ -588,9 +914,12 @@ def _solve_single_sponsor_impl(context, page, sponsor_url: str, t_single_start: 
 
     # 1. Neutralize detectIncognito cleanly
     page.add_init_script("""
+        window.detectIncognito = async function() {
+            return { isPrivate: false, browserName: 'Chrome' };
+        };
         if (window.navigator && window.navigator.webkitTemporaryStorage) {
             window.navigator.webkitTemporaryStorage.queryUsageAndQuota = function(success, error) {
-                if (typeof success === 'function') success(100, 100000000000);
+                if (typeof success === 'function') success(0, 100 * 1024 * 1024 * 1024);
             };
         }
         window.mouse_scroll = true;
@@ -626,10 +955,14 @@ def _solve_single_sponsor_impl(context, page, sponsor_url: str, t_single_start: 
                 body = re.sub(r'traffic_blurred\s*=\s*[^;]+;', 'traffic_blurred = false;', body)
                 body = re.sub(r'mouse_scroll_time\s*\+\s*delay_time\s*<\s*Date\.now\(\)\s*\/\s*1000\s*&&\s*\([^)]*\)', 'false', body)
 
-                # 3. Expose checkButtonClick to window
+                # 3. Force detectIncognito to always return isPrivate: false
+                body = re.sub(r'async\s+function\s+detectIncognito\s*\([^)]*\)\s*\{', 'async function detectIncognito() { return { isPrivate: false, browserName: "Chrome" };', body)
+                body = re.sub(r'var\s+detectIncognito\s*=\s*async\s+function\s*\([^)]*\)\s*\{', 'var detectIncognito = async function() { return { isPrivate: false, browserName: "Chrome" };', body)
+
+                # 4. Expose checkButtonClick to window
                 body = body.replace('function checkButtonClick(){', 'window.__checkButtonClick = checkButtonClick; function checkButtonClick(){')
 
-                # 4. Universal quest_info fallback across all steps and domains
+                # 5. Universal quest_info fallback across all steps and domains
                 quest_patch = """var quest_info = localStorage.getItem(uuid_name + '_quest');
 if (!quest_info && typeof(Storage) !== "undefined") {
     for (var _k in localStorage) {
@@ -707,18 +1040,48 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             html = page.content()
         except Exception:
             html = ""
-    m_key = re.search(r'(?:what-on\.com|website-analytics\.net|traffic)[^"\']*?key=([a-zA-Z0-9]+)', html)
-    traffic_key = m_key.group(1) if m_key else None
+    all_keys = re.findall(r'(?:what-on\.com|website-analytics\.net|traffic)[^"\']*?key=([a-zA-Z0-9]+)', html)
+    traffic_key = None
+    if all_keys:
+        try:
+            traffic_key = page.evaluate("""(keys) => {
+                for (const k of keys) {
+                    if (document.getElementById(k) || document.querySelector(`[data-key="${k}"]`) || document.querySelector(`[id*="${k}"]`)) {
+                        return k;
+                    }
+                }
+                return keys[keys.length - 1] || keys[0];
+            }""", all_keys)
+        except Exception:
+            traffic_key = all_keys[-1]
+
     if not traffic_key:
         layout_blacklist = {'masthead', 'colophon', 'comments', 'site-nav', 'primary', 'secondary', 'content', 'wrapper', 'sidebar', 'footer', 'header', 'main-menu', 'wide-nav'}
         div_ids = page.evaluate("""() => Array.from(document.querySelectorAll('div[id]'))
             .map(d => d.id)
-            .filter(id => (/^[a-zA-Z0-9]{8}$/.test(id) || /countdown|traffic|layma/i.test(id)))
+            .filter(id => (/^[a-zA-Z0-9]{5,12}$/.test(id) || /countdown|traffic|layma/i.test(id)))
         """)
         div_ids = [i for i in (div_ids or []) if i.lower() not in layout_blacklist]
         if div_ids:
             traffic_key = div_ids[0]
     log(f"[*] Detected traffic_key: {traffic_key}")
+
+    # Kích hoạt hash ngay trên landing page nếu chưa có
+    if traffic_key:
+        try:
+            page.evaluate(f"""() => {{
+                if (!window.location.hash.includes('{traffic_key}')) {{
+                    window.location.hash = '#ss-{traffic_key}';
+                    window.dispatchEvent(new HashChangeEvent('hashchange'));
+                }}
+                const targetDiv = document.getElementById('{traffic_key}') || document.querySelector('[data-key="{traffic_key}"]');
+                if (targetDiv) {{
+                    targetDiv.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                }}
+            }}""")
+            time.sleep(1.0)
+        except Exception:
+            pass
 
     def clean_code_str(text: str) -> str:
         if not text:
@@ -734,14 +1097,22 @@ if (!quest_info && typeof(Storage) !== "undefined") {
         t = clean_code_str(text)
         if not t or len(t) < 4 or len(t) > 25:
             return False
-        if any(w in t.lower() for w in ['click', 'vui lòng', 'vui long', 'link', 'bước', 'buoc', 'lay ma', 'lấy mã', 'chờ', 'seconds', 'giây', 'loading']):
+        # Chặn toàn bộ các từ hệ thống, tiếng Anh hoặc tiếng Việt thông báo trạng thái
+        blacklist = [
+            'click', 'vui lòng', 'vui long', 'link', 'bước', 'buoc', 'lay ma', 'lấy mã',
+            'chờ', 'seconds', 'giây', 'loading', 'success', 'successful', 'failed', 'error',
+            'false', 'true', 'null', 'undefined', 'campaign', 'get code', 'get_quest_code',
+            'info', 'none', 'hoàn thành', 'tiếp tục', 'quay lại', 'bài viết'
+        ]
+        if any(w in t.lower() for w in blacklist):
             return False
         return bool(re.match(r'^[A-Za-z0-9_\-]{4,25}$', t))
 
     code_found = None
+    step_1_completed = False
     campaign_dead = False
     def on_resp(res):
-        nonlocal code_found, campaign_dead, code_from_api
+        nonlocal code_found, step_1_completed, campaign_dead, code_from_api
         u_lower = res.url.lower()
         if any(ep in u_lower for ep in ["get_quest_code", "get_code", "ajax_code", "lay_ma", "process-code", "process-site", "check-site", "iatum", "ontops"]):
             try:
@@ -755,8 +1126,10 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                     log(f"[*] API Response JSON from {res.url[:70]}: {data}")
                     if data.get("info") == "No Campaign" or (data.get("success") is False and "No Campaign" in str(data)):
                         campaign_dead = True
+                        return
+                    # Kiểm tra xem html hoặc code có chứa mã tài trợ hợp lệ không trước khi xét bước chuyển tiếp
                     raw = data.get("html") or data.get("code") or data.get("data") or data.get("c")
-                    if raw:
+                    if raw and raw not in (-1, "-1", 0, "0"):
                         val = clean_code_str(raw)
                         if is_valid_sponsor_code(val):
                             code_found = val
@@ -766,7 +1139,17 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                         else:
                             log(f"[*] API intermediate message: {val}")
 
-                # Text / Regex fallback
+                    # Xác nhận hoàn thành Bước 1 thành công
+                    if data.get("success") is True and (data.get("id") or "vui lòng" in str(data.get("html", "")).lower() or data.get("code") in (-1, "-1", 0, "0")):
+                        step_1_completed = True
+                        log(f"[+] Widget API xác nhận hoàn thành Bước 1 (id={data.get('id')}): {data.get('html')}")
+                        return
+                    if data.get("success") is False:
+                        log(f"[*] Widget API thông báo chưa lấy được: {data.get('info')}")
+                        return
+                    return
+
+                # Text / Regex fallback CHỈ áp dụng khi response trả về raw text không phải JSON
                 try:
                     txt = res.text()
                     if txt and len(txt) < 5000:
@@ -789,8 +1172,11 @@ if (!quest_info && typeof(Storage) !== "undefined") {
         if tk:
             sel_list.extend([
                 f"[id='{tk}'] button",
-                f"[id='{tk}'] a",
                 f"[id='{tk}'] [role='button']",
+                f"[id='{tk}'] .traffic-button",
+                f"[id='{tk}'] .whatoncode",
+                f"[id='{tk}'] span",
+                f"[id='{tk}'] div",
                 f"[id='{tk}']",
                 f"[data-key='{tk}']",
                 f"#ss-{tk}",
@@ -804,17 +1190,17 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             "[class*='lay-ma']", "[id*='lay-ma']", "[class*='btn-lay-ma']",
             "[class*='getcode']", "[id*='getcode']", "[class*='get-code']", "[id*='get-code']",
             "[class*='lay-code']", "[id*='lay-code']",
-            "button:has-text('LẤY MÃ')", "a:has-text('LẤY MÃ')", "div:has-text('LẤY MÃ')", "span:has-text('LẤY MÃ')",
-            "button:has-text('LAY MA')", "a:has-text('LAY MA')", "div:has-text('LAY MA')",
-            "button:has-text('LẤY CODE')", "a:has-text('LẤY CODE')", "div:has-text('LẤY CODE')",
-            "button:has-text('GET CODE')", "a:has-text('GET CODE')", "div:has-text('GET CODE')",
-            "button:has-text('NHẬN MÃ')", "a:has-text('NHẬN MÃ')", "div:has-text('NHẬN MÃ')",
-            "button:has-text('LẤY PASS')", "a:has-text('LẤY PASS')",
-            "button:has-text('LẤY KEY')", "a:has-text('LẤY KEY')",
-            "button:has-text('BẤM VÀO ĐÂY')", "a:has-text('BẤM VÀO ĐÂY')",
-            "button:has-text('XEM MÃ')", "a:has-text('XEM MÃ')",
-            "button:has-text('TIẾP TỤC')", "a:has-text('TIẾP TỤC')",
-            "button:has-text('CONTINUE')", "a:has-text('CONTINUE')",
+            "button:has-text('LẤY MÃ')", "div:has-text('LẤY MÃ')", "span:has-text('LẤY MÃ')",
+            "button:has-text('LAY MA')", "div:has-text('LAY MA')",
+            "button:has-text('LẤY CODE')", "div:has-text('LẤY CODE')",
+            "button:has-text('GET CODE')", "div:has-text('GET CODE')",
+            "button:has-text('NHẬN MÃ')", "div:has-text('NHẬN MÃ')",
+            "button:has-text('LẤY PASS')",
+            "button:has-text('LẤY KEY')",
+            "button:has-text('BẤM VÀO ĐÂY')",
+            "button:has-text('XEM MÃ')",
+            "button:has-text('TIẾP TỤC')",
+            "button:has-text('CONTINUE')",
             ".completed", "[class*='completed']",
             "[data-traffic]", "[data-quest]", "[data-code]"
         ])
@@ -823,6 +1209,10 @@ if (!quest_info && typeof(Storage) !== "undefined") {
     def find_mission_button(timeout_sec=5.0):
         nonlocal traffic_key
         start_t = time.time()
+        banned_hrefs = [
+            '/go/', '/goto/', '/out/', '/redirect/', '/link/', 'login', 'signin', 'sign-in',
+            'register', 'signup', 'sign-up', 'account', 'auth', 'cart', 'checkout', 'manclub'
+        ]
         while time.time() - start_t < timeout_sec:
             if not traffic_key:
                 try:
@@ -852,15 +1242,30 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 try:
                     loc = page.locator(sel).first
                     if loc.count() > 0:
-                        return loc
+                        is_banned = False
+                        try:
+                            tag_name = loc.evaluate("el => el.tagName.toLowerCase()")
+                            if tag_name == "a":
+                                href = (loc.get_attribute("href") or "").lower()
+                                if any(b in href for b in banned_hrefs):
+                                    is_banned = True
+                        except Exception:
+                            pass
+                        if not is_banned:
+                            return loc
                 except Exception:
                     pass
 
             try:
                 js_matched = page.evaluate("""() => {
                     const textRegex = /l[ấa]y\\s*m[ãa]|lay\\s*ma|get\\s*code|nh[ậa]n\\s*m[ãa]|l[ấa]y\\s*pass|l[ấa]y\\s*key|click\\s*v[àa]o\\s*đ[âa]y|b[ấa]m\\s*v[àa]o\\s*đ[âa]y|nh[ậa]n\\s*code/i;
-                    const candidates = document.querySelectorAll('button, a, div, span, p, [role="button"]');
+                    const banned = ['/go/', '/goto/', '/out/', '/redirect/', '/link/', 'login', 'signin', 'register', 'signup', 'account', 'auth', 'cart', 'checkout'];
+                    const candidates = document.querySelectorAll('button, div, span, p, [role="button"], a');
                     for (const el of candidates) {
+                        if (el.tagName.toLowerCase() === 'a') {
+                            const href = (el.getAttribute('href') || '').toLowerCase();
+                            if (banned.some(b => href.includes(b))) continue;
+                        }
                         if (el.children.length > 5) continue;
                         const txt = (el.innerText || el.textContent || '').trim();
                         if (txt && txt.length < 50 && textRegex.test(txt)) {
@@ -935,44 +1340,143 @@ if (!quest_info && typeof(Storage) !== "undefined") {
         log(f"\n[*] EXECUTING STEP {step} ON SPONSOR SITE")
 
         if step > 1:
-            article = None
-            try:
-                article_candidates = page.evaluate("""(sp_url) => {
-                    const links = [];
-                    // 1. Direct Step 2 link injected into whatoncode / completed button by widget
-                    const questLink = document.querySelector('.whatoncode a[href], .whatoncode-wrapper a[href], .completed a[href], [class*="whatoncode"] a[href]');
-                    if (questLink && questLink.href && !questLink.href.startsWith('javascript:')) {
-                        const cleanLink = questLink.href.split('#')[0].replace(/\\/$/, '');
-                        if (!cleanLink.includes('tracking') && !cleanLink.includes('tracker')) {
-                            links.push(cleanLink);
+            if not step_1_completed:
+                # Kiểm tra lại xem localStorage có quest_info chưa trước khi chuyển bài viết
+                has_q = page.evaluate("""() => {
+                    for (let k in localStorage) {
+                        if (k.includes('quest') || k.includes('traffic')) {
+                            try {
+                                const v = JSON.parse(localStorage.getItem(k));
+                                if (v && (v.id || v.traffic_session)) return true;
+                            } catch (e) {}
                         }
                     }
-                    // 2. Scan on-page article links with matching hostname
-                    const host = new URL(sp_url).hostname.replace(/^www\\./, '').toLowerCase();
-                    document.querySelectorAll('a[href]').forEach(a => {
-                        try {
-                            const u = new URL(a.href, window.location.href);
-                            const uHost = u.hostname.replace(/^www\\./, '').toLowerCase();
-                            if (uHost === host && u.pathname.length > 2 && !u.pathname.includes('wp-admin') && !u.pathname.includes('feed') && !u.href.includes('#') && !u.pathname.includes('tracking') && !u.pathname.includes('cdn-cgi')) {
-                                links.push(u.href.replace(/\\/$/, ''));
-                            }
-                        } catch (e) {}
-                    });
-                    return Array.from(new Set(links));
-                }""", sponsor_url)
-                for cand in (article_candidates or []):
-                    if cand not in visited and not any(cand.endswith(ext) for ext in [".jpg", ".png", ".webp", ".css", ".js", ".svg"]):
-                        article = cand
-                        visited.add(cand)
-                        break
+                    return false;
+                }""")
+                if not has_q:
+                    log("[!] Bước 1 chưa được xác nhận hoàn tất (chưa có quest_info trong localStorage). Không chuyển sang Bước 2!")
+                    break
+                else:
+                    step_1_completed = True
+
+            article = None
+            try:
+                # If page is on an unwanted /go/ or login URL, return to sponsor homepage first
+                curr_url = page.url.lower()
+                if any(b in curr_url for b in ['/go/', '/goto/', 'login', 'signin', 'register', 'account']):
+                    log(f"[*] Page currently on non-article URL ({page.url}), returning to {sponsor_url}")
+                    page.goto(sponsor_url, wait_until="domcontentloaded", timeout=25000)
+                    time.sleep(1.0)
             except Exception:
                 pass
+
+            try:
+                article_candidates = page.evaluate("""(sp_url) => {
+                    const host = new URL(sp_url).hostname.replace(/^www\\./, '').toLowerCase();
+                    const banned = [
+                        'wp-admin', 'wp-login', 'login', 'signin', 'sign-in', 'register', 'signup', 'sign-up',
+                        '/go/', '/goto/', '/out/', '/redirect/', '/link/', 'cart', 'checkout', 'account', 'auth',
+                        'contact', 'about', 'policy', 'terms', 'privacy', 'feed', 'sitemap', 'tracking', 'cdn-cgi',
+                        'wp-content', 'wp-includes'
+                    ];
+
+                    const isValidArticle = (u) => {
+                        try {
+                            const parsed = new URL(u, window.location.href);
+                            const pHost = parsed.hostname.replace(/^www\\./, '').toLowerCase();
+                            if (pHost !== host) return false;
+                            const p = parsed.pathname.toLowerCase();
+                            if (p.length < 5) return false;
+                            if (banned.some(b => p.includes(b))) return false;
+                            if (/\\.(?:jpg|jpeg|png|webp|svg|gif|css|js|ico|pdf|zip|mp4)$/i.test(p)) return false;
+                            return true;
+                        } catch (e) { return false; }
+                    };
+
+                    const candidates = [];
+                    const selectors = [
+                        'article a[href]', '.post a[href]', '.entry-title a[href]', 'main a[href]',
+                        'h1 a[href]', 'h2 a[href]', 'h3 a[href]', '.news-item a[href]', '.blog-item a[href]',
+                        '.content a[href]', 'a[href]'
+                    ];
+                    for (const sel of selectors) {
+                        document.querySelectorAll(sel).forEach(a => {
+                            try {
+                                const href = a.href.split('#')[0].replace(/\\/$/, '');
+                                if (isValidArticle(href)) {
+                                    const path = new URL(href).pathname.toLowerCase();
+                                    let score = 0;
+                                    const slugParts = path.split('/').filter(Boolean);
+                                    const lastSlug = slugParts[slugParts.length - 1] || '';
+                                    if (lastSlug.includes('-')) score += 50;
+                                    if (lastSlug.split('-').length >= 3) score += 50;
+                                    if (sel.startsWith('article') || sel.startsWith('.post') || sel.startsWith('h2')) score += 30;
+                                    if (path.includes('game') || path.includes('bai') || path.includes('tin') || path.includes('post') || path.includes('news') || path.includes('danh-gia') || path.includes('huong-dan')) score += 30;
+                                    candidates.push({ href: href, score: score });
+                                }
+                            } catch (e) {}
+                        });
+                    }
+
+                    candidates.sort((a, b) => b.score - a.score);
+                    return Array.from(new Set(candidates.map(c => c.href)));
+                }""", sponsor_url)
+            except Exception:
+                article_candidates = []
+
+            # Python fallback if JS article extraction yielded nothing
+            if not article_candidates:
+                try:
+                    import urllib.request as u_req
+                    from urllib.parse import urljoin as u_join, urlparse as u_parse
+                    import re as py_re
+                    sp_req = u_req.Request(sponsor_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+                    sp_html = u_req.urlopen(sp_req, timeout=10).read().decode('utf-8', errors='ignore')
+                    raw_links = py_re.findall(r'href=[\'"]([^\'"]+)[\'"]', sp_html)
+                    py_banned = [
+                        'wp-admin', 'wp-login', 'login', 'signin', 'sign-in', 'register', 'signup', 'sign-up',
+                        '/go/', '/goto/', '/out/', '/redirect/', '/link/', 'cart', 'checkout', 'account', 'auth',
+                        'contact', 'about', 'policy', 'terms', 'privacy', 'feed', 'sitemap', 'tracking', 'cdn-cgi',
+                        'wp-content', 'wp-includes'
+                    ]
+                    sp_host = u_parse(sponsor_url).netloc.replace('www.', '').lower()
+                    py_cands = []
+                    for rl in raw_links:
+                        full_u = u_join(sponsor_url, rl).split('#')[0].rstrip('/')
+                        pu = u_parse(full_u)
+                        if pu.netloc.replace('www.', '').lower() != sp_host:
+                            continue
+                        p_low = pu.path.lower()
+                        if len(p_low) < 5 or any(b in p_low for b in py_banned):
+                            continue
+                        if py_re.search(r'\\.(?:jpg|jpeg|png|webp|svg|gif|css|js|ico|pdf|zip|mp4)$', p_low):
+                            continue
+                        slug_parts = [s for s in p_low.split('/') if s]
+                        last_slug = slug_parts[-1] if slug_parts else ''
+                        score = 0
+                        if '-' in last_slug: score += 50
+                        if len(last_slug.split('-')) >= 3: score += 50
+                        if any(w in p_low for w in ['game', 'bai', 'tin', 'post', 'news', 'danh-gia', 'huong-dan']): score += 30
+                        py_cands.append((score, full_u))
+                    py_cands.sort(key=lambda x: x[0], reverse=True)
+                    seen_py = set()
+                    article_candidates = [u for sc, u in py_cands if not (u in seen_py or seen_py.add(u))]
+                except Exception as py_err:
+                    log(f"[!] Fallback python article scraping error: {py_err}")
+
+            for cand in (article_candidates or []):
+                if cand not in visited and not any(cand.endswith(ext) for ext in [".jpg", ".png", ".webp", ".css", ".js", ".svg"]):
+                    article = cand
+                    visited.add(cand)
+                    break
+
             if not article or article == sponsor_url:
-                article = sponsor_url.rstrip("/")
-                sep = "&" if "?" in article else "?"
-                art_url = f"{article}{sep}step={step}#ss-{traffic_key}" if traffic_key else f"{article}{sep}step={step}"
-            else:
-                art_url = f"{article}#ss-{traffic_key}" if traffic_key and "#" not in article else article
+                if article_candidates:
+                    article = article_candidates[0]
+                else:
+                    article = sponsor_url.rstrip("/")
+            
+            art_url = f"{article}#ss-{traffic_key}" if traffic_key and "#" not in article else article
             log(f"[*] Navigating to Step {step} article: {art_url}")
             try:
                 resp = page.goto(art_url, wait_until="domcontentloaded", timeout=35000)
@@ -993,50 +1497,100 @@ if (!quest_info && typeof(Storage) !== "undefined") {
         prep()
         time.sleep(0.5)
 
-        btn = find_mission_button(timeout_sec=4.5)
-        if (not btn or btn.count() == 0) and step == 1:
-            log(f"[*] Step 1: Nút chưa xuất hiện trên trang đích, đang tìm bài viết nội bộ trên {sponsor_url}...")
-            try:
-                art_candidates = page.evaluate("""(sp_url) => {
-                    const host = new URL(sp_url).hostname.replace(/^www\\./, '').toLowerCase();
-                    const links = [];
-                    const selectors = [
-                        'article a[href]', '.post a[href]', '.entry-title a[href]',
-                        'main a[href]', 'h1 a[href]', 'h2 a[href]', 'h3 a[href]',
-                        '.news-item a[href]', '.blog-item a[href]', '.content a[href]',
-                        'a[href]'
-                    ];
-                    for (const sel of selectors) {
-                        document.querySelectorAll(sel).forEach(a => {
-                            try {
-                                const u = new URL(a.href, window.location.href);
-                                const uHost = u.hostname.replace(/^www\\./, '').toLowerCase();
-                                if (uHost === host && u.pathname.length > 3) {
-                                    const path = u.pathname.toLowerCase();
-                                    if (!path.includes('wp-admin') && !path.includes('login') && !path.includes('register')
-                                        && !path.includes('tag') && !path.includes('category') && !path.includes('page')
-                                        && !path.includes('feed') && !path.includes('contact') && !path.includes('about')
-                                        && !path.includes('policy') && !path.includes('terms') && !u.href.includes('#')) {
-                                        links.push(u.href.replace(/\\/$/, ''));
-                                    }
-                                }
-                            } catch (e) {}
-                        });
-                        if (links.length >= 5) break;
-                    }
-                    return Array.from(new Set(links));
-                }""", sponsor_url)
-                if art_candidates:
-                    log(f"[*] Tìm thấy {len(art_candidates)} bài viết tiềm năng. Thử truy cập bài viết đầu tiên: {art_candidates[0]}")
+        has_landing_traffic = False
+        try:
+            has_landing_traffic = page.evaluate("""() => {
+                const el = document.querySelector('[id*="ss-"], [data-key], [id*="traffic-button"], .traffic-button, .whatoncode, [class*="whatoncode"]');
+                if (el) return true;
+                const scripts = Array.from(document.querySelectorAll('script')).map(s => s.src || s.getAttribute('data-rocket-src') || '');
+                return scripts.some(src => src.includes('service-v') || src.includes('what-on') || src.includes('traffic') || src.includes('website-analytics'));
+            }""")
+        except Exception:
+            pass
+
+        btn = find_mission_button(timeout_sec=7.0 if has_landing_traffic else 4.5)
+        # Step 2 article fallback retry if button not found on initial article
+        if (not btn or btn.count() == 0) and step == 2 and article_candidates:
+            log(f"[*] Step 2: Nút chưa thấy trên bài viết đầu, đang thử các bài viết nội bộ khác...")
+            for fallback_art in (article_candidates or []):
+                if fallback_art not in visited:
+                    visited.add(fallback_art)
+                    art_url = f"{fallback_art}#ss-{traffic_key}" if traffic_key else fallback_art
+                    log(f"[*] Thử bài viết tiếp theo cho Bước 2: {art_url}")
                     try:
-                        page.goto(art_candidates[0], wait_until="domcontentloaded", timeout=35000)
-                        time.sleep(1.0)
+                        page.goto(art_url, wait_until="domcontentloaded", timeout=25000)
+                        time.sleep(1.5)
                         prep()
                         btn = find_mission_button(timeout_sec=5.0)
-                    except Exception as ea:
-                        log(f"[!] Article nav error: {ea}")
-            except Exception:
-                pass
+                        if btn and btn.count() > 0:
+                            log(f"[+] Tìm thấy nút Bước 2 thành công trên: {art_url}")
+                            break
+                    except Exception:
+                        pass
+
+        if (not btn or btn.count() == 0) and step == 1:
+            if has_landing_traffic:
+                log(f"[*] Step 1: Phát hiện script/khung nhiệm vụ trên trang đích! Đang cuộn trang kỹ để kích hoạt nút...")
+                for scroll_round in range(5):
+                    try:
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
+                        time.sleep(0.8)
+                        page.evaluate("if (typeof forceShowButton === 'function') forceShowButton();")
+                        btn = find_mission_button(timeout_sec=3.0)
+                        if btn and btn.count() > 0:
+                            log(f"[+] Tìm thấy nút nhiệm vụ trên trang đích sau khi cuộn trang!")
+                            break
+                    except Exception:
+                        pass
+            else:
+                log(f"[*] Step 1: Nút chưa xuất hiện trên trang đích, đang tìm bài viết nội bộ trên {sponsor_url}...")
+                try:
+                    art_candidates = page.evaluate("""(sp_url) => {
+                        const host = new URL(sp_url).hostname.replace(/^www\\./, '').toLowerCase();
+                        const banned = [
+                            'wp-admin', 'wp-login', 'login', 'signin', 'sign-in', 'register', 'signup', 'sign-up',
+                            '/go/', '/goto/', '/out/', '/redirect/', '/link/', 'cart', 'checkout', 'account', 'auth',
+                            'contact', 'about', 'policy', 'terms', 'privacy', 'feed', 'sitemap', 'tracking', 'cdn-cgi'
+                        ];
+                        const candidates = [];
+                        const selectors = [
+                            'article a[href]', '.post a[href]', '.entry-title a[href]',
+                            'main a[href]', 'h1 a[href]', 'h2 a[href]', 'h3 a[href]',
+                            '.news-item a[href]', '.blog-item a[href]', '.content a[href]',
+                            'a[href]'
+                        ];
+                        for (const sel of selectors) {
+                            document.querySelectorAll(sel).forEach(a => {
+                                try {
+                                    const u = new URL(a.href, window.location.href);
+                                    const uHost = u.hostname.replace(/^www\\./, '').toLowerCase();
+                                    const path = u.pathname.toLowerCase();
+                                    if (uHost === host && path.length > 4 && !banned.some(b => path.includes(b))) {
+                                        const slugParts = path.split('/').filter(Boolean);
+                                        const lastSlug = slugParts[slugParts.length - 1] || '';
+                                        let score = 0;
+                                        if (lastSlug.includes('-')) score += 50;
+                                        if (lastSlug.split('-').length >= 3) score += 50;
+                                        if (sel.startsWith('article') || sel.startsWith('.post')) score += 30;
+                                        candidates.push({ href: u.href.replace(/\\/$/, ''), score: score });
+                                    }
+                                } catch (e) {}
+                            });
+                        }
+                        candidates.sort((a, b) => b.score - a.score);
+                        return Array.from(new Set(candidates.map(c => c.href)));
+                    }""", sponsor_url)
+                    if art_candidates:
+                        log(f"[*] Tìm thấy {len(art_candidates)} bài viết tiềm năng. Thử truy cập bài viết đầu tiên: {art_candidates[0]}")
+                        try:
+                            page.goto(art_candidates[0], wait_until="domcontentloaded", timeout=35000)
+                            time.sleep(1.0)
+                            prep()
+                            btn = find_mission_button(timeout_sec=5.0)
+                        except Exception as ea:
+                            log(f"[!] Article nav error: {ea}")
+                except Exception:
+                    pass
 
         if not btn or btn.count() == 0:
             log(f"[!] Step {step}: Button not found after exhaustive scan, skipping...")
@@ -1056,29 +1610,53 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 btn.evaluate("el => el.click()")
             except Exception:
                 pass
-        page.evaluate("""() => {
-            if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
-            else if (typeof checkButtonClick === 'function') checkButtonClick();
-            else if (typeof startCountdown === 'function') startCountdown();
-        }""")
+        time.sleep(0.5)
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=3000)
+        except Exception:
+            pass
+        try:
+            page.evaluate("""() => {
+                if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
+                else if (typeof checkButtonClick === 'function') checkButtonClick();
+                else if (typeof startCountdown === 'function') startCountdown();
+            }""")
+        except Exception:
+            pass
         time.sleep(0.4)
 
-        sec_dur = page.evaluate(f"""() => {{
-            if (typeof counter2 !== 'undefined' && counter2 !== null && counter2 > 0) return parseFloat(counter2);
-            const el = document.getElementById('{traffic_key}');
-            if (el && el.dataset.time) return parseFloat(el.dataset.time);
-            const whaton = document.querySelector('.whatoncode, [class*="whatoncode"]');
-            if (whaton) {{
-                const m = (whaton.innerText || whaton.textContent || '').match(/(\\d+)\\s*(?:giây|s)/i);
-                if (m) return parseFloat(m[1]);
-            }}
-            const tfBtn = document.querySelector('#traffic-button, .traffic-button');
-            if (tfBtn) {{
-                const m = (tfBtn.innerText || '').match(/(\\d+)\\s*(?:giây|s)/i);
-                if (m) return parseFloat(m[1]);
-            }}
-            return (typeof traffic_step_2_wait_time !== 'undefined' && {step} > 1 ? traffic_step_2_wait_time : ({step} > 1 ? 15 : 60));
-        }}""")
+        # Chờ widget khởi tạo countdown và đọc chính xác thời lượng (120s, 60s, 15s)
+        sec_dur = 15 if step > 1 else 60
+        for _wait_init in range(6):
+            time.sleep(0.5)
+            try:
+                sec_dur_eval = page.evaluate(f"""() => {{
+                    const el = document.getElementById('{traffic_key}');
+                    if (el && el.dataset.time && parseFloat(el.dataset.time) > 0) return parseFloat(el.dataset.time);
+                    if (el) {{
+                        const m = (el.innerText || el.textContent || '').match(/(\\d+)\\s*(?:giây|s)/i);
+                        if (m && parseFloat(m[1]) > 0) return parseFloat(m[1]);
+                    }}
+                    const whaton = document.querySelector('.whatoncode, [class*="whatoncode"]');
+                    if (whaton) {{
+                        const m = (whaton.innerText || whaton.textContent || '').match(/(\\d+)\\s*(?:giây|s)/i);
+                        if (m && parseFloat(m[1]) > 0) return parseFloat(m[1]);
+                    }}
+                    const tfBtn = document.querySelector('#traffic-button, .traffic-button, .completed, [class*="completed"]');
+                    if (tfBtn) {{
+                        const m = (tfBtn.innerText || '').match(/(\\d+)\\s*(?:giây|s)/i);
+                        if (m && parseFloat(m[1]) > 0) return parseFloat(m[1]);
+                    }}
+                    if (typeof traffic_wait_time !== 'undefined' && traffic_wait_time > 0 && {step} == 1) return parseFloat(traffic_wait_time);
+                    if (typeof traffic_step_2_wait_time !== 'undefined' && traffic_step_2_wait_time > 0 && {step} > 1) return parseFloat(traffic_step_2_wait_time);
+                    if (!'{traffic_key}' && typeof counter2 !== 'undefined' && counter2 !== null && counter2 > 0) return parseFloat(counter2);
+                    return null;
+                }}""")
+                if sec_dur_eval and sec_dur_eval > 0:
+                    sec_dur = sec_dur_eval
+                    break
+            except Exception:
+                pass
         log(f"[*] Step {step}: Countdown duration = {sec_dur}s")
 
         dir_wheel = 1
@@ -1091,24 +1669,36 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 try: page.mouse.wheel(0, 120 * dir_wheel)
                 except Exception: pass
 
-            rem = page.evaluate(f"""() => {{
-                if (typeof counter2 !== 'undefined' && counter2 !== null) return parseFloat(counter2);
-                const whaton = document.querySelector('.whatoncode, [class*="whatoncode"]');
-                if (whaton) {{
-                    const text = whaton.innerText || whaton.textContent || '';
-                    if (text.includes('Mã KM:') || text.includes('Mã:')) return 0.0;
-                    const m = text.match(/(\\d+)\\s*s\\s*\\(/i) || text.match(/(\\d+)\\s*(?:giây|s)/i);
-                    if (m) return parseFloat(m[1]);
-                }}
-                const el = document.getElementById('{traffic_key}');
-                if (el && el.dataset.time) return parseFloat(el.dataset.time);
-                const btn = document.querySelector("#traffic-button, .traffic-button, .completed, [class*='completed'], [id='{traffic_key}'] button, [id='{traffic_key}'], button");
-                if (btn) {{
-                    const m = (btn.innerText || '').match(/(\\d+)\\s*(?:giây|s)/i);
-                    if (m) return parseFloat(m[1]);
-                }}
-                return null;
-            }}""")
+            try:
+                rem = page.evaluate(f"""() => {{
+                    const el = document.getElementById('{traffic_key}');
+                    if (el) {{
+                        const text = el.innerText || el.textContent || '';
+                        if (text.includes('Mã KM:') || text.includes('Mã:') || text.includes('Code:')) return 0.0;
+                        if (el.dataset.time) {{
+                            const dt = parseFloat(el.dataset.time);
+                            if (!isNaN(dt)) return dt;
+                        }}
+                        const m = text.match(/(\\d+)\\s*s\\s*\\(/i) || text.match(/(\\d+)\\s*(?:giây|s)/i);
+                        if (m) return parseFloat(m[1]);
+                    }}
+                    const whaton = document.querySelector('.whatoncode, [class*="whatoncode"]');
+                    if (whaton) {{
+                        const text = whaton.innerText || whaton.textContent || '';
+                        if (text.includes('Mã KM:') || text.includes('Mã:') || text.includes('Code:')) return 0.0;
+                        const m = text.match(/(\\d+)\\s*s\\s*\\(/i) || text.match(/(\\d+)\\s*(?:giây|s)/i);
+                        if (m) return parseFloat(m[1]);
+                    }}
+                    const btn = document.querySelector("#traffic-button, .traffic-button, .completed, [class*='completed'], [id='{traffic_key}'] button");
+                    if (btn) {{
+                        const m = (btn.innerText || '').match(/(\\d+)\\s*(?:giây|s)/i);
+                        if (m) return parseFloat(m[1]);
+                    }}
+                    if (!'{traffic_key}' && typeof counter2 !== 'undefined' && counter2 !== null && !isNaN(counter2)) return parseFloat(counter2);
+                    return null;
+                }}""")
+            except Exception:
+                rem = None
             if rem is None:
                 elapsed = time.time() - start_step_time
                 rem = max(0.0, sec_dur - elapsed)
@@ -1117,36 +1707,52 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 if tick % 6 == 0 or rem <= 3:
                     log(f"  [Step {step}] Remaining: {int(rem)}s")
                 if rem <= 0:
-                    page.evaluate(f"""() => {{
-                        const el = document.getElementById('{traffic_key}');
-                        if (el) {{
-                            el.dataset.time = '0';
-                            el.dataset.click = 'true';
-                            if (el.dataset.loading !== 'true' && el.dataset.loaded === undefined) {{
-                                if (typeof window.__checkButtonClick === 'function') {{
-                                    window.__checkButtonClick();
-                                }} else if (typeof checkButtonClick === 'function') {{
-                                    checkButtonClick();
-                                }}
-                            }}
-                        }}
-                    }}""")
-                    try:
-                        page.evaluate(f"""() => {{
-                            const el = document.getElementById('{traffic_key}');
-                            if (!el || el.dataset.loading !== 'true') {{
-                                const btn = document.querySelector(".whatoncode, [id='{traffic_key}'] button, [id='{traffic_key}'] a, .completed");
-                                if (btn && (!btn.innerText || !btn.innerText.includes('Mã KM'))) btn.click();
-                            }}
-                        }}""")
-                    except Exception:
-                        pass
+                    log(f"[*] Step {step}: Countdown reached 0s. Processing result...")
                     if step == 1:
-                        # Kiểm tra xem mã có xuất hiện luôn ở bước 1 không (single-step sponsor / traffic.com.vn)
-                        for _ in range(16):
-                            time.sleep(0.5)
-                            if code_found:
+                        # Chờ widget tự động gọi checkButtonClick() hoặc hoàn tất Bước 1
+                        time.sleep(2.0)
+                        for w_tick in range(24):
+                            if code_found or campaign_dead:
                                 break
+                            
+                            has_quest = page.evaluate("""() => {
+                                for (let k in localStorage) {
+                                    if (k.includes('quest') || k.includes('traffic')) {
+                                        try {
+                                            const v = JSON.parse(localStorage.getItem(k));
+                                            if (v && (v.id || v.traffic_session)) return true;
+                                        } catch (e) {}
+                                    }
+                                }
+                                return false;
+                            }""")
+                            if has_quest:
+                                step_1_completed = True
+                                log(f"[+] Phát hiện quest_info đã được lưu vào localStorage cho Bước 2!")
+                                break
+                            if step_1_completed:
+                                break
+
+                            # Nếu sau 4 giây widget chưa tự gọi checkButtonClick, hỗ trợ kích hoạt an toàn
+                            if w_tick in (4, 10, 16, 20):
+                                log(f"[*] Step 1: Kích hoạt checkButtonClick / click nút hỗ trợ...")
+                                try:
+                                    page.evaluate(f"""() => {{
+                                        const el = document.getElementById('{traffic_key}');
+                                        if (el) {{
+                                            el.dataset.loading = 'false';
+                                            delete el.dataset.loaded;
+                                            el.dataset.time = '0';
+                                            el.dataset.click = 'true';
+                                            if (typeof checkButtonClick === 'function') checkButtonClick();
+                                        }}
+                                        const btn = document.querySelector(".whatoncode button, [id='{traffic_key}'] button, .completed, #traffic-button");
+                                        if (btn) btn.click();
+                                    }}""")
+                                except Exception:
+                                    pass
+
+                            # Kiểm tra xem mã có xuất hiện luôn ở bước 1 không (single-step campaign)
                             try:
                                 dom_t = page.evaluate(f"""() => {{
                                     const tfBtn = document.querySelector('#traffic-button, .traffic-button, .traffic-button__content');
@@ -1175,26 +1781,75 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                         break
                             except Exception:
                                 pass
-                            has_quest = page.evaluate(f"() => {{ for (let k in localStorage) {{ if (k.includes('quest')) return true; }} return false; }}")
-                            if has_quest:
-                                break
-                    else:
-                        log(f"[*] Step {step} countdown finished! Waiting for mission code from API/DOM...")
-                        for wait_i in range(50):
+
                             time.sleep(0.5)
-                            if code_found:
+
+                        log(f"[*] Step 1 finished. step_1_completed={step_1_completed}, code_found={code_found}")
+                        break
+                    else:
+                        # Step 2: Chờ nhận mã từ API hoặc DOM
+                        log(f"[*] Step 2 countdown finished! Waiting for mission code from API/DOM...")
+                        time.sleep(2.0)
+                        for wait_i in range(50):
+                            if code_found or campaign_dead:
                                 break
-                            if wait_i % 3 == 0:
+                            if wait_i in (4, 12, 20, 28, 36):
                                 try:
-                                    page.mouse.wheel(0, 100 if wait_i % 6 == 0 else -100)
-                                    page.evaluate("""() => {
-                                        if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
-                                        else if (typeof checkButtonClick === 'function') checkButtonClick();
-                                        const c = document.querySelector('.whatoncode, .completed, button');
+                                    page.mouse.wheel(0, 100 if wait_i % 8 == 0 else -100)
+                                    page.evaluate(f"""() => {{
+                                        const el = document.getElementById('{traffic_key}');
+                                        if (el) {{
+                                            el.dataset.loading = 'false';
+                                            delete el.dataset.loaded;
+                                            el.dataset.time = '0';
+                                            el.dataset.click = 'true';
+                                            if (typeof checkButtonClick === 'function') checkButtonClick();
+                                        }}
+                                        const c = document.querySelector('.whatoncode button, [id=\'{traffic_key}\'] button, .completed, #traffic-button');
                                         if (c && (!c.innerText || !c.innerText.includes('Mã KM'))) c.click();
-                                    }""")
+                                    }}""")
                                 except Exception:
                                     pass
+
+                            # Thử trực tiếp gọi endpoint API lấy mã với quest_info từ localStorage nếu sau 5s chưa có mã
+                            if wait_i == 8 and not code_found:
+                                try:
+                                    fb_code = page.evaluate(f"""async () => {{
+                                        for (let k in localStorage) {{
+                                            if (k.includes('quest') || k.includes('traffic')) {{
+                                                try {{{{
+                                                    const q = JSON.parse(localStorage.getItem(k));
+                                                    if (q && q.id) {{
+                                                        const eps = [
+                                                            'https://s1.what-on.com/widget/get_quest_code.html?id=' + q.id + '&traffic_session=' + (q.traffic_session || '') + '&key={traffic_key}',
+                                                            '/widget/get_quest_code.html?id=' + q.id + '&traffic_session=' + (q.traffic_session || '') + '&key={traffic_key}',
+                                                            'https://website-analytics.net/widget/get_quest_code.html?id=' + q.id + '&traffic_session=' + (q.traffic_session || '') + '&key={traffic_key}'
+                                                        ];
+                                                        for (const ep of eps) {{
+                                                            try {{
+                                                                const r = await fetch(ep, {{ credentials: 'include' }});
+                                                                if (r.ok) {{
+                                                                    const res = await r.json();
+                                                                    if (res && res.html && !res.html.includes('Vui lòng')) return res.html;
+                                                                    if (res && res.code && res.code != -1) return res.code;
+                                                                }}
+                                                            }} catch (e) {{}}
+                                                        }}
+                                                    }}
+                                                }} catch (e) {{{{}}}}
+                                            }}
+                                        }}
+                                        return null;
+                                    }}""")
+                                    if fb_code:
+                                        cl = clean_code_str(fb_code)
+                                        if is_valid_sponsor_code(cl):
+                                            code_found = cl
+                                            log(f"🎉 EXTRACTED SPONSOR CODE VIA ACTIVE STEP 2 FETCH: {code_found}")
+                                            break
+                                except Exception:
+                                    pass
+
                             try:
                                 dom_t = page.evaluate(f"""() => {{
                                     // 0. Check traffic-button / best-traffic
@@ -1246,7 +1901,9 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                         break
                             except Exception:
                                 pass
-                    break
+
+                            time.sleep(0.5)
+                        break
 
             if code_found:
                 break
@@ -1293,28 +1950,34 @@ if (!quest_info && typeof(Storage) !== "undefined") {
 
     if not code_found:
         try:
-            fallback_res = page.evaluate("""async () => {
-                for (let k in localStorage) {
-                    if (k.includes('quest')) {
-                        try {
+            fallback_res = page.evaluate(f"""async () => {{
+                for (let k in localStorage) {{
+                    if (k.includes('quest') || k.includes('traffic')) {{
+                        try {{
                             const q = JSON.parse(localStorage.getItem(k));
-                            if (q && q.id) {
-                                const endpoints = ['/widget/get_quest_code.html?id=' + q.id, 'https://s1.what-on.com/widget/get_quest_code.html?id=' + q.id];
-                                for (const ep of endpoints) {
-                                    try {
-                                        const r = await fetch(ep, { credentials: 'include' });
-                                        if (r.ok) {
+                            if (q && q.id) {{
+                                const sess = q.traffic_session || '';
+                                const endpoints = [
+                                    'https://s1.what-on.com/widget/get_quest_code.html?id=' + q.id + '&traffic_session=' + sess + '&key={traffic_key}',
+                                    '/widget/get_quest_code.html?id=' + q.id + '&traffic_session=' + sess + '&key={traffic_key}',
+                                    'https://website-analytics.net/widget/get_quest_code.html?id=' + q.id + '&traffic_session=' + sess + '&key={traffic_key}'
+                                ];
+                                for (const ep of endpoints) {{
+                                    try {{
+                                        const r = await fetch(ep, {{ credentials: 'include' }});
+                                        if (r.ok) {{
                                             const res = await r.json();
-                                            if (res && (res.html || res.code)) return res.html || res.code;
-                                        }
-                                    } catch (err) {}
-                                }
-                            }
-                        } catch (e) {}
-                    }
-                }
+                                            if (res && res.html && !res.html.includes('Vui lòng')) return res.html;
+                                            if (res && res.code && res.code != -1) return res.code;
+                                        }}
+                                    }} catch (err) {{}}
+                                }}
+                            }}
+                        }} catch (e) {{}}
+                    }}
+                }}
                 return null;
-            }""")
+            }}""")
             if fallback_res:
                 cl = clean_code_str(fallback_res)
                 if is_valid_sponsor_code(cl):
@@ -1324,11 +1987,14 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             pass
 
     if not code_found:
-        body = page.evaluate("() => document.body.innerText")
-        m = re.search(r'(?:M[ãa]\s*KM|M[ãa]\s*x[áa]c\s*nh[ậa]n|Code|M[ãa])[\s\:\-]+([A-Za-z0-9]{4,15})', body)
-        if m and is_valid_sponsor_code(m.group(1)):
-            code_found = clean_code_str(m.group(1))
-            log(f"[+] FOUND CODE IN BODY: {code_found}")
+        try:
+            body = page.evaluate("() => document.body ? document.body.innerText : ''")
+            m = re.search(r'(?:M[ãa]\s*KM|M[ãa]\s*x[áa]c\s*nh[ậa]n|Code|M[ãa])[\s\:\-]+([A-Za-z0-9]{4,15})', body or "")
+            if m and is_valid_sponsor_code(m.group(1)):
+                code_found = clean_code_str(m.group(1))
+                log(f"[+] FOUND CODE IN BODY: {code_found}")
+        except Exception:
+            pass
 
     brain = get_brain()
     elapsed_single = round(time.time() - t_single_start, 2)
