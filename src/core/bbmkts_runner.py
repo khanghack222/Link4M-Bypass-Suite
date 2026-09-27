@@ -57,7 +57,7 @@ def clean_destination_url(url: str) -> str:
     if not url:
         return url
     if "bbmkts.com/go/file/" in url:
-        encoded_part = url.split("/go/file/")[-1].split("?")[0].split("#")[0]
+        encoded_part = url.split("/go/file/")[-1].split("?")[0].split("#")[0].strip("/")
         # Thử unquote trước
         try:
             dec = urllib.parse.unquote(encoded_part)
@@ -65,7 +65,14 @@ def clean_destination_url(url: str) -> str:
                 return dec
         except Exception:
             pass
-        # Thử base64
+        # Thử base64 chuẩn với dynamic padding
+        try:
+            pad = (-len(encoded_part)) % 4
+            dec = base64.b64decode(encoded_part + ("=" * pad)).decode("utf-8", errors="ignore")
+            if dec.startswith("http"):
+                return dec
+        except Exception:
+            pass
         try:
             dec = base64.b64decode(encoded_part + "===").decode("utf-8", errors="ignore")
             if dec.startswith("http"):
@@ -85,10 +92,17 @@ def run(target_link: str = None, headless: bool = None):
         dec = clean_destination_url(target_link)
         if dec and dec.startswith("http") and "bbmkts.com/go/file/" not in dec:
             log(f"🎉 [ZERO-CLICK] Giai ma truc tiep tu link /go/file/: {dec}")
+            log(f"FINAL DESTINATION URL: {dec}")
             with open(DEST_FILE, "w", encoding="utf-8") as f:
                 f.write(dec)
             with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f:
                 f.write(dec)
+            desk_dest = os.path.expanduser(r"~\Desktop\destination_url.txt")
+            try:
+                with open(desk_dest, "w", encoding="utf-8") as f_d:
+                    f_d.write(dec)
+            except Exception:
+                pass
             return dec
 
     final_destination = None
@@ -740,12 +754,16 @@ def run(target_link: str = None, headless: bool = None):
         # -------------------------------------------------------------
         log("[4/4] Dang cho nhan link chuyen huong dich...")
         for sec in range(25):
-            if final_destination:
+            if final_destination and 'bbmkts.com' not in final_destination:
                 break
             try:
                 cur = page1.url
-                if 'bbmkts.com/go/' not in cur and 'about:blank' not in cur:
-                    final_destination = cur
+                if 'bbmkts.com/go/file/' in cur:
+                    final_destination = clean_destination_url(cur)
+                    if final_destination and 'bbmkts.com' not in final_destination:
+                        break
+                elif 'bbmkts.com/go/' not in cur and 'about:blank' not in cur:
+                    final_destination = clean_destination_url(cur)
                     break
             except Exception:
                 pass
@@ -761,10 +779,33 @@ def run(target_link: str = None, headless: bool = None):
         time.sleep(2)
         try:
             cur = page1.url
-            if 'bbmkts.com/go/' not in cur and 'about:blank' not in cur:
-                final_destination = cur
+            if not final_destination or 'bbmkts.com' in final_destination:
+                if 'bbmkts.com/go/file/' in cur:
+                    final_destination = clean_destination_url(cur)
+                elif 'bbmkts.com/go/' not in cur and 'about:blank' not in cur:
+                    final_destination = clean_destination_url(cur)
         except Exception:
             pass
+
+        # Quet fallback tren DOM neu van dang o trang intermediate /go/file/
+        try:
+            if not final_destination or 'bbmkts.com' in final_destination:
+                if 'bbmkts.com/go/file/' in page1.url:
+                    final_destination = clean_destination_url(page1.url)
+                    btn_data = page1.evaluate("""() => {
+                        let b = document.getElementById('downloadBtn') || document.querySelector('button[data-url]') || document.querySelector('a[data-url]');
+                        return b ? (b.getAttribute('data-url') || b.dataset.url || b.href) : null;
+                    }""")
+                    if btn_data and btn_data.startswith('http'):
+                        final_destination = clean_destination_url(btn_data)
+        except Exception:
+            pass
+
+        # Fail-safe quet lan cuoi tren page1.url
+        if not final_destination or 'bbmkts.com/go/file/' in final_destination:
+            cur_final = page1.url
+            if 'bbmkts.com/go/file/' in cur_final:
+                final_destination = clean_destination_url(cur_final)
 
         # Bypas trang trung gian /go/file/ de trich xuat link ngoai thuc te
         if final_destination:

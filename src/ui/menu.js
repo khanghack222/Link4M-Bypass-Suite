@@ -494,6 +494,23 @@ function runBypassBBMKTS(targetUrl, headless = currentHeadless) {
         }
 
         let capturedDestUrl = null;
+
+        // Instant Zero-Click Base64 Decoder nếu link đầu vào là /go/file/
+        if (targetUrl.includes("/go/file/")) {
+            try {
+                const enc = targetUrl.split("/go/file/")[1].split("?")[0].split("#")[0].replace(/\/+$/, "");
+                const dec = Buffer.from(enc, "base64").toString("utf-8");
+                if (dec.startsWith("http")) {
+                    console.log(`\n  ${c.bgGreen} ⚡ GIẢI MÃ TỨC THÌ ZERO-CLICK BASE64 ⚡ ${c.reset}`);
+                    console.log(`  ${c.mintGreen}✔ Link đích đã giải mã: ${dec}${c.reset}\n`);
+                    showResultCard(dec, 0);
+                    try { fs.writeFileSync(DEST_FILE, dec, "utf-8"); } catch (e) {}
+                    resolve(0);
+                    return;
+                }
+            } catch (e) {}
+        }
+
         const baseBbmktsArgs = fs.existsSync(BBMKTS_RUNNER)
             ? [BBMKTS_RUNNER, targetUrl]
             : ["-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import bbmkts_runner", targetUrl];
@@ -512,6 +529,17 @@ function runBypassBBMKTS(targetUrl, headless = currentHeadless) {
                 } else if (line.includes(">>> http")) {
                     const m = line.match(/>>>\s*(https?:\/\/[^\s<]+)\s*<<</);
                     if (m) capturedDestUrl = m[1].trim();
+                } else if (line.includes("bbmkts.com/go/file/")) {
+                    const m = line.match(/https?:\/\/bbmkts\.com\/go\/file\/([A-Za-z0-9+/=_-]+)/);
+                    if (m && m[1]) {
+                        try {
+                            const raw = m[1].split('?')[0].split('#')[0].replace(/\/+$/, '');
+                            const dec = Buffer.from(raw, 'base64').toString('utf-8');
+                            if (dec.startsWith('http')) {
+                                capturedDestUrl = dec;
+                            }
+                        } catch (e) {}
+                    }
                 }
                 const formatted = formatLogLine(line);
                 if (formatted) console.log(formatted);

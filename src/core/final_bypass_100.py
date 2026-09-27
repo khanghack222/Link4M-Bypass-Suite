@@ -475,11 +475,14 @@ with sync_playwright() as p:
     # -------------------------------------------------------------
     log("[4/4] Dang cho nhan link chuyen huong dich...")
     for sec in range(25):
-        if final_destination:
+        if final_destination and 'bbmkts.com' not in final_destination:
             break
         try:
             cur = page1.url
-            if 'bbmkts.com/go/' not in cur and 'about:blank' not in cur:
+            if 'bbmkts.com/go/file/' in cur:
+                final_destination = cur
+                break
+            elif 'bbmkts.com/go/' not in cur and 'about:blank' not in cur:
                 final_destination = cur
                 break
         except Exception:
@@ -496,21 +499,32 @@ with sync_playwright() as p:
     time.sleep(2)
     try:
         cur = page1.url
-        if 'bbmkts.com/go/' not in cur and 'about:blank' not in cur:
-            final_destination = cur
+        if not final_destination or 'bbmkts.com/go/file/' in final_destination:
+            if 'bbmkts.com/go/file/' in cur:
+                final_destination = cur
+            elif 'bbmkts.com/go/' not in cur and 'about:blank' not in cur:
+                final_destination = cur
     except Exception:
         pass
 
     # Bypas trang trung gian /go/file/ de trich xuat link ngoai thuc te
     if final_destination and 'bbmkts.com/go/file/' in final_destination:
-        encoded_part = final_destination.split('/go/file/')[-1]
+        encoded_part = final_destination.split('/go/file/')[-1].split("?")[0].split("#")[0].strip("/")
         real_url = None
         try:
-            dec = base64.b64decode(encoded_part + '===').decode('utf-8')
+            pad = (-len(encoded_part)) % 4
+            dec = base64.b64decode(encoded_part + ('=' * pad)).decode('utf-8', errors='ignore')
             if dec.startswith('http'):
                 real_url = dec
         except Exception:
             pass
+        if not real_url:
+            try:
+                dec = base64.b64decode(encoded_part + '===').decode('utf-8', errors='ignore')
+                if dec.startswith('http'):
+                    real_url = dec
+            except Exception:
+                pass
         
         if not real_url:
             try:
@@ -528,6 +542,7 @@ with sync_playwright() as p:
     if final_destination:
         log(f"   [THANH CONG 100%] LINK DICH CUOI CUNG:")
         log(f"   >>> {final_destination} <<<")
+        log(f"FINAL DESTINATION URL: {final_destination}")
     else:
         log(f"   [-] URL hien tai: {page1.url}")
     log("=================================================================")
