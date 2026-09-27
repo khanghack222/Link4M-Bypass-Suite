@@ -41,12 +41,16 @@ def get_chrome_path():
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser"
     ]
     for c in candidates:
         if os.path.exists(c):
             return c
-    return "chrome"
+    # Return None so Playwright uses its built-in installed Chromium on Linux/Cloud
+    return None
 
 CHROME_PATH = get_chrome_path()
 

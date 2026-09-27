@@ -54,7 +54,7 @@ RUN npm install --production
 # Cài đặt requirements cho Python và browser headless
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
-RUN python3 -m playwright install chromium
+RUN python3 -m playwright install --with-deps chromium
 
 # Copy toàn bộ mã nguồn
 COPY . .

@@ -74,11 +74,14 @@ def run(target_url: str = None, headless: bool = True):
                 "--enable-webgl"
             ])
 
-        browser = p.chromium.launch(
-            executable_path=CHROME_PATH,
-            headless=headless,
-            args=launch_args
-        )
+        launch_kwargs = {
+            "headless": headless,
+            "args": launch_args
+        }
+        if CHROME_PATH:
+            launch_kwargs["executable_path"] = CHROME_PATH
+
+        browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 720},
