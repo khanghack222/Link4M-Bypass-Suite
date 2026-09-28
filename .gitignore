@@ -52,7 +52,9 @@ build_dist/
 
 service-v3.js
 adv_data.json
-tests/
+tests/test_*.py
+!tests/test_unit_core.py
+!tests/test_suite_integrity.py
 scripts/final_bypass_100.py
 scripts/decode_link.py
 scripts/shortlink_factory.py
