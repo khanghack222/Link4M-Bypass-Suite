@@ -229,7 +229,8 @@ function runBypassProcess(targetUrl, onLog) {
         const args = ["-u", "-X", "utf8", AUTO_BYPASS_SCRIPT, targetUrl, "--headless"];
         const proc = spawn(pythonBin, args, {
             cwd: ROOT_DIR,
-            env: { ...process.env, PYTHONUNBUFFERED: "1", BYPASS_RUN_ID: runId }
+            env: { ...process.env, PYTHONUNBUFFERED: "1", BYPASS_RUN_ID: runId },
+            detached: process.platform !== "win32"
         });
 
         let isTimedOut = false;
@@ -239,7 +240,7 @@ function runBypassProcess(targetUrl, onLog) {
                 if (process.platform === "win32") {
                     spawn("taskkill", ["/pid", proc.pid.toString(), "/f", "/t"]);
                 } else {
-                    proc.kill("SIGKILL");
+                    process.kill(-proc.pid, "SIGKILL");
                 }
             } catch (e) {}
             resolve({

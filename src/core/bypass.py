@@ -11,10 +11,15 @@ if os.path.exists(PYTHON_311) and sys.executable.lower() != PYTHON_311.lower():
 
 import time
 import re
-from playwright.sync_api import sync_playwright
+try:
+    from patchright.sync_api import sync_playwright
+    IS_PATCHRIGHT = True
+except ImportError:
+    from playwright.sync_api import sync_playwright
+    IS_PATCHRIGHT = False
 
-from config import CHROME_PATH, BASE_DIR, LOG_FILE, DEST_FILE, CODE_FILE, log, copy_to_clipboard
-from recaptcha_solver import RecaptchaAudioSolver
+from config import CHROME_PATH, BASE_DIR, LOG_FILE, DEST_FILE, CODE_FILE, log, copy_to_clipboard, STEALTH_INIT_SCRIPT, save_destination, log_result_card
+from recaptcha_solver import get_solver, RecaptchaAudioSolver
 from sponsor import detect_sponsor_domain, solve_sponsor_quest
 try:
     from brain import get_brain
@@ -71,7 +76,9 @@ def run(target_url: str = None, headless: bool = True):
                 "--headless=new",
                 "--use-gl=angle",
                 "--use-angle=swiftshader",
-                "--enable-webgl"
+                "--enable-webgl",
+                "--autoplay-policy=no-user-gesture-required",
+                "--mute-audio=false"
             ])
 
         launch_kwargs = {
@@ -82,84 +89,15 @@ def run(target_url: str = None, headless: bool = True):
             launch_kwargs["executable_path"] = CHROME_PATH
 
         browser = p.chromium.launch(**launch_kwargs)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720},
-            ignore_https_errors=True
-        )
-        context.add_init_script("""
-            // 1. Quota & Webdriver & Incognito bypass
-            window.detectIncognito = async function() {
-                return { isPrivate: false, browserName: 'Chrome' };
-            };
-            if (window.navigator && window.navigator.webkitTemporaryStorage) {
-                window.navigator.webkitTemporaryStorage.queryUsageAndQuota = function(success, error) {
-                    if (typeof success === 'function') success(0, 100 * 1024 * 1024 * 1024);
-                };
-            }
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            window.mouse_scroll = true;
-            window.traffic_click = true;
+        try:
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 720},
+                ignore_https_errors=True
+            )
+            context.add_init_script(STEALTH_INIT_SCRIPT)
 
-            // 2. Fake Google Referrer
-            try {
-                Object.defineProperty(document, 'referrer', {
-                    get: () => 'https://www.google.com/',
-                    configurable: true
-                });
-            } catch (e) {}
-
-            // 3. Always Active (Anti-Blur / Anti-Tab Switch / Fake Visibility)
-            try {
-                Object.defineProperty(document, 'hidden', {
-                    get: () => false,
-                    configurable: true
-                });
-
-                Object.defineProperty(document, 'visibilityState', {
-                    get: () => 'visible',
-                    configurable: true
-                });
-
-                Object.defineProperty(document, 'webkitVisibilityState', {
-                    get: () => 'visible',
-                    configurable: true
-                });
-
-                window.hasFocus = () => true;
-
-                const blockedEvents = [
-                    'visibilitychange',
-                    'webkitvisibilitychange',
-                    'blur',
-                    'mouseleave'
-                ];
-
-                blockedEvents.forEach(eventType => {
-                    window.addEventListener(eventType, (e) => {
-                        e.stopImmediatePropagation();
-                    }, true);
-
-                    document.addEventListener(eventType, (e) => {
-                        e.stopImmediatePropagation();
-                    }, true);
-                });
-            } catch (e) {}
-
-            // 4. Anti-Headless Stealth Fingerprint
-            try {
-                Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth || 1280 });
-                Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight || 720 });
-                Object.defineProperty(screen, 'availWidth', { get: () => 1280 });
-                Object.defineProperty(screen, 'availHeight', { get: () => 720 });
-                Object.defineProperty(navigator, 'languages', { get: () => ['vi-VN', 'vi', 'en-US', 'en'] });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                if (!window.chrome) window.chrome = {};
-                if (!window.chrome.runtime) window.chrome.runtime = {};
-            } catch (e) {}
-        """)
-
-        page_link = context.new_page()
+            page_link = context.new_page()
         final_destination_url = None
 
         allow_intercept_new_tab = False
@@ -228,10 +166,10 @@ def run(target_url: str = None, headless: bool = True):
         page_link.on("response", handle_resp)
 
         solver = None
-        def get_solver():
+        def get_solver_instance():
             nonlocal solver
             if solver is None:
-                solver = RecaptchaAudioSolver(headless=headless, model_name="tiny.en")
+                solver = get_solver(headless=headless)
             return solver
 
         try:
@@ -262,7 +200,7 @@ def run(target_url: str = None, headless: bool = True):
             # Luồng 1: Cổng Captcha Trực Tiếp (link thuần captcha không có nhà tài trợ)
             log("🚀 [DIRECT GATE] Phát hiện Link4M Cổng Trực Tiếp (Không có web tài trợ)!")
             try:
-                res_solve = get_solver().solve_on_page(page_link, timeout_sec=25)
+                res_solve = get_solver_instance().solve_on_page(page_link, timeout_sec=25)
                 log(f"[+] Direct solver result: {res_solve}")
                 if res_solve.get("success"):
                     time.sleep(0.5)
@@ -339,11 +277,11 @@ def run(target_url: str = None, headless: bool = True):
             # Giải reCAPTCHA chính xác trên form nhập mã (#main-form hoặc #recaptcha)
             try:
                 recaptcha_target = "#main-form, #recaptcha, #recaptcha-2"
-                res_solve = get_solver().solve_on_page(page_link, container_selector=recaptcha_target)
+                res_solve = get_solver_instance().solve_on_page(page_link, container_selector=recaptcha_target)
                 log(f"[+] Smart solver result: {res_solve}")
                 if not res_solve.get("success"):
                     time.sleep(1.2)
-                    res_solve = get_solver().solve_on_page(page_link, container_selector=recaptcha_target)
+                    res_solve = get_solver_instance().solve_on_page(page_link, container_selector=recaptcha_target)
                     log(f"[+] Smart solver retry result: {res_solve}")
             except Exception as e:
                 log(f"[!] AI solver note: {e}")
@@ -466,21 +404,8 @@ def run(target_url: str = None, headless: bool = True):
                     break
 
         if is_valid_destination(final_destination_url):
-            log(f"\n==========================================")
-            log(f"🎉 FINAL DESTINATION URL: {final_destination_url}")
-            log(f"==========================================\n")
-            try:
-                with open(DEST_FILE, "w", encoding="utf-8") as f:
-                    f.write(str(final_destination_url))
-                run_id = os.environ.get("BYPASS_RUN_ID")
-                if run_id:
-                    with open(os.path.join(BASE_DIR, f"destination_url-{run_id}.txt"), "w", encoding="utf-8") as f_run:
-                        f_run.write(str(final_destination_url))
-                desk_dest = os.path.expanduser(r"~\Desktop\destination_url.txt")
-                with open(desk_dest, "w", encoding="utf-8") as f_d:
-                    f_d.write(str(final_destination_url))
-            except Exception:
-                pass
+            save_destination(final_destination_url, run_id=os.environ.get("BYPASS_RUN_ID"))
+            log_result_card(final_destination_url, "LINK4M")
         else:
             log("[!] Warning: Destination URL still points to link4m or not unlocked.")
 
@@ -494,8 +419,15 @@ def run(target_url: str = None, headless: bool = True):
             log(brain.get_summary_report())
         except Exception:
             pass
-        time.sleep(1.5)
-        browser.close()
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     run()

@@ -69,32 +69,12 @@ def print_banner():
     print(f"  {C_DIM}{C_GRAY}✦ GTraffic / Direct GTraffic  ✦ BBMKTS  ✦ LayMa.net  ✦ TrafficVN  ✦ Link4M{C_RESET}\n")
 
 
-def get_clipboard_url() -> str:
-    """Reads URL directly from Windows Clipboard."""
-    try:
-        if sys.platform == "win32":
-            res = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            raw = res.stdout.strip()
-            first_line = raw.splitlines()[0].strip() if raw else ""
-            if first_line.startswith("http://") or first_line.startswith("https://"):
-                return first_line
-    except Exception:
-        pass
-    return ""
+from config import get_clipboard, copy_to_clipboard, save_destination, read_destination
 
+get_clipboard_url = get_clipboard
+save_destination_url = save_destination
+read_captured_destination = read_destination
 
-def copy_to_clipboard(text: str):
-    """Copies destination link to Windows Clipboard."""
-    try:
-        if sys.platform == "win32":
-            subprocess.run("clip", input=text.strip().encode("utf-8"), check=True, shell=True)
-    except Exception:
-        pass
 
 
 def classify_url(url: str) -> str:
@@ -131,41 +111,6 @@ def show_result_card(final_url: str, duration_sec: int, engine_name: str):
         print()
     except Exception:
         pass
-
-
-def save_destination_url(final_url: str):
-    """Saves final destination link to project files and Desktop."""
-    if not final_url:
-        return
-    try:
-        with open(DEST_FILE, "w", encoding="utf-8") as f:
-            f.write(final_url.strip())
-        with open(FINAL_DEST_FILE, "w", encoding="utf-8") as f:
-            f.write(final_url.strip())
-        desk_path = os.path.expanduser(r"~\Desktop\destination_url.txt")
-        with open(desk_path, "w", encoding="utf-8") as fd:
-            fd.write(final_url.strip())
-    except Exception:
-        pass
-    try:
-        import winsound
-        winsound.MessageBeep(-1)
-    except Exception:
-        pass
-
-
-def read_captured_destination() -> str:
-    """Reads final destination from project output files."""
-    for path in [FINAL_DEST_FILE, DEST_FILE]:
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    u = f.read().strip()
-                    if u.startswith("http"):
-                        return u
-            except Exception:
-                pass
-    return ""
 
 
 def execute_bypass(target_url: str, headless: bool = True) -> str:
@@ -213,8 +158,10 @@ def execute_bypass(target_url: str, headless: bool = True) -> str:
         octo_js = os.path.join(CORE_DIR, "octolink_runner.js")
         if os.path.exists(octo_js):
             try:
-                js_cmd = f"const {{ runBypass }} = require('{octo_js.replace(chr(92), '/')}'); runBypass('{target_url}', {{ headless: {str(headless).lower()} }}).then(r => {{ if (r && r.finalUrl) console.log('FINAL DESTINATION URL:', r.finalUrl); }}).catch(e => console.error(e));"
-                subprocess.run(["node", "-e", js_cmd], check=False)
+                cmd = ["node", octo_js, target_url]
+                if headless:
+                    cmd.append("--headless")
+                subprocess.run(cmd, check=False)
             except Exception as e:
                 print(f"[-] Node.js runner error: {e}")
         else:
@@ -335,6 +282,7 @@ def main():
     parser.add_argument("--head", "-w", "--window", action="store_true", help="Run with visible browser window")
     parser.add_argument("--headless", "-hl", action="store_true", default=True, help="Run in headless browser mode (default)")
     parser.add_argument("--loop", "-l", action="store_true", help="Continuously monitor clipboard for new shortlinks")
+    parser.add_argument("--no-proxy", action="store_true", help="Disable proxy usage (direct connection)")
     parser.add_argument("--train", "--train-brain", action="store_true", help="Run autonomous training on BotBrain knowledge base")
     parser.add_argument("--brain", action="store_true", help="View current BotBrain evolution report")
 
@@ -342,6 +290,9 @@ def main():
 
     # Default to 100% headless unless explicitly requested windowed
     headless = False if args.head else True
+
+    if args.no_proxy:
+        os.environ["NO_PROXY"] = "1"
 
     print_banner()
 
