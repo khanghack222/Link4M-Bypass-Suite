@@ -1,13 +1,8 @@
 import sys, os
 sys.stdout.reconfigure(encoding="utf-8")
 
-# Tu dong chuyen sang Python 3.11 neu dang chay o Python khac ma thieu thu vien
-PYTHON_311 = r"C:\Users\XUAN\AppData\Local\Programs\Python\Python311\python.exe"
-if os.path.exists(PYTHON_311) and sys.executable.lower() != PYTHON_311.lower():
-    import subprocess
-    cmd = [PYTHON_311] + sys.argv
-    res = subprocess.run(cmd)
-    sys.exit(res.returncode)
+from config import ensure_python_runtime
+ensure_python_runtime()
 
 import time
 import re
@@ -89,15 +84,14 @@ def run(target_url: str = None, headless: bool = True):
             launch_kwargs["executable_path"] = CHROME_PATH
 
         browser = p.chromium.launch(**launch_kwargs)
-        try:
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 720},
-                ignore_https_errors=True
-            )
-            context.add_init_script(STEALTH_INIT_SCRIPT)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 720},
+            ignore_https_errors=True
+        )
+        context.add_init_script(STEALTH_INIT_SCRIPT)
 
-            page_link = context.new_page()
+        page_link = context.new_page()
         final_destination_url = None
 
         allow_intercept_new_tab = False
@@ -419,15 +413,14 @@ def run(target_url: str = None, headless: bool = True):
             log(brain.get_summary_report())
         except Exception:
             pass
-        finally:
-            try:
-                context.close()
-            except Exception:
-                pass
-            try:
-                browser.close()
-            except Exception:
-                pass
+        try:
+            context.close()
+        except Exception:
+            pass
+        try:
+            browser.close()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     run()

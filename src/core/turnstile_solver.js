@@ -27,7 +27,8 @@ async function solveTurnstile({ url, sitekey, headless = false, timeoutMs = 3000
     const startTime = Date.now();
     const urlWithSlash = url.endsWith('/') ? url : url + '/';
     
-    const turnstileDiv = `<div class="cf-turnstile" data-sitekey="${sitekey}"></div>`;
+    const cleanSitekey = String(sitekey || "").replace(/[^a-zA-Z0-9_\-]/g, "");
+    const turnstileDiv = `<div class="cf-turnstile" data-sitekey="${cleanSitekey}"></div>`;
     const pageData = HTML_TEMPLATE.replace('<!-- cf turnstile -->', turnstileDiv);
 
     const browser = await chromium.launch({

@@ -17,22 +17,11 @@ from typing import Optional, Dict, Any
 # Ensure UTF-8 output
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-# Auto-detect and switch to Python 3.11 if current interpreter lacks playwright
 try:
-    import playwright
+    from config import ensure_python_runtime
+    ensure_python_runtime()
 except ImportError:
-    candidates = [
-        r"C:\Users\XUAN\AppData\Local\Programs\Python\Python311\python.exe",
-        os.path.expanduser(r"~\AppData\Local\Programs\Python\Python311\python.exe"),
-        os.path.expanduser(r"~\AppData\Local\Programs\Python\Python312\python.exe"),
-        r"C:\Python311\python.exe",
-        r"C:\Python312\python.exe"
-    ]
-    import subprocess
-    for p in candidates:
-        if os.path.exists(p) and p != sys.executable:
-            ret = subprocess.run([p] + sys.argv)
-            sys.exit(ret.returncode)
+    pass
 
 COLORS = {
     'MAGENTA': '\033[35m',

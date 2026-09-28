@@ -1,13 +1,8 @@
 import sys, os
 sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
 
-# Tu dong chuyen sang Python 3.11 neu dang chay o Python khac ma thieu thu vien
-PYTHON_311 = r"C:\Users\XUAN\AppData\Local\Programs\Python\Python311\python.exe"
-if os.path.exists(PYTHON_311) and sys.executable.lower() != PYTHON_311.lower():
-    import subprocess
-    cmd = [PYTHON_311] + sys.argv
-    res = subprocess.run(cmd)
-    sys.exit(res.returncode)
+from config import ensure_python_runtime
+ensure_python_runtime()
 
 import time, re, io, json, requests, socket
 import cv2
@@ -15,6 +10,9 @@ import numpy as np
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 from playwright.sync_api import sync_playwright
+from config import STEALTH_INIT_SCRIPT, save_destination, log_result_card, log
+from sponsor import analyze_quest_images_gemini_vision, fallback_ai_search
+
 
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.abspath(os.path.join(CORE_DIR, "..", ".."))
@@ -162,6 +160,8 @@ def run(target_url: str = None, headless: bool = None):
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             viewport={'width': 800, 'height': 900}
         )
+        context.add_init_script(STEALTH_INIT_SCRIPT)
+
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             try {
@@ -556,6 +556,24 @@ def run(target_url: str = None, headless: bool = None):
                                 return "go88yt.com"
                             return all_texts[0]
                     except Exception as e:
+                        # Multimodal AI Vision fallback
+                        try:
+                            with open(tmp_ocr, "rb") as f_img:
+                                b_ocr = f_img.read()
+                            if b_ocr:
+                                g_res = analyze_quest_images_gemini_vision([b_ocr])
+                                if g_res and g_res.get("target_domains"):
+                                    for d in g_res["target_domains"]:
+                                        if not any(k in d.lower() for k in ['layma', 'google', 'facebook', 'youtube']):
+                                            return d
+                                if g_res and (g_res.get("domain_hint") or g_res.get("keyword")):
+                                    ai_doms = fallback_ai_search(g_res.get("keyword", ""), g_res.get("domain_hint", ""))
+                                    for d in ai_doms:
+                                        if not any(k in d.lower() for k in ['layma', 'google', 'facebook', 'youtube']):
+                                            return d
+                        except Exception:
+                            pass
+
                         print(f"[!] OCR error on {sel}: {e}")
             return None
 
@@ -980,20 +998,8 @@ def run(target_url: str = None, headless: bool = None):
             final_destination_url = curr
 
         if final_destination_url and "layma.net" not in final_destination_url and "/api/traffic/go/" not in final_destination_url:
-            print("\n" + "=" * 70)
-            print(f"🎉🎉🎉 FINAL DESTINATION URL: {final_destination_url}")
-            print("=" * 70 + "\n")
-            try:
-                with open(DEST_FILE, "w", encoding="utf-8") as f_d:
-                    f_d.write(final_destination_url.strip())
-                with open(FINAL_DEST_FILE, "w", encoding="utf-8") as f_d:
-                    f_d.write(final_destination_url.strip())
-                desk_dest = os.path.expanduser(r"~\Desktop\destination_url.txt")
-                with open(desk_dest, "w", encoding="utf-8") as f_d:
-                    f_d.write(final_destination_url.strip())
-            except Exception:
-                pass
-            copy_to_clipboard(final_destination_url)
+            save_destination(final_destination_url)
+            log_result_card(final_destination_url, "LAYMA")
             try:
                 import winsound
                 winsound.MessageBeep(-1)

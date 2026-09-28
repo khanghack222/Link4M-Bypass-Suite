@@ -1,22 +1,8 @@
 import sys
 import os
-import subprocess
 
-# Auto-detect and switch to Python 3.11 if current interpreter lacks playwright
-try:
-    import playwright
-except ImportError:
-    candidates = [
-        r"C:\Users\XUAN\AppData\Local\Programs\Python\Python311\python.exe",
-        os.path.expanduser(r"~\AppData\Local\Programs\Python\Python311\python.exe"),
-        os.path.expanduser(r"~\AppData\Local\Programs\Python\Python312\python.exe"),
-        r"C:\Python311\python.exe",
-        r"C:\Python312\python.exe"
-    ]
-    for p in candidates:
-        if os.path.exists(p) and p != sys.executable:
-            ret = subprocess.run([p] + sys.argv)
-            sys.exit(ret.returncode)
+from config import ensure_python_runtime
+ensure_python_runtime()
 
 import time
 import json
@@ -32,6 +18,9 @@ except ImportError:
     from playwright.sync_api import sync_playwright
     PATCHRIGHT_AVAILABLE = False
 from rapidocr_onnxruntime import RapidOCR
+
+from config import get_chrome_path, STEALTH_INIT_SCRIPT, save_destination, log_result_card
+from sponsor import analyze_quest_images_gemini_vision, fallback_ai_search
 
 # Cau hinh stdout UTF-8 cho terminal Windows
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -140,6 +129,8 @@ def run(target_link: str = None, headless: bool = None):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 800}
         )
+        context.add_init_script(STEALTH_INIT_SCRIPT)
+
         browser = context
 
         # Chan cac script tracker, chan incognito popup (KHONG duoc chan api.js vi can Cloudflare Turnstile)
@@ -428,6 +419,24 @@ def run(target_link: str = None, headless: bool = None):
                                         break
                     except Exception:
                         pass
+
+                # 4. Multimodal AI Vision ONLY if all local OCR failed (saving tokens)
+                if not target_url and os.path.exists(tmp_guide):
+                    try:
+                        with open(tmp_guide, "rb") as f_g:
+                            b_guide = f_g.read()
+                        if b_guide:
+                            log("[*] 👁️ [Gemini Vision Fallback] Nhìn ảnh hướng dẫn...")
+                            g_res = analyze_quest_images_gemini_vision([b_guide])
+                            if g_res and g_res.get("target_domains"):
+                                for d in g_res["target_domains"]:
+                                    if not any(k in d.lower() for k in ['google', 'youtube', 'facebook', 'bbmkts', 'imgur']):
+                                        target_url = f"https://{d.strip('/')}/"
+                                        log(f"[+] 👁️ [Gemini Vision] Trích xuất domain: {target_url}")
+                                        break
+                    except Exception as e_gem:
+                        log(f"[!] Gemini Vision note: {e_gem}")
+
 
                 # Bang map chinh xac cac landing page co dinh
                 if target_url:
@@ -833,23 +842,9 @@ def run(target_link: str = None, headless: bool = None):
         browser.close()
         
         if final_destination:
-            try:
-                with open(DEST_FILE, "w", encoding="utf-8") as f:
-                    f.write(final_destination)
-                final_dest_file = os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt")
-                with open(final_dest_file, "w", encoding="utf-8") as f:
-                    f.write(final_destination)
-                desk_dest = os.path.expanduser(r"~\Desktop\destination_url.txt")
-                with open(desk_dest, "w", encoding="utf-8") as f_d:
-                    f_d.write(final_destination)
-            except Exception:
-                pass
-            try:
-                if sys.platform == "win32":
-                    import subprocess
-                    subprocess.run(["clip"], input=final_destination.encode("utf-8"), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+            save_destination(final_destination)
+            log_result_card(final_destination, "BBMKTS")
+
 
         log("=== BYPASS HOAN TAT 100% ===")
         return final_destination

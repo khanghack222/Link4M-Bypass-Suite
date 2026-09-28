@@ -11,6 +11,33 @@ DEST_FILE = os.path.join(BASE_DIR, "destination_url.txt")
 CODE_FILE = os.path.join(BASE_DIR, "extracted_code.txt")
 PROXIES_FILE = os.path.join(BASE_DIR, "proxies.txt")
 
+def get_python_executable() -> str:
+    """Finds best available Python runtime across Windows and Linux environments."""
+    if os.environ.get("PYTHON_PATH") and os.path.exists(os.environ["PYTHON_PATH"]):
+        return os.environ["PYTHON_PATH"]
+    candidates = [
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python", "Python311", "python.exe"),
+        r"C:\Python311\python.exe",
+        "/usr/bin/python3",
+        "/usr/local/bin/python3",
+        sys.executable
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return sys.executable
+
+def ensure_python_runtime():
+    """Auto-reruns script under Python 3.11/Playwright interpreter if needed."""
+    py_bin = get_python_executable()
+    if os.path.exists(py_bin) and os.path.abspath(sys.executable).lower() != os.path.abspath(py_bin).lower():
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            cmd = [py_bin] + sys.argv
+            res = subprocess.run(cmd)
+            sys.exit(res.returncode)
+
 def load_proxies():
     if not os.path.exists(PROXIES_FILE):
         return []
