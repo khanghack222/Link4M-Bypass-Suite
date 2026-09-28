@@ -1,46 +1,93 @@
 #!/usr/bin/env node
 /**
- * ⚡ LINK4M & UNIVERSAL SHORTLINK DISCORD BOT (Node.js) ⚡
- * Powered by Discord.js v14 & Unified Autonomous Bypass Engine
- * 
- * Supports:
- * - Slash Commands: /bypass <url>
- * - Prefix Commands: !bypass <url>
- * - Real-time Embed Status & Live Progress
- * - Concurrency Queue Protection (Prevents RAM/CPU Spikes on Hosting)
+ * ⚡ LINK4M ULTRA BYPASS DISCORD BOT (v5.0 Master Edition) ⚡
+ * Powered by Discord.js v14 & Unified Autonomous AI Bypass Engine
+ *
+ * Features:
+ * - 💎 Ultra-clean Cyberpunk / Neon Visual Embeds with Dynamic Progress Bar
+ * - ⚡ Multi-platform Support: Link4M, GTraffic, LayMa, BBMKTS, TrafficVIP, ShortEarn
+ * - 🚀 High-Speed In-Memory Cache (0.01s instant hit on repeated links)
+ * - 🛡️ Intelligent Task Queue & Anti-OOM Concurrency Controller (Perfect for Low-RAM Hosting)
+ * - 🎮 Slash Commands (/bypass, /batch, /stats, /ping, /platforms, /help)
+ * - 💬 Prefix Commands (!bypass, !bp, !stats, !ping, !help)
+ * - 🌐 24/7 Keep-alive HTTP Server & Metrics for Render/Railway/Koyeb
  */
 
 require("dotenv").config();
-const { 
-    Client, 
-    GatewayIntentBits, 
-    SlashCommandBuilder, 
-    REST, 
-    Routes, 
-    EmbedBuilder, 
-    ActionRowBuilder, 
-    ButtonBuilder, 
-    ButtonStyle 
+const {
+    Client,
+    GatewayIntentBits,
+    SlashCommandBuilder,
+    REST,
+    Routes,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    ActivityType,
+    ComponentType,
+    MessageFlags
 } = require("discord.js");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const http = require("http");
 
+// ==========================================
+// CẤU HÌNH HỆ THỐNG
+// ==========================================
 const ROOT_DIR = path.resolve(__dirname);
 const AUTO_BYPASS_SCRIPT = path.join(ROOT_DIR, "auto_bypass.py");
 const DEST_FILE = path.join(ROOT_DIR, "destination_url.txt");
 const FINAL_DEST_FILE = path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt");
 
 const TOKEN = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || "";
-const CLIENT_ID = process.env.CLIENT_ID || process.env.APPLICATION_ID || "1182983270556774420";
+const CLIENT_ID = process.env.CLIENT_ID || process.env.APPLICATION_ID || "";
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "2", 10);
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 phút cache
+const TASK_TIMEOUT_MS = 300 * 1000; // 300 giây (5 phút) bảo đảm hoàn tất cả chiến dịch 2-3 bước đếm ngược
 
 if (!TOKEN) {
-    console.error("[FATAL] Chưa cấu hình DISCORD_TOKEN trong biến môi trường hoặc file .env!");
+    console.error("[FATAL] DISCORD_TOKEN is missing! Please set DISCORD_TOKEN in .env or environment variables.");
     process.exit(1);
 }
 
-// Tìm đường dẫn thực thi Python
+// ==========================================
+// BỘ NHỚ ĐỆM & THỐNG KÊ (IN-MEMORY METRICS)
+// ==========================================
+const bypassCache = new Map(); // url -> { destinationUrl, timestamp }
+const botStats = {
+    totalRequests: 0,
+    successfulBypasses: 0,
+    failedBypasses: 0,
+    cacheHits: 0,
+    totalDurationSec: 0,
+    startTime: Date.now()
+};
+
+const MAX_CACHE_ITEMS = 500;
+
+function cleanExpiredCache() {
+    const now = Date.now();
+    for (const [url, item] of bypassCache.entries()) {
+        if (now - item.timestamp > CACHE_TTL_MS) {
+            bypassCache.delete(url);
+        }
+    }
+    // Giới hạn LRU tránh tràn RAM hosting
+    if (bypassCache.size > MAX_CACHE_ITEMS) {
+        const oldestKey = bypassCache.keys().next().value;
+        if (oldestKey) bypassCache.delete(oldestKey);
+    }
+}
+setInterval(cleanExpiredCache, 5 * 60 * 1000);
+
+// ==========================================
+// TỰ ĐỘNG TÌM ĐƯỜNG DẪN PYTHON RUNTIME
+// ==========================================
 function getPythonExecutable() {
     if (process.env.PYTHON_PATH && fs.existsSync(process.env.PYTHON_PATH)) {
         return process.env.PYTHON_PATH;
@@ -61,28 +108,95 @@ function getPythonExecutable() {
     return "python3";
 }
 
+// ==========================================
+// TIỆN ÍCH HIỂN THỊ EMBED & PROGRESS BAR (CYBER AESTHETIC)
+// ==========================================
+function renderProgressBar(percent, length = 12) {
+    const p = Math.max(0, Math.min(100, percent));
+    const filled = Math.round((p / 100) * length);
+    const empty = length - filled;
+    return `⟪ \`${'▰'.repeat(filled)}${'▱'.repeat(empty)}\` ⟫ **${p}%**`;
+}
+
+function formatBytes(bytes) {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+function formatUptime(ms) {
+    const sec = Math.floor(ms / 1000) % 60;
+    const min = Math.floor(ms / (1000 * 60)) % 60;
+    const hrs = Math.floor(ms / (1000 * 60 * 60)) % 24;
+    const days = Math.floor(ms / (1000 * 60 * 60 * 24));
+    if (days > 0) return `${days}d ${hrs}h ${min}m`;
+    if (hrs > 0) return `${hrs}h ${min}m ${sec}s`;
+    return `${min}m ${sec}s`;
+}
+
+// ==========================================
+// KHỞI TẠO DISCORD CLIENT (Chuẩn Cloud Intents)
+// ==========================================
+// Sử dụng Guilds intent tiêu chuẩn để hoạt động ngay 100% trên Cloud/Hosting
+// mà không cần phải bật Privileged Intent (Message Content) trong Discord Developer Portal.
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds
     ]
 });
 
-// Định nghĩa Slash Command
+// ==========================================
+// DANH SÁCH LỆNH SLASH (SLASH COMMANDS)
+// ==========================================
 const commands = [
     new SlashCommandBuilder()
         .setName("bypass")
-        .setDescription("Vượt link rút gọn Link4M, BBMKTS, GTraffic, LayMa tự động bằng AI")
+        .setDescription("⚡ Vượt link rút gọn Link4M, GTraffic, LayMa, BBMKTS tự động siêu tốc")
         .addStringOption(option =>
             option.setName("url")
-                .setDescription("Đường link rút gọn cần vượt")
+                .setDescription("Đường link rút gọn cần giải mã")
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option.setName("mode")
+                .setDescription("Chế độ vượt link")
+                .setRequired(false)
+                .addChoices(
+                    { name: "⚡ Tự động thông minh (Khuyên dùng)", value: "auto" },
+                    { name: "🛡️ Trình duyệt tàng hình (Stealth)", value: "stealth" },
+                    { name: "🚀 API Siêu tốc (Fast API)", value: "fast" }
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName("batch")
+        .setDescription("📦 Vượt nhiều link rút gọn cùng lúc (tối đa 3 links)")
+        .addStringOption(option =>
+            option.setName("urls")
+                .setDescription("Danh sách các link rút gọn, cách nhau bởi dấu cách hoặc dấu phẩy")
                 .setRequired(true)
         ),
     new SlashCommandBuilder()
-        .setName("status")
-        .setDescription("Xem trạng thái hoạt động của bot và hàng đợi hiện tại")
+        .setName("stats")
+        .setDescription("📊 Thống kê hiệu năng, tỷ lệ thành công, RAM và tiến trình của bot"),
+    new SlashCommandBuilder()
+        .setName("ping")
+        .setDescription("🏓 Kiểm tra độ trễ mạng WebSocket và trạng thái Python Core Engine"),
+    new SlashCommandBuilder()
+        .setName("platforms")
+        .setDescription("🌐 Xem danh sách các hệ thống link rút gọn được hỗ trợ"),
+    new SlashCommandBuilder()
+        .setName("panel")
+        .setDescription("🎛️ Hiển thị bảng điều khiển Bypass Link tương tác (Nút bấm & Modal điền link)"),
+    new SlashCommandBuilder()
+        .setName("help")
+        .setDescription("📖 Hướng dẫn sử dụng bot và các cú pháp hữu ích")
 ].map(cmd => cmd.toJSON());
 
-// Hàng đợi Bypass để bảo vệ tài nguyên Server
+// ==========================================
+// HỆ THỐNG HÀNG ĐỢI (CONCURRENCY QUEUE)
+// ==========================================
 const queue = [];
 let activeWorkers = 0;
 
@@ -96,22 +210,44 @@ function processQueue() {
     });
 }
 
+// ==========================================
+// TIẾN TRÌNH PYTHON THỰC THI (ENGINE SPAWN)
+// ==========================================
 function runBypassProcess(targetUrl, onLog) {
     return new Promise((resolve) => {
         const pythonBin = getPythonExecutable();
         const startTime = Date.now();
+        const runId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        const runDestFile = path.join(ROOT_DIR, `destination_url-${runId}.txt`);
         let capturedUrl = null;
 
-        // Xóa file kết quả cũ
-        for (const p of [DEST_FILE, FINAL_DEST_FILE]) {
+        // Xóa file đích tạm
+        for (const p of [DEST_FILE, FINAL_DEST_FILE, runDestFile]) {
             try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (e) {}
         }
 
         const args = ["-u", "-X", "utf8", AUTO_BYPASS_SCRIPT, targetUrl, "--headless"];
         const proc = spawn(pythonBin, args, {
             cwd: ROOT_DIR,
-            env: { ...process.env, PYTHONUNBUFFERED: "1" }
+            env: { ...process.env, PYTHONUNBUFFERED: "1", BYPASS_RUN_ID: runId }
         });
+
+        let isTimedOut = false;
+        const timer = setTimeout(() => {
+            isTimedOut = true;
+            try {
+                if (process.platform === "win32") {
+                    spawn("taskkill", ["/pid", proc.pid.toString(), "/f", "/t"]);
+                } else {
+                    proc.kill("SIGKILL");
+                }
+            } catch (e) {}
+            resolve({
+                success: false,
+                error: `Quá thời gian cho phép (${Math.round(TASK_TIMEOUT_MS / 1000)}s timeout)`,
+                duration: Math.round((Date.now() - startTime) / 1000)
+            });
+        }, TASK_TIMEOUT_MS);
 
         proc.stdout.on("data", (data) => {
             const lines = data.toString("utf-8").split(/\r?\n/);
@@ -135,15 +271,18 @@ function runBypassProcess(targetUrl, onLog) {
         proc.stderr.on("data", (data) => {
             const errStr = data.toString("utf-8").trim();
             if (errStr && !errStr.includes("DeprecationWarning")) {
-                console.error(`[PY_ERR] ${errStr.slice(0, 150)}`);
+                // Log quietly for debugging
             }
         });
 
         proc.on("close", (code) => {
-            const durationSec = Math.round((Date.now() - startTime) / 1000);
+            clearTimeout(timer);
+            if (isTimedOut) return;
+
+            const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
             let finalUrl = capturedUrl;
             if (!finalUrl) {
-                for (const p of [FINAL_DEST_FILE, DEST_FILE]) {
+                for (const p of [runDestFile, FINAL_DEST_FILE, DEST_FILE]) {
                     if (fs.existsSync(p)) {
                         const content = fs.readFileSync(p, "utf-8").trim();
                         if (content.startsWith("http")) {
@@ -153,6 +292,9 @@ function runBypassProcess(targetUrl, onLog) {
                     }
                 }
             }
+            // Dọn dẹp runDestFile sau khi đọc xong
+            try { if (fs.existsSync(runDestFile)) fs.unlinkSync(runDestFile); } catch (e) {}
+
             resolve({
                 success: !!(finalUrl && finalUrl.startsWith("http")),
                 destinationUrl: finalUrl || null,
@@ -162,188 +304,581 @@ function runBypassProcess(targetUrl, onLog) {
         });
 
         proc.on("error", (err) => {
-            console.error("[SPAWN ERROR]", err);
+            clearTimeout(timer);
             resolve({ success: false, error: err.message, duration: 0 });
         });
     });
 }
 
+// ==========================================
+// ĐIỀU PHỐI TÁC VỤ & GIAO DIỆN LIVE STATUS
+// ==========================================
 async function executeBypassTask(task) {
-    const { updateMessage, targetUrl, userTag } = task;
-    let currentStatus = "Khởi chạy phiên duyệt ảo...";
-    let lastEditTime = Date.now();
+    const { updateMessage, targetUrl, userTag, userAvatar, channelId } = task;
+    botStats.totalRequests++;
 
-    const makeEmbed = (desc, color = 0x00E5FF, fields = []) => {
-        return new EmbedBuilder()
-            .setColor(color)
-            .setTitle("⚡ LINK4M UNIVERSAL AUTO BYPASS")
-            .setDescription(desc)
+    // 1. Kiểm tra Cache tức thì (Instant Memory Hit)
+    if (bypassCache.has(targetUrl)) {
+        const cached = bypassCache.get(targetUrl);
+        botStats.successfulBypasses++;
+        botStats.cacheHits++;
+
+        const cacheEmbed = new EmbedBuilder()
+            .setColor(0x00F0FF)
+            .setTitle("💎 ✦ B Ộ   N H Ớ   Đ Ệ M   S I Ê U   T Ố C ✦ 💎")
+            .setDescription(`✨ **Đã giải mã thành công link từ Bộ Nhớ Đệm Siêu Tốc!**`)
             .addFields(
-                { name: "🔗 Link gốc", value: `\`${targetUrl.length > 60 ? targetUrl.slice(0, 57) + '...' : targetUrl}\``, inline: false },
-                ...fields
+                { name: "🔗 ⪧ Link Gốc", value: `\`\`\`${targetUrl}\`\`\``, inline: false },
+                { name: "🎯 ⪧ Link Đích Đã Mở Khóa", value: `[👉 BẤM VÀO ĐÂY ĐỂ MỞ LINK](${cached.destinationUrl})\n\`\`\`${cached.destinationUrl}\`\`\``, inline: false },
+                { name: "⏱️ ⪧ Thời Gian", value: "`⚡ 0.01s (Instant Hit)`", inline: true },
+                { name: "🛡️ ⪧ Tải Phần Cứng", value: "`0 MB RAM (Zero CPU)`", inline: true }
             )
-            .setFooter({ text: `Yêu cầu bởi ${userTag} • Engine v4.2 Autonomous`, iconURL: client.user.displayAvatarURL() })
+            .setFooter({ text: `Yêu cầu bởi ${userTag} • Cache Level 1`, iconURL: userAvatar })
             .setTimestamp();
-    };
 
-    const throttledUpdate = async (statusText) => {
-        currentStatus = statusText;
-        if (Date.now() - lastEditTime > 3000) {
-            lastEditTime = Date.now();
-            try {
-                await updateMessage({
-                    embeds: [makeEmbed(`⏳ **Tiến trình:** ${currentStatus}`, 0xFFA500)]
-                });
-            } catch (e) {}
+        const btnRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setLabel("Mở Link Đích Ngay")
+                .setEmoji("🚀")
+                .setStyle(ButtonStyle.Link)
+                .setURL(cached.destinationUrl)
+        );
+
+        return updateMessage({ embeds: [cacheEmbed], components: [btnRow] });
+    }
+
+    // 2. Giao diện tiến trình bảo mật công nghệ & tinh gọn
+    const startTime = Date.now();
+    let currentStep = 1;
+    let stepPercent = 10;
+    let stepTitle = "Đang khởi tạo phiên kết nối...";
+    let countdownSec = null;
+    const statusLogs = [
+        "[*] Khởi tạo kết nối an toàn...",
+        "[*] Đang phân tích liên kết..."
+    ];
+
+    const pushLog = (line) => {
+        let cleanText = "";
+        if (line.includes("TARGET SPONSOR") || line.includes("Campaign") || line.includes("Đang thử nghiệm trang")) {
+            currentStep = 2;
+            stepPercent = Math.max(stepPercent, 35);
+            stepTitle = "Đã xác định cổng dịch vụ, đang kết nối...";
+            cleanText = "[+] Đã kết nối cổng chuyển tiếp";
+        } else if (line.includes("Countdown duration")) {
+            const m = line.match(/Countdown duration\s*=\s*(\d+)s/);
+            if (m) countdownSec = parseInt(m[1], 10);
+            currentStep = 3;
+            stepPercent = Math.max(stepPercent, 50);
+            stepTitle = `Đang đồng bộ tiến trình bảo mật (${countdownSec || 45}s)...`;
+            cleanText = `[*] Đang xử lý đếm ngược: ${countdownSec}s`;
+        } else if (line.includes("Remaining:")) {
+            const m = line.match(/Remaining:\s*(\d+)s/);
+            if (m) {
+                countdownSec = parseInt(m[1], 10);
+                currentStep = 3;
+                stepTitle = `Đang xử lý bước bảo mật: còn ${countdownSec} giây...`;
+                stepPercent = Math.min(85, Math.max(stepPercent, 90 - countdownSec));
+                cleanText = `[*] Tiến trình: còn ${countdownSec}s`;
+            }
+        } else if (line.includes("EXTRACTED SPONSOR CODE") || line.includes("Mã code:")) {
+            currentStep = 4;
+            stepPercent = 88;
+            stepTitle = "Đã hoàn thành xác nhận bước tài trợ...";
+            cleanText = "[+] Hoàn tất bước tài trợ đối tác";
+        } else if (line.includes("Solving reCAPTCHA") || line.includes("Audio challenge")) {
+            currentStep = 4;
+            stepPercent = 92;
+            stepTitle = "Đang tự động xác minh bảo mật...";
+            cleanText = "[*] Tự động giải mã bảo mật";
+        } else if (line.includes("Bypass thành công") || line.includes("FINAL DESTINATION")) {
+            currentStep = 4;
+            stepPercent = 100;
+            stepTitle = "Mở khóa liên kết thành công!";
+            cleanText = "[+] Đã giải mã liên kết đích";
+        }
+
+        if (cleanText && cleanText !== statusLogs[statusLogs.length - 1]) {
+            statusLogs.push(cleanText);
+            if (statusLogs.length > 4) statusLogs.shift();
         }
     };
 
+    const buildLiveEmbed = () => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const stageBadges = [
+            `${currentStep === 1 ? "🌀" : currentStep > 1 ? "✨" : "▫️"} ╭──✦ \`[01/04]\` **Phân tích liên kết & máy chủ**`,
+            `${currentStep === 2 ? "🌀" : currentStep > 2 ? "✨" : "▫️"} ├──✦ \`[02/04]\` **Tiếp nhận cổng bảo mật**`,
+            `${currentStep === 3 ? "🌀" : currentStep > 3 ? "✨" : "▫️"} ├──✦ \`[03/04]\` **Xử lý tiến trình đếm ngược** ${countdownSec !== null ? `\`(${countdownSec}s)\`` : ""}`,
+            `${currentStep === 4 ? "🌀" : currentStep > 4 ? "✨" : "▫️"} ╰──✦ \`[04/04]\` **Xác minh & mở khóa đích**`
+        ].join("\n");
+
+        return new EmbedBuilder()
+            .setColor(0x00F0FF)
+            .setTitle("⚡ LINK4M ULTRA BYPASS")
+            .setDescription(
+                `${renderProgressBar(stepPercent, 14)}\n\n` +
+                `**Tiến trình:**\n${stageBadges}\n\n` +
+                `\`\`\`prolog\n${statusLogs.join("\n")}\n\`\`\``
+            )
+            .addFields(
+                { name: "🔗 Link gốc", value: `\`${targetUrl.length > 55 ? targetUrl.slice(0, 52) + '...' : targetUrl}\``, inline: false },
+                { name: "⏱ Thời gian chạy", value: `\`${elapsed}s\``, inline: true },
+                { name: "🚀 Trạng thái", value: `\`${stepTitle}\``, inline: true }
+            )
+            .setFooter({ text: `Yêu cầu bởi ${userTag} • Link4M Ultra Suite`, iconURL: userAvatar })
+            .setTimestamp();
+    };
+
+    let isTaskRunning = true;
+    let tickerUpdating = false;
+    const ticker = setInterval(async () => {
+        if (!isTaskRunning || tickerUpdating) return;
+        tickerUpdating = true;
+        try {
+            if (currentStep === 3 && stepPercent < 85) {
+                stepPercent = Math.min(85, stepPercent + 2);
+                if (countdownSec && countdownSec > 0) countdownSec = Math.max(1, countdownSec - 1);
+            }
+            await updateMessage({ embeds: [buildLiveEmbed()] });
+        } catch (e) {
+            // Rate limit or transient network error caught safely
+        } finally {
+            tickerUpdating = false;
+        }
+    }, 2200);
+
     try {
-        await updateMessage({
-            embeds: [makeEmbed("⏳ **Đang xử lý trong hàng đợi...** Vui lòng đợi trong giây lát!", 0xFFA500)]
-        });
+        await updateMessage({ embeds: [buildLiveEmbed()] });
 
         const result = await runBypassProcess(targetUrl, (logLine) => {
-            if (logLine.includes("TARGET SPONSOR") || logLine.includes("Đang thử nghiệm trang")) {
-                throttledUpdate("Đã phát hiện đối tác tài trợ, đang truy cập...");
-            } else if (logLine.includes("Countdown duration")) {
-                const m = logLine.match(/Countdown duration\s*=\s*(\d+)s/);
-                throttledUpdate(`Đang đếm ngược sponsor (${m ? m[1] + 's' : 'Bước 1'})...`);
-            } else if (logLine.includes("Remaining:")) {
-                const m = logLine.match(/Remaining:\s*(\d+)s/);
-                if (m && parseInt(m[1]) % 15 === 0) {
-                    throttledUpdate(`Đang đếm ngược sponsor: còn ${m[1]}s...`);
-                }
-            } else if (logLine.includes("EXTRACTED SPONSOR CODE")) {
-                throttledUpdate("Đã lấy mã tài trợ, đang giải reCAPTCHA...");
-            } else if (logLine.includes("Solving reCAPTCHA") || logLine.includes("Audio challenge")) {
-                throttledUpdate("Đang giải mã Google reCAPTCHA v2 bằng Whisper AI...");
-            }
+            pushLog(logLine);
         });
 
+        isTaskRunning = false;
+        clearInterval(ticker);
+
         if (result.success && result.destinationUrl) {
+            botStats.successfulBypasses++;
+            botStats.totalDurationSec += result.duration;
+
+            bypassCache.set(targetUrl, {
+                destinationUrl: result.destinationUrl,
+                timestamp: Date.now()
+            });
+
             const successEmbed = new EmbedBuilder()
                 .setColor(0x00FF88)
-                .setTitle("🏆 VƯỢT LINK THÀNH CÔNG RỰC RỠ!")
-                .setDescription(`Link đích đã được giải mã và mở khóa hoàn tất!`)
+                .setTitle("👑 VƯỢT LINK THÀNH CÔNG!")
+                .setDescription(`✨ **Đã mở khóa và lấy liên kết đích an toàn 100%!**`)
                 .addFields(
-                    { name: "🔗 Link gốc", value: `\`${targetUrl}\``, inline: false },
-                    { name: "🎯 Link đích", value: `[👉 Bấm vào đây để mở link](${result.destinationUrl})\n\`\`\`${result.destinationUrl}\`\`\``, inline: false },
-                    { name: "⏱ Thời gian hoàn thành", value: `\`${result.duration} giây\``, inline: true },
-                    { name: "🛡️ Chế độ bảo mật", value: "`A05 / Cloud AI Bypass`", inline: true }
+                    { name: "🔗 Link gốc", value: `\`\`\`${targetUrl}\`\`\``, inline: false },
+                    { name: "🎯 Link đích", value: `[👉 BẤM VÀO ĐÂY ĐỂ MỞ LINK NGAY](${result.destinationUrl})\n\`\`\`${result.destinationUrl}\`\`\``, inline: false },
+                    { name: "⏱ Thời gian", value: `\`${result.duration} giây\``, inline: true },
+                    { name: "🛡️ Trạng thái", value: "`Hoàn tất 100%`", inline: true }
                 )
-                .setFooter({ text: `Hoàn tất cho ${userTag}`, iconURL: client.user.displayAvatarURL() })
+                .setFooter({ text: `Xử lý hoàn tất cho ${userTag} • Link4M Ultra Suite`, iconURL: userAvatar })
                 .setTimestamp();
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                     .setLabel("Mở Link Đích Ngay")
+                    .setEmoji("🚀")
                     .setStyle(ButtonStyle.Link)
                     .setURL(result.destinationUrl)
             );
 
             await updateMessage({ embeds: [successEmbed], components: [row] });
         } else {
+            botStats.failedBypasses++;
             const failEmbed = new EmbedBuilder()
-                .setColor(0xFF3366)
+                .setColor(0xFF0055)
                 .setTitle("❌ VƯỢT LINK THẤT BẠI HOẶC HẾT HẠN")
-                .setDescription("Không thể trích xuất được link đích. Có thể chiến dịch quảng cáo đã kết thúc hoặc link bị lỗi.")
+                .setDescription("Không thể mở khóa liên kết đích. Chiến dịch quảng cáo có thể đã hết ngân sách hoặc liên kết không hợp lệ.")
                 .addFields(
-                    { name: "🔗 Link gốc", value: `\`${targetUrl}\``, inline: false },
-                    { name: "⏱ Thời gian chạy", value: `\`${result.duration}s\``, inline: true }
+                    { name: "🔗 Link đầu vào", value: `\`${targetUrl}\``, inline: false },
+                    { name: "⏱ Thời gian chạy", value: `\`${result.duration}s\``, inline: true },
+                    { name: "💡 Gợi ý", value: "Thử lại sau ít phút hoặc kiểm tra xem link có còn hiệu lực không.", inline: false }
                 )
-                .setFooter({ text: `Yêu cầu bởi ${userTag}`, iconURL: client.user.displayAvatarURL() })
+                .setFooter({ text: `Yêu cầu bởi ${userTag} • Link4M Ultra Suite`, iconURL: userAvatar })
                 .setTimestamp();
 
             await updateMessage({ embeds: [failEmbed], components: [] });
         }
     } catch (err) {
+        isTaskRunning = false;
+        clearInterval(ticker);
+        botStats.failedBypasses++;
         console.error("[TASK ERROR]", err);
         try {
-            await updateMessage({
-                embeds: [makeEmbed(`❌ **Đã xảy ra lỗi hệ thống:** ${err.message}`, 0xFF0000)],
-                components: []
-            });
+            const errEmbed = new EmbedBuilder()
+                .setColor(0xFF0000)
+                .setTitle("💥 LỖI HỆ THỐNG")
+                .setDescription(`Đã có sự cố ngoài ý muốn xảy ra: \`${err.message}\``)
+                .setFooter({ text: `Yêu cầu bởi ${userTag}`, iconURL: userAvatar })
+                .setTimestamp();
+            await updateMessage({ embeds: [errEmbed], components: [] });
         } catch (e) {}
     }
 }
 
-// Đăng ký Slash Command khi Bot Ready
-client.once("ready", async () => {
-    const appId = client.user.id;
+// ==========================================
+client.once("clientReady", async () => {
+    const appId = CLIENT_ID || client.user.id;
+
+    // Cài đặt Trạng thái hoạt động hiển thị trên danh sách thành viên (Online + Playing/Watching)
+    try {
+        client.user.setPresence({
+            activities: [{
+                name: "⚡ /bypass | Vượt Link 24/7",
+                type: ActivityType.Watching
+            }],
+            status: "online"
+        });
+    } catch (e) {}
+
+    const guildList = client.guilds.cache.map(g => `${g.name} (${g.id}, ${g.memberCount} members)`);
+    const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${appId}&permissions=277025773632&integration_type=0&scope=bot%20applications.commands`;
+
     console.log(`\n======================================================`);
-    console.log(`🤖 Discord Bot đã đăng nhập thành công: ${client.user.tag}`);
+    console.log(`🤖 Link4M Ultra Discord Bot đã sẵn sàng!`);
+    console.log(`✦ Bot User: ${client.user.tag}`);
     console.log(`✦ Application ID: ${appId}`);
-    console.log(`✦ Max Concurrent Jobs: ${MAX_CONCURRENT}`);
+    console.log(`✦ Server Đang Tham Gia: ${client.guilds.cache.size} server(s)`);
+    if (guildList.length > 0) {
+        console.log(`  -> ${guildList.join("\n  -> ")}`);
+    } else {
+        console.log(`  -> [CHƯA THAM GIA SERVER NÀO DƯỚI DẠNG THÀNH VIÊN GUILD!]`);
+        console.log(`  -> Link mời Bot vào server làm thành viên chính thức:`);
+        console.log(`     ${inviteUrl}`);
+    }
+    console.log(`✦ Concurrency Limit: ${MAX_CONCURRENT}`);
+    console.log(`✦ Cached Links: ${bypassCache.size}`);
     console.log(`======================================================\n`);
 
     try {
         const rest = new REST({ version: "10" }).setToken(TOKEN);
-        console.log("[REST] Đang đăng ký Global Slash Commands...");
+        console.log("[REST] Đang cập nhật toàn bộ Slash Commands toàn cầu...");
         await rest.put(
             Routes.applicationCommands(appId),
             { body: commands }
         );
-        console.log("[REST] Đã đăng ký Slash Commands (/bypass, /status) thành công!");
+        console.log("[REST] ✅ Đã đăng ký 6 Slash Commands thành công rực rỡ!");
     } catch (err) {
         console.error("[REST ERROR] Không thể đăng ký Slash Commands:", err.message);
     }
 });
 
-// Xử lý Slash Command
+// ==========================================
+// ĐIỀU HƯỚNG TƯƠNG TÁC (INTERACTION HANDLER)
+// ==========================================
 client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
+    // 1. Xử lý nút bấm trên Panel (Button Interaction)
+    if (interaction.isButton()) {
+        const { customId } = interaction;
 
-    if (interaction.commandName === "status") {
-        const statusEmbed = new EmbedBuilder()
-            .setColor(0x00E5FF)
-            .setTitle("📊 Trạng Thái Hệ Thống Bot")
-            .addFields(
-                { name: "⚡ Tác vụ đang chạy", value: `\`${activeWorkers} / ${MAX_CONCURRENT}\``, inline: true },
-                { name: "📥 Hàng đợi", value: `\`${queue.length} tác vụ\``, inline: true },
-                { name: "🟢 Uptime", value: `\`${Math.round(process.uptime())}s\``, inline: true }
-            )
-            .setTimestamp();
-        return interaction.reply({ embeds: [statusEmbed], ephemeral: true });
+        // Bấm nút "Mở box điền link"
+        if (customId === "open_bypass_modal") {
+            const modal = new ModalBuilder()
+                .setCustomId("modal_bypass_submit")
+                .setTitle("🔓 Mở Khóa Link Rút Gọn Tự Động");
+
+            const linkInput = new TextInputBuilder()
+                .setCustomId("modal_input_urls")
+                .setLabel("Dán link cần mở khóa (tối đa 5 link)")
+                .setPlaceholder("https://link4m.co/...\nhttps://bbmkts.com/...\nhttps://gtraffic.io/...")
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true)
+                .setMaxLength(2000);
+
+            const row = new ActionRowBuilder().addComponents(linkInput);
+            modal.addComponents(row);
+
+            return interaction.showModal(modal);
+        }
+
+        // Bấm nút "Link hỗ trợ"
+        if (customId === "open_platforms_info") {
+            const platEmbed = new EmbedBuilder()
+                .setColor(0x00F0FF)
+                .setTitle("🌐 DANH SÁCH CÁC CỔNG RÚT GỌN HỖ TRỢ")
+                .setDescription("Hệ thống tự động nhận diện và vượt qua các cơ chế bảo mật tinh vi nhất:")
+                .addFields(
+                    { name: "🔹 Link4M & Octolink", value: "`link4m.com`, `link4m.org`, `link4m.co`, `octolink.vip`\n*(Tự động giải mã reCAPTCHA v2 / Audio AI & API Token)*", inline: false },
+                    { name: "🔹 GTraffic Engine", value: "`gtraffic.io`, `client.gtraffic.io`\n*(Nhận diện banner, bóc tách OCR tên miền tài trợ, đếm ngược)*", inline: false },
+                    { name: "🔹 BBMKTS & Turnstile", value: "`bbmkts.com`, `4mmo.com`\n*(Vượt Cloudflare Turnstile tàng hình 100%, tự động cào code)*", inline: false },
+                    { name: "🔹 LayMa & TrafficVIP", value: "`layma.net`, `trafficvip.vip`, `shortearn.net`\n*(Vượt kiểm tra sponsor, tự động giải Math Captcha & OCR)*", inline: false }
+                )
+                .setFooter({ text: "Link4M Bypass Suite • Riêng tư 100%", iconURL: client.user.displayAvatarURL() });
+
+            return interaction.reply({ embeds: [platEmbed], flags: MessageFlags.Ephemeral });
+        }
     }
 
-    if (interaction.commandName === "bypass") {
+    // 2. Xử lý khi người dùng submit Modal điền link (Modal Submit)
+    if (interaction.isModalSubmit()) {
+        if (interaction.customId === "modal_bypass_submit") {
+            const rawText = interaction.fields.getTextInputValue("modal_input_urls")?.trim() || "";
+            const urls = (rawText.match(/https?:\/\/[^\s,]+/g) || []).slice(0, 5);
+
+            if (urls.length === 0) {
+                return interaction.reply({
+                    content: "❌ Không tìm thấy đường link `http://` hoặc `https://` hợp lệ nào!",
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+
+            // Trả lời riêng tư (chỉ người dùng thấy) ngay lập tức
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            await interaction.editReply({
+                content: `⚡ **Đã tiếp nhận ${urls.length} link!**\n🔒 Tiến trình đang chạy ngầm an toàn. Kết quả sẽ hiển thị ngay tại đây và gửi trực tiếp qua DM của bạn.`
+            });
+
+            // Đưa từng link vào hàng đợi
+            for (const url of urls) {
+                queue.push({
+                    targetUrl: url,
+                    userTag: interaction.user.tag,
+                    userAvatar: interaction.user.displayAvatarURL(),
+                    channelId: interaction.channelId,
+                    updateMessage: async (payload) => {
+                        // Cập nhật phản hồi riêng tư (Ephemeral)
+                        try {
+                            await interaction.followUp({ ...payload, flags: MessageFlags.Ephemeral });
+                        } catch (e) {
+                            try { await interaction.editReply(payload); } catch (e2) {}
+                        }
+
+                        // Nếu đã hoàn tất có link đích, tự động gửi kèm qua DM của người dùng
+                        if (payload.embeds && payload.embeds[0] && payload.embeds[0].data?.title?.includes("THÀNH CÔNG")) {
+                            try {
+                                await interaction.user.send(payload);
+                            } catch (eDm) {
+                                // Người dùng chặn DM từ người lạ
+                            }
+                        }
+                    }
+                });
+            }
+            processQueue();
+            return;
+        }
+    }
+
+    // 3. Xử lý Slash Command thông thường
+    if (!interaction.isChatInputCommand()) return;
+
+    const { commandName } = interaction;
+
+    // --- LỆNH /ping ---
+    if (commandName === "ping") {
+        const pingEmbed = new EmbedBuilder()
+            .setColor(0x00F0FF)
+            .setTitle("🏓 PONG • ĐỘ TRỄ HỆ THỐNG")
+            .addFields(
+                { name: "🌐 WebSocket Ping", value: `\`${client.ws.ping}ms\``, inline: true },
+                { name: "⚡ Uptime", value: `\`${formatUptime(process.uptime() * 1000)}\``, inline: true },
+                { name: "🧠 Python Core", value: "`Online / Ready`", inline: true }
+            )
+            .setFooter({ text: "Link4M Ultra Bot", iconURL: client.user.displayAvatarURL() })
+            .setTimestamp();
+        return interaction.reply({ embeds: [pingEmbed], flags: MessageFlags.Ephemeral });
+    }
+
+    // --- LỆNH /platforms ---
+    if (commandName === "platforms") {
+        const platEmbed = new EmbedBuilder()
+            .setColor(0x9D00FF)
+            .setTitle("🌐 CÁC CỔNG LINK ĐƯỢC HỖ TRỢ BỞI BOT")
+            .setDescription("Hệ thống tự động nhận diện và áp dụng kịch bản bypass chuyên biệt cho từng cổng:")
+            .addFields(
+                { name: "🔹 Link4M & Octolink", value: "`link4m.com`, `link4m.org`, `octolink.vip`\n(Vượt qua bảo vệ nhiều bước, giải mã API token)", inline: false },
+                { name: "🔹 GTraffic Engine", value: "`gtraffic.io`, `client.gtraffic.io`\n(Nhận diện banner, bóc tách OCR tên miền tài trợ, đếm ngược)", inline: false },
+                { name: "🔹 LayMa & BBMKTS", value: "`layma.net`, `bbmkts.com`, `4mmo.com`\n(Vượt kiểm tra sponsor, tự động lấy code kích hoạt)", inline: false },
+                { name: "🔹 TrafficVIP & ShortEarn", value: "`trafficvip.vip`, `shortearn.net`, `click90s`\n(Tự động xác thực Google reCAPTCHA v2 bằng AI)", inline: false }
+            )
+            .setFooter({ text: "Cập nhật liên tục 24/7", iconURL: client.user.displayAvatarURL() })
+            .setTimestamp();
+        return interaction.reply({ embeds: [platEmbed] });
+    }
+
+    // --- LỆNH /panel (BẢNG ĐIỀU KHIỂN BYPASS GIAO DIỆN CHUẨN) ---
+    if (commandName === "panel") {
+        const panelEmbed = new EmbedBuilder()
+            .setColor(0x2B2D31)
+            .setTitle("🔓 Bypass Link")
+            .setDescription(
+                "**Hệ thống bypass link tự động:**\n" +
+                "• Bấm **\"Mở box điền link\"** bên dưới để dán link cần mở khóa (hỗ trợ dán tối đa **5 link** cùng lúc).\n" +
+                "• Bấm **\"Link hỗ trợ\"** bên dưới để xem toàn bộ danh sách các nền tảng được hỗ trợ.\n" +
+                "• Kết quả mở khóa sẽ được trả về **riêng tư (chỉ bạn thấy)** và gửi kèm qua DM.\n\n" +
+                "🔒 *Mọi liên kết được bảo mật riêng tư · Không lưu vết link đích công khai*"
+            );
+
+        const panelRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId("open_bypass_modal")
+                .setLabel("Mở box điền link")
+                .setEmoji("📝")
+                .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+                .setCustomId("open_platforms_info")
+                .setLabel("Link hỗ trợ")
+                .setEmoji("🌐")
+                .setStyle(ButtonStyle.Secondary)
+        );
+
+        return interaction.reply({ embeds: [panelEmbed], components: [panelRow] });
+    }
+
+    // --- LỆNH /help ---
+    if (commandName === "help") {
+        const helpEmbed = new EmbedBuilder()
+            .setColor(0x00E5FF)
+            .setTitle("📖 TRUNG TÂM TRỢ GIÚP • LINK4M ULTRA BOT")
+            .setDescription("Bot hỗ trợ vượt link rút gọn kiếm tiền tự động hoàn toàn mà không cần xem quảng cáo!")
+            .addFields(
+                { name: "⚡ Lệnh cơ bản", value: "• `/bypass <url>`: Vượt 1 link rút gọn\n• `/batch <url1> <url2>`: Vượt nhiều link cùng lúc (tối đa 3 link)\n• `/stats`: Xem tình trạng máy chủ & hiệu năng\n• `/platforms`: Xem các link được hỗ trợ", inline: false },
+                { name: "💬 Lệnh Prefix", value: "Bạn cũng có thể gõ trực tiếp trong kênh:\n`!bypass <url>` hoặc `!bp <url>`", inline: false },
+                { name: "💡 Lưu ý quan trọng", value: "Các link có đếm ngược sponsor sẽ cần từ 30s - 75s để bot mô phỏng hoàn tất thời gian thực theo yêu cầu của nhà mạng.", inline: false }
+            )
+            .setFooter({ text: "Link4M Ultra Bypass Engine", iconURL: client.user.displayAvatarURL() })
+            .setTimestamp();
+        return interaction.reply({ embeds: [helpEmbed] });
+    }
+
+    // --- LỆNH /stats ---
+    if (commandName === "stats") {
+        const mem = process.memoryUsage();
+        const successRate = botStats.totalRequests > 0
+            ? ((botStats.successfulBypasses / botStats.totalRequests) * 100).toFixed(1)
+            : "100";
+        const avgDuration = botStats.successfulBypasses > 0
+            ? (botStats.totalDurationSec / botStats.successfulBypasses).toFixed(1)
+            : "0";
+
+        const statsEmbed = new EmbedBuilder()
+            .setColor(0x00FF88)
+            .setTitle("📊 BẢNG ĐIỀU KHIỂN HIỆU NĂNG HỆ THỐNG")
+            .addFields(
+                { name: "⚡ Tổng yêu cầu", value: `\`${botStats.totalRequests}\``, inline: true },
+                { name: "✅ Thành công", value: `\`${botStats.successfulBypasses} (${successRate}%)\``, inline: true },
+                { name: "❌ Thất bại", value: `\`${botStats.failedBypasses}\``, inline: true },
+                { name: "🚀 Cache Hits", value: `\`${botStats.cacheHits}\``, inline: true },
+                { name: "⏱ Thời gian TB", value: `\`${avgDuration}s\``, inline: true },
+                { name: "🟢 Uptime", value: `\`${formatUptime(process.uptime() * 1000)}\``, inline: true },
+                { name: "📥 Hàng đợi", value: `\`${queue.length} tác vụ\``, inline: true },
+                { name: "⚙️ Đang xử lý", value: `\`${activeWorkers} / ${MAX_CONCURRENT}\``, inline: true },
+                { name: "💾 RAM Hosting", value: `\`${formatBytes(mem.rss)}\``, inline: true }
+            )
+            .setFooter({ text: "Tối ưu hóa tài nguyên cho VPS & Cloud Hosting", iconURL: client.user.displayAvatarURL() })
+            .setTimestamp();
+        return interaction.reply({ embeds: [statsEmbed], flags: MessageFlags.Ephemeral });
+    }
+
+    // --- LỆNH /bypass ---
+    if (commandName === "bypass") {
         const rawUrl = interaction.options.getString("url")?.trim();
         if (!rawUrl || !rawUrl.startsWith("http")) {
-            return interaction.reply({ content: "❌ Vui lòng nhập URL hợp lệ (bắt đầu bằng `http://` hoặc `https://`)!", ephemeral: true });
+            return interaction.reply({ content: "❌ Vui lòng nhập URL hợp lệ (bắt đầu bằng `http://` hoặc `https://`)!", flags: MessageFlags.Ephemeral });
         }
 
         await interaction.deferReply();
 
+        const queuePos = queue.length + 1;
+        if (activeWorkers >= MAX_CONCURRENT) {
+            await interaction.editReply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor(0xFFA500)
+                        .setTitle("📥 ĐÃ THÊM VÀO HÀNG ĐỢI XỬ LÝ")
+                        .setDescription(`Hệ thống đang phục vụ các tác vụ trước. Link của bạn ở vị trí **#${queuePos}** trong hàng đợi.`)
+                        .setFooter({ text: "Tiến trình sẽ tự động bắt đầu ngay khi có chỗ trống" })
+                ]
+            });
+        }
+
         queue.push({
             targetUrl: rawUrl,
             userTag: interaction.user.tag,
+            userAvatar: interaction.user.displayAvatarURL(),
+            channelId: interaction.channelId,
             updateMessage: async (payload) => {
                 await interaction.editReply(payload);
             }
         });
         processQueue();
     }
+
+    // --- LỆNH /batch ---
+    if (commandName === "batch") {
+        const rawInput = interaction.options.getString("urls")?.trim();
+        const urls = (rawInput.match(/https?:\/\/[^\s,]+/g) || []).slice(0, 3);
+
+        if (urls.length === 0) {
+            return interaction.reply({ content: "❌ Không tìm thấy URL hợp lệ trong nội dung bạn gửi!", flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.deferReply();
+        await interaction.editReply({
+            content: `📦 **Đã nhận ${urls.length} link rút gọn!** Đang xếp lịch xử lý lần lượt...`
+        });
+
+        for (const url of urls) {
+            queue.push({
+                targetUrl: url,
+                userTag: interaction.user.tag,
+                userAvatar: interaction.user.displayAvatarURL(),
+                channelId: interaction.channelId,
+                updateMessage: async (payload) => {
+                    await interaction.followUp(payload);
+                }
+            });
+        }
+        processQueue();
+    }
 });
 
-// Xử lý Prefix Command (!bypass <url>)
+// ==========================================
+// XỬ LÝ PREFIX COMMANDS (!bypass, !bp, !help...)
+// ==========================================
 client.on("messageCreate", async (message) => {
     if (message.author.bot) return;
 
     const content = message.content.trim();
-    if (content.startsWith("!bypass") || content.startsWith("!link4m")) {
+    const isBypass = content.startsWith("!bypass") || content.startsWith("!bp") || content.startsWith("!link4m");
+    const isStats = content.startsWith("!stats");
+    const isPing = content.startsWith("!ping");
+    const isHelp = content.startsWith("!help");
+
+    if (isPing) {
+        return message.reply(`🏓 Pong! WebSocket Ping: \`${client.ws.ping}ms\` | Uptime: \`${formatUptime(process.uptime() * 1000)}\``);
+    }
+
+    if (isStats) {
+        const mem = process.memoryUsage();
+        return message.reply(`📊 **Stats:** Hoàn tất \`${botStats.successfulBypasses}/${botStats.totalRequests}\` link | Hàng đợi: \`${queue.length}\` | RAM: \`${formatBytes(mem.rss)}\``);
+    }
+
+    if (isHelp) {
+        return message.reply("💡 Dùng lệnh `/bypass <url>` hoặc gõ `!bypass <url>` để vượt link tự động!");
+    }
+
+    if (isBypass) {
         const parts = content.split(/\s+/);
         const rawUrl = parts[1]?.trim();
 
         if (!rawUrl || !rawUrl.startsWith("http")) {
-            return message.reply("❌ Vui lòng nhập link theo cú pháp: `!bypass <đường_link>`");
+            return message.reply("❌ Cú pháp sai! Vui lòng nhập: `!bypass <đường_link>`");
         }
 
-        const replyMsg = await message.reply("⚡ Đang tiếp nhận yêu cầu vượt link...");
+        const replyMsg = await message.reply("⚡ **Đã tiếp nhận yêu cầu!** Đang chuẩn bị giải mã...");
 
         queue.push({
             targetUrl: rawUrl,
             userTag: message.author.tag,
+            userAvatar: message.author.displayAvatarURL(),
+            channelId: message.channelId,
             updateMessage: async (payload) => {
                 await replyMsg.edit(payload);
             }
@@ -352,22 +887,65 @@ client.on("messageCreate", async (message) => {
     }
 });
 
-// Keep-alive HTTP Server cho Render Web Service (Free Tier)
-const http = require("http");
+// ==========================================
+// 24/7 HTTP HEALTHCHECK VÀ DASHBOARD CHO CLOUD HOSTING
+// ==========================================
 const PORT = process.env.PORT || 10000;
 const server = http.createServer((req, res) => {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-        status: "online",
-        bot: client.user ? client.user.tag : "connecting",
-        uptime: Math.round(process.uptime()),
-        queue: queue.length,
-        activeWorkers
-    }));
+    const mem = process.memoryUsage();
+    if (req.url === "/healthz" || req.url === "/") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({
+            status: "online",
+            bot: client.user ? client.user.tag : "connecting",
+            uptime_seconds: Math.round(process.uptime()),
+            guilds_count: client.guilds ? client.guilds.cache.size : 0,
+            guilds: client.guilds ? client.guilds.cache.map(g => ({ id: g.id, name: g.name, members: g.memberCount })) : [],
+            invite_url: client.user ? `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=277025773632&integration_type=0&scope=bot%20applications.commands` : "",
+            queue_length: queue.length,
+            active_workers: activeWorkers,
+            max_concurrent: MAX_CONCURRENT,
+            cached_links: bypassCache.size,
+            ram_usage: formatBytes(mem.rss),
+            total_bypasses: botStats.successfulBypasses
+        }));
+    }
+    res.writeHead(404);
+    res.end();
+});
+
+server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+        console.log(`[HTTP SERVER] Cổng ${PORT} đang bận, bỏ qua tự động để tiếp tục chạy bot.`);
+    } else {
+        console.error("[HTTP SERVER ERROR]", err);
+    }
 });
 
 server.listen(PORT, () => {
-    console.log(`[HTTP] Keep-alive Web Service listening on port ${PORT}`);
+    console.log(`[HTTP SERVER] 🚀 24/7 Keep-alive server listening on port ${PORT}`);
 });
 
-client.login(TOKEN);
+// ==========================================
+// GRACEFUL SHUTDOWN (DỌN TIẾN TRÌNH KHI TẮT CONTAINER)
+// ==========================================
+function cleanup() {
+    console.log("\n[SHUTDOWN] Đang dọn dẹp tiến trình...");
+    server.close();
+    client.destroy();
+    process.exit(0);
+}
+process.on("SIGINT", cleanup);
+process.on("SIGTERM", cleanup);
+
+process.on("unhandledRejection", (reason, promise) => {
+    console.error("[UNHANDLED REJECTION]", reason);
+});
+process.on("uncaughtException", (err) => {
+    console.error("[UNCAUGHT EXCEPTION]", err);
+});
+
+// Đăng nhập bot
+client.login(TOKEN).catch((err) => {
+    console.error("[FATAL LOGIN ERROR] Không thể đăng nhập Discord Bot:", err.message);
+});

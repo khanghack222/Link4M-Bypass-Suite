@@ -268,8 +268,10 @@ class BotBrain:
     def save(self):
         try:
             self.memory["stats"]["last_updated"] = int(time.time())
-            with open(BRAIN_FILE, "w", encoding="utf-8") as f:
+            tmp_file = f"{BRAIN_FILE}.tmp.{os.getpid()}"
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(self.memory, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_file, BRAIN_FILE)
         except Exception as e:
             print(f"[!] Brain save error: {e}")
 

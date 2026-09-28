@@ -144,14 +144,15 @@ def save_destination(url: str, run_id: str = None):
     if not url or not isinstance(url, str) or not url.startswith("http"):
         return
     url = url.strip()
+    active_run_id = run_id or os.environ.get("BYPASS_RUN_ID")
     try:
+        if active_run_id:
+            with open(os.path.join(ROOT_DIR, f"destination_url-{active_run_id}.txt"), "w", encoding="utf-8") as f_run:
+                f_run.write(url)
         with open(DEST_FILE, "w", encoding="utf-8") as f:
             f.write(url)
         with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f:
             f.write(url)
-        if run_id:
-            with open(os.path.join(ROOT_DIR, f"destination_url-{run_id}.txt"), "w", encoding="utf-8") as f_run:
-                f_run.write(url)
         desk = os.path.expanduser(r"~\Desktop\destination_url.txt")
         with open(desk, "w", encoding="utf-8") as fd:
             fd.write(url)
@@ -164,8 +165,14 @@ def log_result_card(url: str, engine_name: str, duration: int = None):
     log("==========================================")
     log(f"🎉 FINAL DESTINATION URL [{engine_name}]: {url}{dur_str}")
     log("==========================================")
-def read_destination() -> str:
-    for path in [os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), DEST_FILE]:
+
+def read_destination(run_id: str = None) -> str:
+    active_run_id = run_id or os.environ.get("BYPASS_RUN_ID")
+    paths = []
+    if active_run_id:
+        paths.append(os.path.join(ROOT_DIR, f"destination_url-{active_run_id}.txt"))
+    paths.extend([os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), DEST_FILE])
+    for path in paths:
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
