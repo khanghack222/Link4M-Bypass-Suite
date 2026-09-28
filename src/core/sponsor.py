@@ -1401,33 +1401,54 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 except Exception:
                     pass
 
+            # Priority 2.5: Semantic Heuristics & Geometry Inspection (Chống DOM Drift khi class đổi)
             try:
-                js_matched = page.evaluate("""() => {
-                    const textRegex = /l[ấa]y\\s*m[ãa]|lay\\s*ma|get\\s*code|nh[ậa]n\\s*m[ãa]|l[ấa]y\\s*pass|l[ấa]y\\s*key|click\\s*v[àa]o\\s*đ[âa]y|b[ấa]m\\s*v[àa]o\\s*đ[âa]y|nh[ậa]n\\s*code/i;
-                    const banned = ['/go/', '/goto/', '/out/', '/redirect/', '/link/', 'login', 'signin', 'register', 'signup', 'account', 'auth', 'cart', 'checkout'];
-                    const candidates = document.querySelectorAll('button, div, span, p, [role="button"], a');
-                    for (const el of candidates) {
+                semantic_matched = page.evaluate("""() => {
+                    const textRegex = /(?:l[ấa]y\\s*m[ãa]|lay\\s*ma|get\\s*code|nh[ậa]n\\s*m[ãa]|l[ấa]y\\s*pass|l[ấa]y\\s*key|click\\s*v[àa]o\\s*đ[âa]y|b[ấa]m\\s*v[àa]o\\s*đ[âa]y|nh[ậa]n\\s*code|ti[ếe]p\\s*t[ụu]c|continue|traffic|countdown)/i;
+                    const banned = ['/go/', '/goto/', '/out/', '/redirect/', '/link/', 'login', 'signin', 'register', 'signup', 'account', 'auth', 'cart', 'checkout', 'manclub'];
+
+                    // Quét toàn bộ button, role=button, input[type=button/submit] và thẻ có tương tác
+                    const elements = Array.from(document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"], a, div[onclick], div[data-time], div[id]'));
+                    let bestEl = null;
+                    let bestScore = -1;
+
+                    for (const el of elements) {
                         if (el.tagName.toLowerCase() === 'a') {
                             const href = (el.getAttribute('href') || '').toLowerCase();
                             if (banned.some(b => href.includes(b))) continue;
                         }
-                        if (el.children.length > 5) continue;
-                        const txt = (el.innerText || el.textContent || '').trim();
-                        if (txt && txt.length < 50 && textRegex.test(txt)) {
-                            el.scrollIntoView({ behavior: 'instant', block: 'center' });
-                            el.setAttribute('data-link4m-matched', 'true');
-                            return true;
+                        const txt = (el.innerText || el.textContent || el.value || '').trim();
+                        const idStr = (el.id || '').toLowerCase();
+                        const classStr = (el.className || '').toString().toLowerCase();
+
+                        let score = 0;
+                        if (textRegex.test(txt)) score += 60;
+                        if (idStr.includes('traffic') || idStr.includes('whaton') || idStr.includes('layma') || idStr.includes('code')) score += 40;
+                        if (classStr.includes('traffic') || classStr.includes('whaton') || classStr.includes('completed')) score += 40;
+                        if (el.hasAttribute('data-time') || el.hasAttribute('data-code') || el.hasAttribute('data-key')) score += 50;
+
+                        // Kiểm tra kích thước hình học (nút thật phải hiển thị trên màn hình, không phải tracking pixel)
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width >= 40 && rect.height >= 18 && rect.top >= 0) {
+                            score += 20;
+                        } else if (rect.width === 0 || rect.height === 0) {
+                            score = -1;
+                        }
+
+                        if (score > bestScore && score >= 50) {
+                            bestScore = score;
+                            bestEl = el;
                         }
                     }
-                    const w = document.querySelector('.whatoncode, [class*="whatoncode"], #traffic-button, .traffic-button, [class*="traffic-button"]');
-                    if (w) {
-                        w.scrollIntoView({ behavior: 'instant', block: 'center' });
-                        w.setAttribute('data-link4m-matched', 'true');
+
+                    if (bestEl) {
+                        bestEl.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        bestEl.setAttribute('data-link4m-matched', 'true');
                         return true;
                     }
                     return false;
                 }""")
-                if js_matched:
+                if semantic_matched:
                     loc = page.locator("[data-link4m-matched='true']").first
                     if loc.count() > 0:
                         return loc
@@ -1594,7 +1615,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                         p_low = pu.path.lower()
                         if len(p_low) < 5 or any(b in p_low for b in py_banned):
                             continue
-                        if py_re.search(r'\\.(?:jpg|jpeg|png|webp|svg|gif|css|js|ico|pdf|zip|mp4)$', p_low):
+                        if py_re.search(r'\.(?:jpg|jpeg|png|webp|svg|gif|css|js|ico|pdf|zip|mp4)$', p_low):
                             continue
                         slug_parts = [s for s in p_low.split('/') if s]
                         last_slug = slug_parts[-1] if slug_parts else ''

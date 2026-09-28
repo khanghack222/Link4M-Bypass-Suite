@@ -428,7 +428,11 @@ Respond ONLY with a valid JSON:
                             if chk.get_attribute("aria-checked") == "true":
                                 solved = True
                         else:
-                            print("[!] Audio challenge unavailable or rate-limited by Google ('Try again later').", flush=True)
+                            print("[!] Audio challenge unavailable or rate-limited by Google ('Try again later'). Fallback to Visual Solver...", flush=True)
+                            # Kiểm tra nếu bị Google Rate Limit (doscaptcha header xuất hiện)
+                            is_doscaptcha = active_bframe.locator(".rc-doscaptcha-header-text, .rc-audiochallenge-error-message").count() > 0
+                            if is_doscaptcha:
+                                print("[!] Google DOSCAPTCHA rate limit confirmed on current IP. Switching automatically to Visual Image Solver...", flush=True)
 
                 # --- STEP 3: Fallback back to Visual Challenge if still not solved ---
                 if not solved and chk.get_attribute("aria-checked") != "true":
