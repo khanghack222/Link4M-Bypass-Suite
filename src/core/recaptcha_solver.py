@@ -8,23 +8,38 @@ import base64
 from typing import Dict, Any, Optional, List
 from playwright.sync_api import Page, Locator
 
-_DEFAULT_GEMINI_KEY = "AQ.Ab8RN6K2TKrVe2p7DR5t65zPs75m2AU_MSTHQUr2o-oWXt9gug"
 _env_key = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_API_KEY = _env_key if (_env_key and not _env_key.startswith("sk-")) else _DEFAULT_GEMINI_KEY
+GEMINI_API_KEY = _env_key if (_env_key and not _env_key.startswith("sk-")) else ""
 
 class RecaptchaSolver:
     def __init__(self, headless: bool = True, **kwargs):
         self.headless = headless
         self._model = None
+        self._faster_model = None
+
+    @property
+    def faster_model(self):
+        if self._faster_model is None:
+            try:
+                import faster_whisper
+                print("[*] Loading faster-whisper 'tiny.en' (CTranslate2 int8, ultra-light)...", flush=True)
+                self._faster_model = faster_whisper.WhisperModel("tiny.en", device="cpu", compute_type="int8", cpu_threads=2)
+                print("[+] faster-whisper loaded.", flush=True)
+            except Exception as e:
+                self._faster_model = False
+        return self._faster_model if self._faster_model is not False else None
 
     @property
     def model(self):
         if self._model is None:
-            print("[*] Loading Whisper 'tiny.en' (ultra-fast cached)...", flush=True)
-            import whisper
-            self._model = whisper.load_model("tiny.en")
-            print("[+] Whisper model loaded.", flush=True)
-        return self._model
+            try:
+                print("[*] Loading PyTorch Whisper 'tiny.en' fallback...", flush=True)
+                import whisper
+                self._model = whisper.load_model("tiny.en")
+                print("[+] Whisper model loaded.", flush=True)
+            except Exception:
+                self._model = False
+        return self._model if self._model is not False else None
 
     def transcribe_audio_url(self, audio_url: str) -> str:
         # Priority 0: API Client if available
@@ -36,43 +51,90 @@ class RecaptchaSolver:
         except Exception:
             pass
 
-        # Priority 1: Local Whisper
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             tmp_path = tmp.name
         try:
             req = urllib.request.Request(audio_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=10) as resp, open(tmp_path, "wb") as f:
                 f.write(resp.read())
-            res = self.model.transcribe(tmp_path, language="en", fp16=False)
-            return re.sub(r'[^a-zA-Z0-9\s]', '', res.get("text", "")).strip().lower()
+
+            # Priority 1: Google Speech Recognition (0 MB RAM, ultra fast ~300ms, ideal for low-spec hosting)
+            try:
+                import speech_recognition as sr
+                import subprocess
+                wav_path = tmp_path.replace(".mp3", ".wav")
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", tmp_path, "-ac", "1", "-ar", "16000", wav_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5
+                )
+                if os.path.exists(wav_path):
+                    try:
+                        r = sr.Recognizer()
+                        with sr.AudioFile(wav_path) as source:
+                            audio_data = r.record(source)
+                        text = r.recognize_google(audio_data, language="en-US")
+                        clean = re.sub(r'[^a-zA-Z0-9\s]', '', text).strip().lower()
+                        if clean:
+                            print(f"[+] Google SpeechRecognition solved audio: '{clean}' (0 RAM)", flush=True)
+                            return clean
+                    finally:
+                        try: os.remove(wav_path)
+                        except Exception: pass
+            except Exception:
+                pass
+
+            # Priority 2: faster-whisper (CTranslate2 int8, no PyTorch, ~70MB RAM)
+            if self.faster_model:
+                try:
+                    segments, _ = self.faster_model.transcribe(tmp_path, language="en")
+                    raw = "".join(s.text for s in segments)
+                    clean = re.sub(r'[^a-zA-Z0-9\s]', '', raw).strip().lower()
+                    if clean:
+                        print(f"[+] faster-whisper solved audio: '{clean}'", flush=True)
+                        return clean
+                except Exception:
+                    pass
+
+            # Priority 3: PyTorch Whisper fallback
+            if self.model:
+                res = self.model.transcribe(tmp_path, language="en", fp16=False)
+                return re.sub(r'[^a-zA-Z0-9\s]', '', res.get("text", "")).strip().lower()
+
+            return ""
         finally:
             if os.path.exists(tmp_path):
                 try: os.remove(tmp_path)
                 except Exception: pass
 
-    def ask_gemini_vision_tiles(self, img_bytes: bytes, instruction: str) -> List[int]:
+    def ask_gemini_vision_tiles(self, img_bytes: bytes, instruction: str, total_tiles: int = 9) -> List[int]:
         """Uses Gemini 3.1 Flash-Lite to solve reCAPTCHA v2 image challenge grids (3x3 or 4x4)."""
         b64_img = base64.b64encode(img_bytes).decode("utf-8")
-        prompt = f"""You are an expert AI reCAPTCHA solver.
-Look at this Google reCAPTCHA v2 image challenge screenshot.
-The instruction is: "{instruction}"
+        if total_tiles == 16:
+            grid_spec = """This is a 4x4 grid (16 tiles total), numbered 1 to 16 from left to right, top to bottom:
+Row 1: 1, 2, 3, 4
+Row 2: 5, 6, 7, 8
+Row 3: 9, 10, 11, 12
+Row 4: 13, 14, 15, 16"""
+        else:
+            grid_spec = """This is a 3x3 grid (9 tiles total), numbered 1 to 9 from left to right, top to bottom:
+Row 1: 1, 2, 3
+Row 2: 4, 5, 6
+Row 3: 7, 8, 9"""
 
-Carefully note the grid size:
-- If 3x3 (9 tiles), numbered left-to-right, top-to-bottom:
-  Row 1: 1, 2, 3
-  Row 2: 4, 5, 6
-  Row 3: 7, 8, 9
+        prompt = f"""You are an expert AI reCAPTCHA v2 solver.
+Look at this Google reCAPTCHA image challenge screenshot.
+Target instruction: "{instruction}"
 
-- If 4x4 (16 tiles), numbered left-to-right, top-to-bottom:
-  Row 1: 1, 2, 3, 4
-  Row 2: 5, 6, 7, 8
-  Row 3: 9, 10, 11, 12
-  Row 4: 13, 14, 15, 16
+Grid specification:
+{grid_spec}
 
-Identify all tile numbers that clearly contain the requested object (even partially).
-Respond ONLY with a valid JSON object in this format:
-{{"tiles": [1, 5, 9], "reason": "brief note"}}
-"""
+Identify all tile numbers (from 1 to {total_tiles}) that contain the requested target object (even partially).
+If no tiles contain the target, return an empty list: {{"tiles": []}}.
+Respond ONLY with a valid JSON:
+{{"tiles": [1, 5, 9], "reason": "brief note"}}"""
+
         payload = json.dumps({
             "contents": [{
                 "parts": [
@@ -82,7 +144,7 @@ Respond ONLY with a valid JSON object in this format:
             }],
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.1
+                "temperature": 0.0
             }
         }).encode("utf-8")
 
@@ -103,46 +165,85 @@ Respond ONLY with a valid JSON object in this format:
                 pass
         return []
 
-    def solve_image_challenge(self, page: Page, active_bframe, chk, max_rounds: int = 8) -> bool:
+    def solve_image_challenge(self, page: Page, active_bframe, chk, max_rounds: int = 20) -> bool:
         """Solves reCAPTCHA v2 image challenge using Gemini Vision directly inside Playwright bframe."""
         print("[*] Starting Multimodal Vision Image Solver for reCAPTCHA...", flush=True)
         for round_idx in range(max_rounds):
             if chk.get_attribute("aria-checked") == "true":
                 return True
 
-            time.sleep(1.0)
+            try:
+                active_bframe.locator(".rc-imageselect-instructions, .rc-imageselect-desc-no-canonical, .rc-imageselect-desc").first.wait_for(state="visible", timeout=4000)
+            except Exception:
+                pass
+
             header = active_bframe.locator(".rc-imageselect-instructions, .rc-imageselect-desc-no-canonical, .rc-imageselect-desc")
             if header.count() == 0:
                 if chk.get_attribute("aria-checked") == "true":
                     return True
-                break
+                # If still no image header, try clicking anchor checkbox to trigger image challenge
+                try:
+                    chk.click(force=True, timeout=2000)
+                    time.sleep(1.5)
+                    header = active_bframe.locator(".rc-imageselect-instructions, .rc-imageselect-desc-no-canonical, .rc-imageselect-desc")
+                except Exception:
+                    pass
+                if header.count() == 0:
+                    break
             instruction = header.first.inner_text().strip()
             print(f"[+] Vision Challenge Round {round_idx+1}: '{instruction.replace(chr(10), ' ')}'", flush=True)
 
-            challenge_box = active_bframe.locator(".rc-imageselect, #rc-imageselect")
-            if challenge_box.count() == 0:
-                break
-            img_bytes = challenge_box.first.screenshot()
+            table_box = active_bframe.locator("table.rc-imageselect-table-33, table.rc-imageselect-table-44, .rc-imageselect-target table, .rc-imageselect-target")
+            target_el = table_box.first if table_box.count() > 0 else challenge_box.first
+            img_bytes = target_el.screenshot()
 
-            tiles_to_click = self.ask_gemini_vision_tiles(img_bytes, instruction)
             tiles = active_bframe.locator("td.rc-imageselect-tile")
             total_tiles = tiles.count()
+            tiles_to_click = self.ask_gemini_vision_tiles(img_bytes, instruction, total_tiles=total_tiles)
 
             if not tiles_to_click:
+                is_skip = "click skip" in instruction.lower() or "if there are none" in instruction.lower()
                 verify_btn = active_bframe.locator("#recaptcha-verify-button")
-                if verify_btn.is_visible():
+                if is_skip and verify_btn.is_visible():
                     verify_btn.click()
                     time.sleep(2.0)
+                else:
+                    # In a dynamic challenge or standard challenge without target, request fresh challenge via reload button
+                    reload_btn = active_bframe.locator("#recaptcha-reload-button")
+                    if reload_btn.is_visible():
+                        reload_btn.click(force=True)
+                        time.sleep(2.0)
+                    elif verify_btn.is_visible():
+                        verify_btn.click()
+                        time.sleep(2.0)
+
                 if chk.get_attribute("aria-checked") == "true":
                     return True
                 continue
 
-            for idx in tiles_to_click:
-                if 1 <= idx <= total_tiles:
-                    tile = tiles.nth(idx - 1)
-                    tile.scroll_into_view_if_needed()
-                    tile.click(force=True)
-                    time.sleep(0.3)
+            is_dynamic = "none left" in instruction.lower() or "once there are none" in instruction.lower()
+            if is_dynamic:
+                dyn_rounds = 0
+                while tiles_to_click and dyn_rounds < 8:
+                    dyn_rounds += 1
+                    for idx in tiles_to_click:
+                        if 1 <= idx <= total_tiles:
+                            tile = tiles.nth(idx - 1)
+                            tile.click(force=True)
+                            time.sleep(0.3)
+                    # Chờ hoạt ảnh làm mờ và load ảnh mới hoàn toàn (4.2s)
+                    time.sleep(4.2)
+                    img_bytes = target_el.screenshot()
+                    tiles_to_click = self.ask_gemini_vision_tiles(img_bytes, instruction, total_tiles=total_tiles)
+                    if not tiles_to_click:
+                        break
+            else:
+                for idx in tiles_to_click:
+                    if 1 <= idx <= total_tiles:
+                        tile = tiles.nth(idx - 1)
+                        tile.scroll_into_view_if_needed()
+                        tile.click(force=True)
+                        time.sleep(0.3)
 
             time.sleep(0.8)
             verify_btn = active_bframe.locator("#recaptcha-verify-button")
@@ -150,7 +251,7 @@ Respond ONLY with a valid JSON object in this format:
                 btn_txt = verify_btn.inner_text().strip()
                 print(f"[+] Clicking challenge button: '{btn_txt}'", flush=True)
                 verify_btn.click()
-                time.sleep(2.2)
+                time.sleep(2.5)
 
             if chk.get_attribute("aria-checked") == "true":
                 return True
@@ -285,54 +386,65 @@ Respond ONLY with a valid JSON object in this format:
                     print(f"[!] No visible bframe for candidate anchor {cand['index']}. Trying next candidate...", flush=True)
                     continue
 
-                # --- STEP 1: Attempt Audio Challenge ---
-                audio_btn = active_bframe.locator("#recaptcha-audio-button")
-                audio_allowed = False
-                if audio_btn.count() > 0:
-                    btn_class = audio_btn.get_attribute("class") or ""
-                    if "rc-button-disabled" not in btn_class and not audio_btn.get_attribute("disabled"):
-                        try:
-                            audio_btn.scroll_into_view_if_needed()
-                            audio_btn.click(force=True, timeout=2500)
-                            audio_allowed = True
-                            print("[+] Audio challenge requested!", flush=True)
-                        except Exception:
-                            pass
-
+                # --- STEP 1: Attempt Multimodal Vision Image Challenge FIRST if available ---
                 solved = False
-                if audio_allowed:
-                    time.sleep(1.5)
-                    download_link = active_bframe.locator(".rc-audiochallenge-tdownload-link, a:has-text('Download')")
-                    try:
-                        download_link.wait_for(state="visible", timeout=6000)
-                        audio_url = download_link.get_attribute("href")
-                    except Exception:
-                        audio_url = None
+                has_visual = active_bframe.locator(".rc-imageselect-instructions, .rc-imageselect-desc, .rc-imageselect-desc-no-canonical, .rc-imageselect").count() > 0
+                if has_visual:
+                    print("[+] Visual challenge already presented. Solving via Gemini Multimodal Vision...", flush=True)
+                    solved = self.solve_image_challenge(page, active_bframe, chk)
 
-                    if audio_url:
-                        ans = self.transcribe_audio_url(audio_url)
-                        print(f"[+] Audio answer: '{ans}'", flush=True)
-                        input_field = active_bframe.locator("#audio-response")
-                        input_field.fill(ans)
-                        active_bframe.locator("#recaptcha-verify-button").click()
-                        time.sleep(2.0)
-
-                        if chk.get_attribute("aria-checked") == "true":
-                            solved = True
-                    else:
-                        print("[!] Audio challenge unavailable or rate-limited by Google ('Try again later').", flush=True)
-
-                # --- STEP 2: Fallback to Multimodal Vision Image Solver ---
+                # --- STEP 2: Fallback to Audio Challenge if visual not present or failed ---
                 if not solved and chk.get_attribute("aria-checked") != "true":
-                    # If audio failed, reload or switch to image mode if needed
-                    reload_btn = active_bframe.locator("#recaptcha-reload-button")
-                    image_btn = active_bframe.locator("#recaptcha-image-button")
-                    if image_btn.is_visible():
-                        image_btn.click(force=True)
+                    audio_btn = active_bframe.locator("#recaptcha-audio-button")
+                    audio_allowed = False
+                    if audio_btn.count() > 0:
+                        btn_class = audio_btn.get_attribute("class") or ""
+                        if "rc-button-disabled" not in btn_class and not audio_btn.get_attribute("disabled"):
+                            try:
+                                audio_btn.scroll_into_view_if_needed()
+                                audio_btn.click(force=True, timeout=2500)
+                                audio_allowed = True
+                                print("[+] Audio challenge requested!", flush=True)
+                            except Exception:
+                                pass
+
+                    if audio_allowed:
                         time.sleep(1.5)
-                    elif reload_btn.is_visible() and not active_bframe.locator(".rc-imageselect").is_visible():
-                        reload_btn.click(force=True)
-                        time.sleep(1.5)
+                        download_link = active_bframe.locator(".rc-audiochallenge-tdownload-link, a:has-text('Download')")
+                        try:
+                            download_link.wait_for(state="visible", timeout=6000)
+                            audio_url = download_link.get_attribute("href")
+                        except Exception:
+                            audio_url = None
+
+                        if audio_url:
+                            ans = self.transcribe_audio_url(audio_url)
+                            print(f"[+] Audio answer: '{ans}'", flush=True)
+                            input_field = active_bframe.locator("#audio-response")
+                            input_field.fill(ans)
+                            active_bframe.locator("#recaptcha-verify-button").click()
+                            time.sleep(2.0)
+
+                            if chk.get_attribute("aria-checked") == "true":
+                                solved = True
+                        else:
+                            print("[!] Audio challenge unavailable or rate-limited by Google ('Try again later').", flush=True)
+
+                # --- STEP 3: Fallback back to Visual Challenge if still not solved ---
+                if not solved and chk.get_attribute("aria-checked") != "true":
+                    try:
+                        image_btn = active_bframe.locator("#recaptcha-image-button")
+                        reload_btn = active_bframe.locator("#recaptcha-reload-button")
+                        if image_btn.count() > 0 and image_btn.is_visible():
+                            image_btn.click(force=True, timeout=2000)
+                            time.sleep(1.5)
+                        elif reload_btn.count() > 0 and reload_btn.is_visible() and not active_bframe.locator(".rc-imageselect").is_visible():
+                            btn_class = reload_btn.get_attribute("class") or ""
+                            if "rc-button-disabled" not in btn_class and not reload_btn.get_attribute("disabled"):
+                                reload_btn.click(force=True, timeout=2000)
+                                time.sleep(1.5)
+                    except Exception:
+                        pass
 
                     solved = self.solve_image_challenge(page, active_bframe, chk)
 

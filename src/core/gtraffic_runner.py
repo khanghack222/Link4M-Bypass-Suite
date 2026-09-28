@@ -16,6 +16,8 @@ import re
 import urllib.request
 import urllib.parse
 import uuid
+import hashlib
+
 try:
     from patchright.sync_api import sync_playwright
     IS_PATCHRIGHT = True
@@ -23,11 +25,13 @@ except ImportError:
     from playwright.sync_api import sync_playwright
     IS_PATCHRIGHT = False
 
-from config import CHROME_PATH, ROOT_DIR, DEST_FILE, CODE_FILE, log, copy_to_clipboard, load_proxies
+from config import CHROME_PATH, ROOT_DIR, DEST_FILE, CODE_FILE, log, copy_to_clipboard, load_proxies, STEALTH_INIT_SCRIPT, save_destination, log_result_card
 
-ROTATE_PROXY_URL = "https://pandaproxys.com/api/v3/users/rotatev2?token=MTc5MDM1Njk0OTI5OTtrYWxlYmhlbmxleTgyNTM7YXBpLXByb3h5LTIuaG9tZXByb3h5LnZu_40b52b9661a3c1307bbebc46ddc1ab7f82fc01a4"
+ROTATE_PROXY_URL = os.environ.get("ROTATE_PROXY_URL", "").strip()
 
 def rotate_proxy():
+    if not ROTATE_PROXY_URL:
+        return None
     try:
         req = urllib.request.Request(ROTATE_PROXY_URL, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=8) as r:
@@ -37,7 +41,7 @@ def rotate_proxy():
     except Exception as e:
         log(f"[!] Proxy rotation note: {e}")
         return None
-from sponsor import get_ocr, extract_domain_candidates, probe_domain_live, resolve_ip_google
+from sponsor import get_ocr, extract_domain_candidates, probe_domain_live, resolve_ip_google, analyze_quest_images_gemini_vision, fallback_ai_search
 
 def is_valid_destination(u: str, sponsor_domain: str = None) -> bool:
     if not u or not isinstance(u, str) or not u.startswith("http"):
@@ -88,7 +92,9 @@ CAMPAIGN_RULES = [
     (['incafe', 'in cafe', 'cafe'], ['https://incafe.com.co']),
 ]
 
-def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None) -> str:
+_GEMINI_IMAGE_CACHE = {}
+
+def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_gemini: bool = True) -> str:
     import unicodedata
     import ssl
     ctx = ssl.create_default_context()
@@ -196,6 +202,7 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None) -> str:
                 })
                 with fetch_url(req, timeout=8) as resp, open(temp_img, "wb") as f:
                     f.write(resp.read())
+            # 2. Free Offline RapidOCR FIRST (0 tokens, 0 cost)
             ocr = get_ocr()
             res, _ = ocr(temp_img)
             lines = [line[1] for line in (res or [])]
@@ -211,8 +218,56 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None) -> str:
                     for dom in d_list:
                         verified, _ = check_candidate_worker(dom)
                         if verified:
-                            log(f"[+] Match known campaign triggers in OCR {triggers} and verified live: {verified}")
+                            log(f"[+] Match known campaign triggers in OCR {triggers} (0 tokens): {verified}")
                             return verified
+
+            # 2b. Check candidates from RapidOCR immediately
+            for c in (candidates or []):
+                verified, _ = check_candidate_worker(c)
+                if verified:
+                    log(f"[+] RapidOCR (Free/Offline 0 tokens) xác thực domain: {verified}")
+                    return verified
+
+            # 2c. Multimodal AI Vision ONLY if local free OCR failed and allow_gemini=True
+            img_bytes = None
+            if os.path.exists(temp_img):
+                try:
+                    with open(temp_img, "rb") as f_b:
+                        img_bytes = f_b.read()
+                except Exception:
+                    pass
+
+            if img_bytes and allow_gemini:
+                try:
+                    img_hash = hashlib.md5(img_bytes, usedforsecurity=False).hexdigest()
+                    if img_hash in _GEMINI_IMAGE_CACHE:
+                        g_res = _GEMINI_IMAGE_CACHE[img_hash]
+                        log("[*] 👁️ [Gemini Cache] Tái sử dụng kết quả AI đã phân tích (0 tokens)...")
+                    else:
+                        log("[*] 👁️ [Gemini Vision] Phân tích ảnh nhiệm vụ (tiết kiệm token)...")
+                        g_res = analyze_quest_images_gemini_vision([img_bytes])
+                        _GEMINI_IMAGE_CACHE[img_hash] = g_res
+
+                    if g_res:
+                        g_doms = g_res.get("target_domains", [])
+                        for d_cand in g_doms:
+                            verified, _ = check_candidate_worker(d_cand)
+                            if verified:
+                                log(f"[+] 👁️ [Gemini Vision] Xác thực domain trực tiếp: {verified}")
+                                return verified
+                        g_hint = g_res.get("domain_hint", "")
+                        g_kw = g_res.get("keyword", "") or keyword_text
+                        if g_hint or g_kw:
+                            log(f"[*] 🎯 Cấu trúc nhiệm vụ: Từ khóa='{g_kw}', Domain Hint='{g_hint}'")
+                            ai_doms = fallback_ai_search(g_kw, g_hint, use_gemini=False)
+                            for d_cand in ai_doms:
+                                verified, _ = check_candidate_worker(d_cand)
+                                if verified:
+                                    log(f"[+] ⚡ AI Fallback Search tìm thấy domain: {verified}")
+                                    return verified
+                except Exception as e_gem:
+                    log(f"[!] Gemini Vision note: {e_gem}")
+
 
             # 2b. Filter candidates & expand subdomains / variants / masked stems
             filtered_candidates = []
@@ -294,22 +349,48 @@ def run(target_url: str = None, headless: bool = True):
     proxies = load_proxies()
     proxy_cfg = None
     proxy_opener = None
-    if proxies:
-        p0 = proxies[0]
-        proxy_cfg = {
-            "server": p0["server"],
-            "username": p0.get("username", ""),
-            "password": p0.get("password", "")
-        }
-        p_auth = f"{p0['username']}:{p0['password']}@" if p0.get("username") else ""
-        p_url = p0["server"].replace("http://", f"http://{p_auth}")
-        proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": p_url, "https": p_url}))
-        log(f"[+] Active Residential Proxy: {p0['server']}")
+    if proxies and os.environ.get("NO_PROXY", "0") != "1":
+        import random
+        cands = list(proxies)
+        random.shuffle(cands)
+        for p_cand in cands[:5]:
+            p_auth = f"{p_cand['username']}:{p_cand['password']}@" if p_cand.get("username") else ""
+            p_url = p_cand["server"].replace("http://", f"http://{p_auth}")
+            t_opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": p_url, "https": p_url}))
+            try:
+                # Test if proxy is accepted by Gtraffic (foreign proxies get 403)
+                t_req = urllib.request.Request("https://client.gtraffic.io/api/url/get?id=probe&deviceType=desktop", headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://gtraffic.io/"
+                })
+                with t_opener.open(t_req, timeout=2.5) as t_res:
+                    if t_res.status == 200:
+                        proxy_opener = t_opener
+                        proxy_cfg = {
+                            "server": p_cand["server"],
+                            "username": p_cand.get("username", ""),
+                            "password": p_cand.get("password", "")
+                        }
+                        log(f"[+] Active Residential Proxy: {p_cand['server']}")
+                        break
+            except Exception:
+                continue
+        if not proxy_cfg:
+            log("[*] Proxy pool is foreign / blocked by Gtraffic. Auto-falling back to Direct connection.")
 
     def call_api(req, timeout=8):
         if proxy_opener:
-            return proxy_opener.open(req, timeout=timeout)
-        return urllib.request.urlopen(req, timeout=timeout)
+            try:
+                return proxy_opener.open(req, timeout=timeout)
+            except Exception as pe:
+                log(f"[*] Proxy request failed ({pe}), falling back to direct...")
+        # Create fresh Request object so proxy-tunnel state does not contaminate
+        fresh_req = urllib.request.Request(
+            req.full_url,
+            data=req.data,
+            headers=dict(req.headers)
+        )
+        return urllib.request.urlopen(fresh_req, timeout=timeout)
 
     initial_sponsor = None
     g_data = {}
@@ -417,6 +498,8 @@ def run(target_url: str = None, headless: bool = True):
                 ignore_https_errors=True
             )
             browser = context
+        context.add_init_script(STEALTH_INIT_SCRIPT)
+
 
         final_destination = None
 
@@ -647,7 +730,7 @@ def run(target_url: str = None, headless: bool = True):
                         res_c, _ = ocr(temp_canvas)
                         lines_c = [l[1] for l in (res_c or [])]
                         log(f"[TAB 1] Instruction element OCR extracted: {lines_c}")
-                        sponsor_domain = resolve_sponsor_domain(kw, temp_canvas, opener=proxy_opener)
+                        sponsor_domain = resolve_sponsor_domain(kw, temp_canvas, opener=proxy_opener, allow_gemini=False)
                         if sponsor_domain:
                             log(f"[+] Recovered sponsor domain via element OCR: {sponsor_domain}")
                         if os.path.exists(temp_canvas):
@@ -915,21 +998,49 @@ def run(target_url: str = None, headless: bool = True):
                     const b = document.querySelector('#trade-btn-clf, #trade-btn, #traffic-button-no, #trade-d-btn, #notice-btn, [id*="trade-btn"]');
                     const btnCodes = Array.from(document.querySelectorAll('[id*="trade-btn"][data-code], [id*="traffic-button"][data-code], .trade-btn[data-code]')).map(el => el.dataset.code);
                     return {
-                        content: (c && c.textContent) || "",
+                        content: (c && c.textContent) || (b && b.textContent) || "",
                         btn: (b && b.textContent) || "",
                         btnCodes: btnCodes
                     };
                 }""")
 
                 c_val = str(dom_data.get("content", "")).strip()
+
+                # Anti-stall: Auto-solve Security Modal / Captcha during countdown
+                if any(k in c_val.lower() for k in ["xác minh", "bảo mật", "kết quả", "tiếp tục"]):
+                    log("[!] Phát hiện modal xác minh bảo mật giữa đếm ngược! Tự động xử lý...")
+                    page2.evaluate("""() => {
+                        const inputs = Array.from(document.querySelectorAll('input[type="radio"], input[type="checkbox"], .choice, [class*="option"]'));
+                        if (inputs.length > 0) {
+                            inputs[0].click();
+                            inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                        const sub = Array.from(document.querySelectorAll('button, a, [role="button"]')).find(b => b.textContent && (b.textContent.includes('tiếp tục') || b.textContent.includes('Xác nhận')));
+                        if (sub) sub.click();
+                    }""")
+                    time.sleep(1.5)
+
+                # Anti-stall: If button did not start countdown after 12s, re-click
+                if s == 12 and not c_val and not extracted_code:
+                    log("[*] Countdown not progressing on sponsor button. Re-firing click...")
+                    if btn:
+                        try:
+                            btn.scroll_into_view_if_needed()
+                            btn.click(force=True, timeout=2000)
+                        except Exception:
+                            pass
+                elif s >= 20 and not c_val and not extracted_code:
+                    log("[!] Sponsor button not responding after 20s. Aborting attempt early...")
+                    break
+
                 if s % 10 == 0 or (s >= 55 and s % 2 == 0) or (c_val and not c_val.isdigit()):
                     if s % 10 == 0 or s >= 55:
                         log(f"  [Countdown] {s}s elapsed | Content: '{c_val}'")
 
                 # Check if content has transformed into code after countdown
-                if c_val and not c_val.isdigit() and len(c_val) >= 4 and (s >= 50 or c_val == '0'):
+                if c_val and not c_val.isdigit() and 4 <= len(c_val) <= 30 and "\n" not in c_val and (s >= 50 or c_val == '0'):
                     cleaned = re.sub(r'^(?:Code|M[ãa]|M[ãa]\s*x[áa]c\s*nh[ậa]n|M[ãa]\s*KM)[\s\:\-]+', '', c_val, flags=re.IGNORECASE).strip()
-                    if cleaned and not any(w in cleaned.lower() for w in ["giây", "chờ", "vui lòng", "robot", "lấy mã"]):
+                    if cleaned and not any(w in cleaned.lower() for w in ["giây", "chờ", "vui lòng", "robot", "lấy mã", "xác minh", "bảo mật", "kết quả", "tiếp tục", "phiên"]):
                         extracted_code = cleaned
                         log(f"\n==========================================")
                         log(f"💎 EXTRACTED GTRAFFIC CODE FROM CONTENT: {extracted_code}")

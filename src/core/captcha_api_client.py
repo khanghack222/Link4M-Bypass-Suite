@@ -28,11 +28,11 @@ _adapter = HTTPAdapter(max_retries=_retries, pool_connections=20, pool_maxsize=2
 _SESSION.mount("https://", _adapter)
 _SESSION.mount("http://", _adapter)
 
-API_KEY = os.environ.get("CAPTCHA_API_KEY", "sk_sec_fdcad6104ba10090f0b730864b123580")
+API_KEY = os.environ.get("CAPTCHA_API_KEY", "")
 _HEADERS = {
     "X-API-Key": API_KEY,
     "Content-Type": "application/json"
-}
+} if API_KEY else {"Content-Type": "application/json"}
 
 def get_base_url(force_refresh: bool = False) -> str:
     """Determine best available API endpoint (cached for 30s to avoid redundant pings)."""

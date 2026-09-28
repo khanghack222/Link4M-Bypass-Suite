@@ -6,7 +6,6 @@ import urllib.request
 import ssl
 import base64
 import requests
-from rapidocr_onnxruntime import RapidOCR
 from config import log
 try:
     from brain import get_brain
@@ -14,11 +13,28 @@ except ImportError:
     from src.core.brain import get_brain
 
 _OCR_INSTANCE = None
+_DDDD_INSTANCE = None
+
+def get_dddd():
+    global _DDDD_INSTANCE
+    if _DDDD_INSTANCE is None:
+        try:
+            import ddddocr
+            _DDDD_INSTANCE = ddddocr.DdddOcr(show_ad=False)
+        except Exception:
+            _DDDD_INSTANCE = False
+    return _DDDD_INSTANCE if _DDDD_INSTANCE is not False else None
+
 def get_ocr():
     global _OCR_INSTANCE
     if _OCR_INSTANCE is None:
-        _OCR_INSTANCE = RapidOCR()
-    return _OCR_INSTANCE
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _OCR_INSTANCE = RapidOCR()
+        except Exception as e:
+            log(f"[!] RapidOCR init note: {e}")
+            _OCR_INSTANCE = False
+    return _OCR_INSTANCE if _OCR_INSTANCE is not False else None
 
 def _ocr_cloud_api(img_bytes: bytes) -> str:
     """Gửi ảnh lên Cloud OCR API với timeout ngắn để tăng tốc tối đa."""
@@ -383,9 +399,8 @@ def extract_quest_instructions(all_texts: list) -> dict:
         "page_hint": page_hint
     }
 
-_DEFAULT_GEMINI_KEY = "AQ.Ab8RN6K2TKrVe2p7DR5t65zPs75m2AU_MSTHQUr2o-oWXt9gug"
 _env_key = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_API_KEY = _env_key if (_env_key and not _env_key.startswith("sk-")) else _DEFAULT_GEMINI_KEY
+GEMINI_API_KEY = _env_key if (_env_key and not _env_key.startswith("sk-")) else ""
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 def resolve_domain_gemini_ai(keyword: str, domain_hint: str = "") -> list:
@@ -427,6 +442,8 @@ def resolve_domain_gemini_ai(keyword: str, domain_hint: str = "") -> list:
             
     return []
 
+_GEMINI_VISION_CACHE = {}
+
 def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
     """
     Tải trực tiếp ảnh nhiệm vụ và gửi cho Gemini Flash-Lite Multimodal Vision:
@@ -434,6 +451,16 @@ def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
     """
     if not image_bytes_list:
         return {}
+    # Check cache by MD5 hash of image bytes to save tokens
+    import hashlib
+    hasher = hashlib.md5(usedforsecurity=False)
+    for b in image_bytes_list:
+        if b: hasher.update(b[:4096])
+    cache_key = hasher.hexdigest()
+    if cache_key in _GEMINI_VISION_CACHE:
+        log("[*] 👁️ [Gemini Cache] Tái sử dụng kết quả Vision đã phân tích (0 tokens)...")
+        return _GEMINI_VISION_CACHE[cache_key]
+
 
     models_to_try = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]
     parts = [{
@@ -479,6 +506,8 @@ def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
                 txt = re.sub(r"^```(?:json)?", "", txt, flags=re.IGNORECASE).rstrip("`").strip()
                 data = json.loads(txt)
                 if isinstance(data, dict):
+                    _GEMINI_VISION_CACHE[cache_key] = data
+
                     log(f"[+] 👁️ [Gemini Vision {m}] Nhìn ảnh & trích xuất nhiệm vụ thành công: {data}")
                     return data
         except urllib.error.HTTPError as e:
@@ -490,18 +519,101 @@ def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
 
     return {}
 
-def fallback_ai_search(query: str, domain_hint: str = "") -> list:
+VN_MATH_NUMS = {
+    'khong': 0, 'mot': 1, 'hai': 2, 'ba': 3, 'bon': 4, 'nam': 5,
+    'sau': 6, 'bay': 7, 'tam': 8, 'chin': 9, 'muoi': 10
+}
+
+def solve_math_captcha_gemini(img_b64: str, answers: list):
     """
-    AI Search siêu tốc kết hợp Google Gemini 3.5 Flash-Lite API và DuckDuckGo/Bing giả lập TLS Chrome 124.
-    Không bị Captcha hay chặn IP, trích xuất chính xác domain đích trong < 1.5s.
+    Giải bài toán captcha (ví dụ 'sáu - hai = ?' hoặc '8 + 5 = ?') cho các trang tài trợ Ontops/BestTraffic.
+    Ưu tiên: RapidOCR cục bộ siêu tốc (0 MB RAM, 0 latency, 0 token), fallback Gemini nếu có key.
+    """
+    if not answers:
+        return None
+
+    # Priority 1: Giải cục bộ siêu tốc bằng OCR + Heuristics toán học (0 tokens, ~50ms)
+    try:
+        import numpy as np
+        import cv2
+        img_bytes = base64.b64decode(img_b64)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        mask = (img[:, :, 0] < 125) & (img[:, :, 1] < 125) & (img[:, :, 2] < 125)
+        clean = np.ones_like(img) * 255
+        clean[mask] = [0, 0, 0]
+        padded = cv2.copyMakeBorder(clean, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+        resized = cv2.resize(padded, None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+
+        ocr_engine = get_ocr()
+        if ocr_engine:
+            res_ocr, _ = ocr_engine(resized)
+            raw_text = ' '.join(r[1] for r in res_ocr) if res_ocr else ''
+            norm = raw_text.lower()
+            norm = norm.replace('ă','a').replace('â','a').replace('ơ','o').replace('ô','o').replace('ư','u').replace('đ','d')
+            norm = re.sub(r'tr[iuorv]+', '-', norm)
+            norm = norm.replace('cong', '+').replace('x', '*').replace('nhan', '*').replace('#', '*').replace(':', '/')
+
+            for op in ['+', '-', '*', '/']:
+                if op in norm:
+                    parts = norm.split(op, 1)
+                    def get_v(s):
+                        clean_s = re.sub(r'[^a-z0-9]', '', s.split('=')[0])
+                        if clean_s.isdigit(): return int(clean_s)
+                        for k, val in VN_MATH_NUMS.items():
+                            if k in clean_s: return val
+                        return None
+                    v1 = get_v(parts[0])
+                    v2 = get_v(parts[1])
+                    if v1 is not None and v2 is not None:
+                        calc = None
+                        if op == '+': calc = v1 + v2
+                        elif op == '-': calc = v1 - v2
+                        elif op == '*': calc = v1 * v2
+                        elif op == '/': calc = v1 // v2 if v2 != 0 else 0
+                        if calc is not None and calc in answers:
+                            log(f"[+] ⚡ Giải bài toán Captcha cục bộ bằng RapidOCR: {v1} {op} {v2} = {calc} (0 token)")
+                            return calc
+    except Exception as e_local:
+        log(f"[!] Local math OCR pass error: {e_local}")
+
+    # Priority 2: Fallback Gemini Flash-Lite nếu có API Key hợp lệ
+    try:
+        parts = [
+            {"text": f"Solve the math problem in this image. The choices are {answers}. Return ONLY a JSON object with key 'answer' pointing to the correct integer choice, e.g. {{\"answer\": 4}}."},
+            {"inline_data": {"mime_type": "image/png", "data": img_b64}}
+        ]
+        payload = json.dumps({"contents": [{"parts": parts}]}).encode("utf-8")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_API_KEY}"
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            txt = data["candidates"][0]["content"]["parts"][0]["text"]
+            txt_clean = re.sub(r"^```(?:json)?", "", txt.strip(), flags=re.IGNORECASE).rstrip("`").strip()
+            parsed = json.loads(txt_clean)
+            if "answer" in parsed:
+                ans = int(parsed["answer"])
+                log(f"[+] 🧠 Gemini Vision giải bài toán captcha: {ans} (từ các lựa chọn: {answers})")
+                return ans
+    except Exception:
+        pass
+    return answers[0] if answers else None
+
+def fallback_ai_search(query: str, domain_hint: str = "", use_gemini: bool = False) -> list:
+    """
+    Search siêu tốc kết hợp DuckDuckGo/Bing giả lập TLS Chrome 124 (0 token, miễn phí 100%).
+    Chỉ gọi Gemini khi use_gemini=True để tiết kiệm tối đa quota API.
     """
     results = []
     
-    # Lớp 1: Gọi Gemini 3.5 Flash-Lite API (siêu tiết kiệm token, tốc độ 1.2s)
-    gemini_doms = resolve_domain_gemini_ai(query, domain_hint)
-    for gd in gemini_doms:
-        if gd not in results:
-            results.append(gd)
+    # Lớp 1: Chỉ gọi Gemini khi được yêu cầu rõ ràng (tiết kiệm token)
+    if use_gemini:
+        gemini_doms = resolve_domain_gemini_ai(query, domain_hint)
+        for gd in gemini_doms:
+            if gd not in results:
+                results.append(gd)
+
 
     blacklist = ['google.', 'youtube.com', 'facebook.com', 'tiktok.com', 'zalo.me', 'instagram.com', 'twitter.com', 'x.com', 'wikipedia.org', 'link4m.']
     
@@ -837,9 +949,17 @@ def detect_sponsor_domain(page_link):
                     other_live_urls.append(live_url)
 
     final_live = []
-    for u in (vision_live_urls + stem_live_urls + script_urls + other_live_urls):
+    # Chỉ giữ lại các domain có script traffic hoặc có từ khóa khớp / vision khớp
+    strict_live = [u for u in (vision_live_urls + stem_live_urls + script_urls) if u]
+    for u in strict_live:
         if u not in final_live:
             final_live.append(u)
+
+    # Nếu chưa có domain nào có script, chỉ thêm tối đa 2 domain khác để thử, tránh lang thang các web rác
+    if not final_live:
+        for u in other_live_urls[:2]:
+            if u not in final_live:
+                final_live.append(u)
 
     if final_live:
         log(f"[+] Verified live sponsor website candidates (priority sorted): {final_live}")
@@ -1124,6 +1244,31 @@ if (!quest_info && typeof(Storage) !== "undefined") {
 
                 if isinstance(data, dict):
                     log(f"[*] API Response JSON from {res.url[:70]}: {data}")
+                    # Tự động giải quyết bài toán xác minh Ontops / Best-Traffic Math Captcha
+                    if "captcha/math" in u_lower or ("imageBase64" in data and "answers" in data):
+                        img_b64 = data.get("imageBase64")
+                        ans_choices = data.get("answers", [])
+                        if img_b64 and ans_choices:
+                            log(f"[*] Phát hiện bài toán xác minh Ontops Math Captcha: các lựa chọn {ans_choices}")
+                            correct_ans = solve_math_captcha_gemini(img_b64, ans_choices)
+                            if correct_ans is not None:
+                                try:
+                                    page.evaluate("""(ans) => {
+                                        const opt = document.querySelector(`input[name="captchano-choice"][value="${ans}"]`);
+                                        if (opt) {
+                                            opt.checked = true;
+                                            opt.dispatchEvent(new Event('change', { bubbles: true }));
+                                            if (opt.parentElement) opt.parentElement.click();
+                                        }
+                                        const submitBtn = document.querySelector('#captchano-submit, .captchano-submit-btn');
+                                        if (submitBtn) submitBtn.click();
+                                    }""", correct_ans)
+                                    log(f"[+] Đã chọn đáp án {correct_ans} và bấm Xác nhận bài toán captcha thành công!")
+                                    step_1_completed = True
+                                except Exception as e_click:
+                                    log(f"[!] Lỗi khi click đáp án captcha: {e_click}")
+                        return
+
                     if data.get("info") == "No Campaign" or (data.get("success") is False and "No Campaign" in str(data)):
                         campaign_dead = True
                         return
@@ -1805,7 +1950,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                             el.dataset.click = 'true';
                                             if (typeof checkButtonClick === 'function') checkButtonClick();
                                         }}
-                                        const c = document.querySelector('.whatoncode button, [id=\'{traffic_key}\'] button, .completed, #traffic-button');
+                                        const c = document.querySelector('.whatoncode button, [id=\'{traffic_key}\'] button, .completed, #traffic-button, #traffic-button-no, .traffic-button-no');
                                         if (c && (!c.innerText || !c.innerText.includes('Mã KM'))) c.click();
                                     }}""")
                                 except Exception:

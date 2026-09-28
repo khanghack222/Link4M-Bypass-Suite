@@ -8,11 +8,12 @@ build_dist/
 *.build/
 *.dist/
 *.onefile-build/
-destination_url.txt
-extracted_code.txt
-.venv/
-node_modules/
 .env
+.env.*
+!.env.example
+proxies.txt
+destination_url*.txt
+DESTINATION_FINAL_URL.txt
 trafficvn_profile/
 test_profile/
 data/
