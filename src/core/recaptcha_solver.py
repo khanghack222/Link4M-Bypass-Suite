@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional, List
 from playwright.sync_api import Page, Locator
 
 _env_key = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_API_KEY = _env_key if (_env_key and not _env_key.startswith("sk-")) else ""
+GEMINI_API_KEY = _env_key if (_env_key and _env_key.startswith("AIzaSy")) else ""
 
 class RecaptchaSolver:
     def __init__(self, headless: bool = True, **kwargs):
@@ -109,6 +109,8 @@ class RecaptchaSolver:
                 except Exception: pass
 
     def ask_gemini_vision_tiles(self, img_bytes: bytes, instruction: str, total_tiles: int = 9) -> List[int]:
+        if not GEMINI_API_KEY:
+            return []
         """Uses Gemini 3.1 Flash-Lite to solve reCAPTCHA v2 image challenge grids (3x3 or 4x4)."""
         b64_img = base64.b64encode(img_bytes).decode("utf-8")
         if total_tiles == 16:
@@ -167,6 +169,8 @@ Respond ONLY with a valid JSON:
 
     def solve_image_challenge(self, page: Page, active_bframe, chk, max_rounds: int = 20) -> bool:
         """Solves reCAPTCHA v2 image challenge using Gemini Vision directly inside Playwright bframe."""
+        if not GEMINI_API_KEY:
+            return False
         print("[*] Starting Multimodal Vision Image Solver for reCAPTCHA...", flush=True)
         for round_idx in range(max_rounds):
             if chk.get_attribute("aria-checked") == "true":

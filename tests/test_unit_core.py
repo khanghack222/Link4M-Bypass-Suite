@@ -107,11 +107,25 @@ def test_concurrency_destination_isolation():
             except Exception: pass
     print("[PASS] test_concurrency_destination_isolation")
 
+def test_domain_utils_module():
+    from domain_utils import unmask_domain_candidates as udc, VALID_TLDS
+    assert len(VALID_TLDS) > 10, "VALID_TLDS should contain recognized TLDs"
+    res = udc("brand.c***")
+    assert "brand.com" in res, "Domain utils should expand brand.c*** to brand.com"
+    print("[PASS] test_domain_utils_module")
+
+def test_math_utils_module():
+    from math_utils import VN_MATH_NUMS as vnm
+    assert vnm["mot"] == 1 and vnm["sau"] == 6 and vnm["muoi"] == 10
+    print("[PASS] test_math_utils_module")
+
 if __name__ == "__main__":
     print("=== STARTING OFFLINE CORE UNIT TESTS ===")
     test_classify_url()
     test_clean_destination_url()
     test_unmask_domain_candidates()
     test_math_captcha_parser()
+    test_domain_utils_module()
+    test_math_utils_module()
     test_concurrency_destination_isolation()
     print("=== ALL OFFLINE UNIT TESTS PASSED (100%) ===")

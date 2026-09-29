@@ -11,6 +11,12 @@ try:
     from brain import get_brain
 except ImportError:
     from src.core.brain import get_brain
+try:
+    from domain_utils import unmask_domain_candidates, VALID_TLDS, TLD_REGEX
+    from math_utils import VN_MATH_NUMS
+except ImportError:
+    from src.core.domain_utils import unmask_domain_candidates, VALID_TLDS, TLD_REGEX
+    from src.core.math_utils import VN_MATH_NUMS
 
 _OCR_INSTANCE = None
 _DDDD_INSTANCE = None
@@ -63,47 +69,6 @@ _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
 
 MEDIA_EXTS = {'jpg', 'png', 'webp', 'jpeg', 'gif', 'html', 'js', 'css', 'svg', 'mp3', 'mp4', 'json'}
-
-def unmask_domain_candidates(raw_text: str):
-    """Auto unmask domains with asterisks like shin-shih.co***.tw or site.c***"""
-    results = []
-    clean = raw_text.replace('★', '*').replace('x', 'x')
-
-    # Pattern 1: domain.c***.tw / domain.co***.vn / domain.co***.tw
-    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.(?:co|c)\*+\.([a-zA-Z]{2,4})', clean, re.IGNORECASE):
-        p, cc = m.group(1).lower(), m.group(2).lower()
-        results.extend([f"{p}.com.{cc}", f"{p}.co.{cc}", f"{p}.{cc}"])
-
-    # Pattern 2: domain.c*** or domain.co***
-    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.(?:co|c)\*+(?![a-zA-Z0-9])', clean, re.IGNORECASE):
-        results.append(f"{m.group(1).lower()}.com")
-
-    # Pattern 3: domain.n***
-    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.n\*+(?![a-zA-Z0-9])', clean, re.IGNORECASE):
-        results.append(f"{m.group(1).lower()}.net")
-
-    # Pattern 4: domain.o***
-    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.o\*+(?![a-zA-Z0-9])', clean, re.IGNORECASE):
-        results.append(f"{m.group(1).lower()}.org")
-
-    # Pattern 5: domain.v***
-    for m in re.finditer(r'([a-zA-Z0-9\-]{2,})\.v\*+(?![a-zA-Z0-9])', clean, re.IGNORECASE):
-        results.append(f"{m.group(1).lower()}.vn")
-
-    # Pattern 6: split/masked domains like dawnseeker. .com or site.***.com
-    for m in re.finditer(r'([a-zA-Z0-9\-]{3,})\.(?:[\s\*\.\-\_]+)(com|net|org|vn|tw|za\.com|co|site|vip)', clean, re.IGNORECASE):
-        p, suf = m.group(1).lower(), m.group(2).lower()
-        results.extend([f"{p}.za.{suf}", f"{p}.{suf}", f"{p}.com.{suf}", f"{p}.com", f"{p}.net", f"{p}.org"])
-
-    return list(dict.fromkeys(results))
-
-VALID_TLDS = [
-    'com.vn', 'com.tw', 'co.uk', 'co.jp', 'za.com', 'de.com', 'uk.com', 'jpn.com', 'gb.net', 'jp.net', 'cn.com',
-    'in.net', 'com.co', 'co.in', 'net.in', 'stridewalk.in', 'org.vn', 'edu.vn', 'pro', 'fun', 'bet', 'asia',
-    'com', 'net', 'org', 'io', 'cc', 'me', 'vn', 'tw', 'vip', 'tv', 'co', 'site', 'top', 'online', 'xyz',
-    'info', 'biz', 'club', 'games', 'app', 'live', 'ai', 'in', 'us', 'uk'
-]
-TLD_REGEX = '|'.join([re.escape(t) for t in sorted(VALID_TLDS, key=len, reverse=True)])
 
 def extract_domain_candidates(ocr_lines, quest_info=None):
     candidates = []
@@ -400,7 +365,7 @@ def extract_quest_instructions(all_texts: list) -> dict:
     }
 
 _env_key = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_API_KEY = _env_key if (_env_key and not _env_key.startswith("sk-")) else ""
+GEMINI_API_KEY = _env_key if (_env_key and _env_key.startswith("AIzaSy")) else ""
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 def resolve_domain_gemini_ai(keyword: str, domain_hint: str = "") -> list:
@@ -450,6 +415,8 @@ def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
     AI trực tiếp 'nhìn' hình ảnh hướng dẫn, bóc tách chính xác từ khóa Google và domain đích (kể cả bị che sao ***).
     """
     if not image_bytes_list:
+        return {}
+    if not GEMINI_API_KEY:
         return {}
     # Check cache by MD5 hash of image bytes to save tokens
     import hashlib
@@ -804,39 +771,44 @@ def detect_sponsor_domain(page_link):
     with ThreadPoolExecutor(max_workers=min(len(imgs_info or [1]), 5)) as ex:
         all_img_bytes = list(ex.map(_fetch_one_img, imgs_info or []))
 
-    # Phase 1: Direct Gemini Multimodal Vision (Tải ảnh nhiệm vụ gửi trực tiếp cho AI nhìn)
+    # Phase 1: Rapid Local OCR First (Ưu tiên ảnh base64 nhỏ chứa hướng dẫn bước 1, 2, 3 để quét tức thì <1s)
     valid_imgs = [b for b in all_img_bytes if b]
     ai_vision_res = {}
-    if valid_imgs:
-        log(f"[*] 👁️ Gửi {len(valid_imgs)} ảnh nhiệm vụ cho Gemini Multimodal Vision phân tích trực tiếp...")
-        ai_vision_res = analyze_quest_images_gemini_vision(valid_imgs)
-
-    # Phase 1.1: Only run OCR as fallback if Gemini Vision fails
     cloud_texts = []
-    if valid_imgs and not (ai_vision_res and (ai_vision_res.get("keyword") or ai_vision_res.get("domain_hint") or ai_vision_res.get("target_domains"))):
-        log("[*] Gemini Vision không trích xuất đủ, kích hoạt fallback Local RapidOCR...")
+
+    if valid_imgs:
         ocr_inst = get_ocr()
-        for img_b in valid_imgs:
+        # Sắp xếp ảnh nhỏ và vừa lên đầu (thường là banner chữ hướng dẫn nhiệm vụ < 35KB)
+        sorted_valid = sorted(valid_imgs, key=len)
+        for img_b in sorted_valid:
             try:
                 res_ocr, _ = ocr_inst(img_b)
                 if res_ocr:
                     for line in res_ocr:
                         if len(line) > 1 and line[1].strip():
                             cloud_texts.append(line[1].strip())
+                # Nếu đã đọc được cả từ khóa và domain hint từ các ảnh đầu, dừng sớm không cần OCR toàn bộ ảnh nặng
+                temp_corpus = all_texts + cloud_texts
+                temp_q = extract_quest_instructions(temp_corpus)
+                if temp_q.get("keyword") and temp_q.get("domain_hint"):
+                    break
             except Exception:
                 pass
 
     full_ocr_corpus = all_texts + cloud_texts
     quest_info = extract_quest_instructions(full_ocr_corpus)
 
-    # Hòa trộn kết quả từ Gemini Vision nếu có
-    if ai_vision_res:
-        if ai_vision_res.get("keyword"):
-            quest_info["keyword"] = ai_vision_res["keyword"]
-        if ai_vision_res.get("domain_hint"):
-            quest_info["domain_hint"] = ai_vision_res["domain_hint"]
-        if ai_vision_res.get("page_hint"):
-            quest_info["page_hint"] = ai_vision_res["page_hint"]
+    # Chỉ gọi Gemini Vision nếu OCR hoàn toàn không đọc được từ khóa và có cấu hình key
+    if valid_imgs and GEMINI_API_KEY and not (quest_info.get("keyword") or quest_info.get("domain_hint")):
+        log(f"[*] OCR chưa đủ thông tin, kích hoạt Gemini Vision...")
+        ai_vision_res = analyze_quest_images_gemini_vision(valid_imgs)
+        if ai_vision_res:
+            if ai_vision_res.get("keyword"):
+                quest_info["keyword"] = ai_vision_res["keyword"]
+            if ai_vision_res.get("domain_hint"):
+                quest_info["domain_hint"] = ai_vision_res["domain_hint"]
+            if ai_vision_res.get("page_hint"):
+                quest_info["page_hint"] = ai_vision_res["page_hint"]
 
     if quest_info.get("keyword") or quest_info.get("domain_hint"):
         log(f"[*] 🎯 Cấu trúc nhiệm vụ: Từ khóa='{quest_info['keyword']}', Domain Hint='{quest_info['domain_hint']}', Trang={quest_info['page_hint']}")
