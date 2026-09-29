@@ -301,31 +301,36 @@ def extract_quest_instructions(all_texts: list) -> dict:
     domain_hint = ""
     page_hint = 1
     
-    # 1. Quét tìm Bước 2 (Từ khóa)
-    idx_s2 = -1
+    # Ưu tiên 1: Quét ô tìm kiếm Google trong ảnh 'Google <keyword> Q'
     for i, l in enumerate(clean_lines):
-        if re.search(r'(?:b[uư][oơ]c|buroc)\s*2', l, re.IGNORECASE):
-            idx_s2 = i
-            break
-            
-    if idx_s2 != -1:
-        line_s2 = clean_lines[idx_s2]
-        cand = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*2\s*[:\.]?\s*', '', line_s2, flags=re.IGNORECASE)
-        cand = re.sub(r'^(?:g[oõ]|go)?\s*(?:t[iì]m|tim)?\s*(?:t[uừ]|tir|tu)?\s*(?:kh[oó]a|khoa)?[:\.\s]*', '', cand, flags=re.IGNORECASE).strip()
-        if len(cand) >= 2 and not any(k in cand.lower() for k in ['google', 'bước', 'buroc']):
-            keyword = cand
-        elif idx_s2 + 1 < len(clean_lines):
-            next_l = clean_lines[idx_s2 + 1]
-            if not re.search(r'(?:b[uư][oơ]c|buroc|google)', next_l, re.IGNORECASE):
-                keyword = next_l.strip()
+        if l.strip().lower() == "google" and i + 1 < len(clean_lines):
+            cand_kw = clean_lines[i+1].strip()
+            if cand_kw.lower() != "q" and not re.search(r'(?:b[uư][oơ]c|buroc)', cand_kw, re.IGNORECASE):
+                keyword = cand_kw
+                break
 
+    # Ưu tiên 2: Quét Bước 2 (Từ khóa) nếu ô Google chưa có
     if not keyword:
-        # Fallback: Quét ô tìm kiếm "Google <keyword> Q"
+        idx_s2 = -1
         for i, l in enumerate(clean_lines):
-            if l.strip().lower() == "google" and i + 1 < len(clean_lines):
-                if clean_lines[i+1].lower() != "q" and not re.search(r'(?:b[uư][oơ]c|buroc)', clean_lines[i+1], re.IGNORECASE):
-                    keyword = clean_lines[i+1].strip()
-                    break
+            if re.search(r'(?:b[uư][oơ]c|buroc)\s*2', l, re.IGNORECASE):
+                idx_s2 = i
+                break
+                
+        if idx_s2 != -1:
+            line_s2 = clean_lines[idx_s2]
+            cand = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*2\s*[:\.]?\s*', '', line_s2, flags=re.IGNORECASE)
+            cand = re.sub(r'^(?:gotimturkhoa|gotimtukhoa|gotimkhoa|timkhoa|gotim|timtu|timtur|khoa|turkhoa|g[oõ]|go|t[iì]m|tim|t[uừ]|tir|tu|tur|kh[oó]a)[:\.\s]*', '', cand, flags=re.IGNORECASE).strip()
+            if len(cand) >= 2 and not any(k in cand.lower() for k in ['google', 'bước', 'buroc']):
+                keyword = cand
+            else:
+                collected = []
+                for j in range(idx_s2 + 1, min(idx_s2 + 4, len(clean_lines))):
+                    if re.search(r'(?:b[uư][oơ]c|buroc|google)', clean_lines[j], re.IGNORECASE):
+                        break
+                    collected.append(clean_lines[j].strip())
+                if collected:
+                    keyword = " ".join(collected)
 
     # 2. Quét tìm Bước 3 (Domain đích & Số trang)
     idx_s3 = -1
@@ -337,7 +342,7 @@ def extract_quest_instructions(all_texts: list) -> dict:
     if idx_s3 != -1:
         s3_tokens = []
         l_s3 = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*3\s*[:\.]?\s*', '', clean_lines[idx_s3], flags=re.IGNORECASE)
-        l_s3 = re.sub(r'^(?:b[aá]m|click|v[aà]o|t[iì]m)?\s*(?:website|trang\s*web|web|site)?[:\.\s]*', '', l_s3, flags=re.IGNORECASE).strip()
+        l_s3 = re.sub(r'^(?:b[aá]m|bam|click|v[aà]o|vao|t[iì]m|tim)?\s*(?:website|websiter|trang\s*web|web|site)?[:\.\s]*', '', l_s3, flags=re.IGNORECASE).strip()
         if l_s3: s3_tokens.append(l_s3)
         for j in range(idx_s3 + 1, min(idx_s3 + 5, len(clean_lines))):
             if re.search(r'(?:b[uư][oơ]c|buroc)\s*4', clean_lines[j], re.IGNORECASE):
@@ -353,6 +358,7 @@ def extract_quest_instructions(all_texts: list) -> dict:
         combined_s3 = re.sub(r'\s*\.\s*', '.', combined_s3)
         for token in combined_s3.split():
             clean_tok = token.strip('./- ')
+            clean_tok = re.sub(r'^(?:bam|click|vao|tim|website|websiter|trangweb|web|site)+', '', clean_tok, flags=re.IGNORECASE).strip('./- ')
             if '.' in clean_tok or any(c in clean_tok for c in ['*', '★']):
                 if not any(k in clean_tok.lower() for k in ['google', 'link4m']):
                     domain_hint = clean_tok.lower()
@@ -732,7 +738,7 @@ def detect_sponsor_domain(page_link):
     # Step 2: Extract from target sponsor images and base64 images
     log("[*] Đang quét hình ảnh quảng cáo & hướng dẫn nhiệm vụ...")
     imgs_info = []
-    for _poll in range(16):
+    for _poll in range(8):
         try:
             curr_imgs = page_link.evaluate("""() => {
                 const res = [];
@@ -748,49 +754,44 @@ def detect_sponsor_domain(page_link):
             }""")
             if curr_imgs:
                 imgs_info = curr_imgs
-                has_adv = any(it.get('type') == 'url' and ('advertiser' in it.get('src', '') or 'link4m' in it.get('src', '')) for it in imgs_info)
-                if has_adv and len(imgs_info) >= 3:
+                has_b64 = any(it.get('type') == 'b64' for it in imgs_info)
+                if has_b64 and len(imgs_info) >= 3:
                     break
         except Exception:
             pass
-        time.sleep(0.25)
+        time.sleep(0.15)
 
-    log(f"[*] Phát hiện {len(imgs_info or [])} ảnh nhiệm vụ. Đang chạy Cloud OCR API siêu tốc song song...")
+    log(f"[*] Phát hiện {len(imgs_info or [])} ảnh nhiệm vụ. Đang chạy Rapid OCR cục bộ...")
     def _fetch_one_img(item):
         try:
             if item['type'] == 'b64':
                 b64_str = item['src'].split(',', 1)[1] if ',' in item['src'] else item['src']
                 return base64.b64decode(b64_str)
             else:
-                req = urllib.request.Request(item['src'], headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://link4m.net/'})
-                with urllib.request.urlopen(req, context=_SSL_CTX, timeout=3.5) as r:
-                    return r.read()
+                # Không tải ảnh quảng cáo dung lượng lớn từ mạng nếu đã có ảnh base64 hướng dẫn
+                return None
         except Exception:
             return None
 
-    with ThreadPoolExecutor(max_workers=min(len(imgs_info or [1]), 5)) as ex:
-        all_img_bytes = list(ex.map(_fetch_one_img, imgs_info or []))
+    all_img_bytes = [_fetch_one_img(it) for it in (imgs_info or [])]
 
     # Phase 1: Rapid Local OCR First (Ưu tiên ảnh base64 nhỏ chứa hướng dẫn bước 1, 2, 3 để quét tức thì <1s)
     valid_imgs = [b for b in all_img_bytes if b]
     ai_vision_res = {}
     cloud_texts = []
-
     if valid_imgs:
         ocr_inst = get_ocr()
-        # Sắp xếp ảnh nhỏ và vừa lên đầu (thường là banner chữ hướng dẫn nhiệm vụ < 35KB)
-        sorted_valid = sorted(valid_imgs, key=len)
-        for img_b in sorted_valid:
+        # Giữ nguyên thứ tự hiển thị DOM (Ảnh Bước 1 -> Bước 2 -> Bước 3)
+        for img_b in valid_imgs:
             try:
                 res_ocr, _ = ocr_inst(img_b)
                 if res_ocr:
                     for line in res_ocr:
                         if len(line) > 1 and line[1].strip():
                             cloud_texts.append(line[1].strip())
-                # Nếu đã đọc được cả từ khóa và domain hint từ các ảnh đầu, dừng sớm không cần OCR toàn bộ ảnh nặng
-                temp_corpus = all_texts + cloud_texts
-                temp_q = extract_quest_instructions(temp_corpus)
-                if temp_q.get("keyword") and temp_q.get("domain_hint"):
+                # Nếu đã đọc được cả từ khóa và domain hint, dừng ngay lập tức (< 3s thay vì quét 11 ảnh mất 30s!)
+                temp_q = extract_quest_instructions(cloud_texts)
+                if temp_q.get("keyword") and temp_q.get("domain_hint") and temp_q.get("keyword") != "tirkhoa":
                     break
             except Exception:
                 pass
@@ -894,14 +895,17 @@ def detect_sponsor_domain(page_link):
     log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (sau khi ưu tiên Google Search & Brain): {candidates}")
 
     log(f"[*] Đang kiểm tra kết nối & DNS live probe cho các ứng viên...")
-    # Probe live domain: Giữ nguyên thứ tự ưu tiên tuyệt đối từ AI Vision / Domain Hint!
+    # Probe live domain: Chạy song song đa luồng ThreadPoolExecutor siêu tốc (< 2.5s thay vì tuần tự 26s!)
     vision_live_urls = []
     stem_live_urls = []
     script_urls = []
     other_live_urls = []
 
-    for c in candidates[:12]:
-        live_url, has_sc = probe_domain_live(c)
+    probed_cands = candidates[:10]
+    with ThreadPoolExecutor(max_workers=min(len(probed_cands), 8)) as ex:
+        probe_results = list(ex.map(lambda c: (c, probe_domain_live(c)), probed_cands))
+
+    for c, (live_url, has_sc) in probe_results:
         if live_url:
             clow = c.lower()
             is_exact_vision = any(vt == clow or vt in clow for vt in vision_targets)
@@ -919,7 +923,6 @@ def detect_sponsor_domain(page_link):
             else:
                 if live_url not in other_live_urls:
                     other_live_urls.append(live_url)
-
     final_live = []
     # Chỉ giữ lại các domain có script traffic hoặc có từ khóa khớp / vision khớp
     strict_live = [u for u in (vision_live_urls + stem_live_urls + script_urls) if u]
