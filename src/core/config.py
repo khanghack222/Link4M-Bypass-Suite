@@ -165,6 +165,18 @@ STEALTH_INIT_SCRIPT = """
         if (!window.chrome) window.chrome = {};
         if (!window.chrome.runtime) window.chrome.runtime = {};
     } catch (e) {}
+    window.__NUXT__ = window.__NUXT__ || {};
+    window.__NUXT__.config = window.__NUXT__.config || {
+            public: {
+                baseUrl: (window.location && window.location.origin) || "https://direct.gtraffic.io",
+                api_public: (window.location && window.location.origin && window.location.origin.includes('direct')) ? "https://dr-client.gtraffic.io/" : "https://client.gtraffic.io/",
+                api_private: (window.location && window.location.origin && window.location.origin.includes('direct')) ? "https://dr-manager.gtraffic.io/" : "https://manager.gtraffic.io/",
+                api_login: "https://drsso.gtraffic.io/",
+                webName: "Gtraffic",
+                webDescription: ""
+            },
+            app: { baseURL: "/", buildAssetsDir: "/_nuxt/", cdnURL: "" }
+        };
 """
 
 def save_destination(url: str, run_id: str = None):

@@ -358,6 +358,7 @@ def extract_quest_instructions(all_texts: list) -> dict:
         combined_s3 = re.sub(r'\s*\.\s*', '.', combined_s3)
         for token in combined_s3.split():
             clean_tok = token.strip('./- ')
+            clean_tok = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*\d*\s*', '', clean_tok, flags=re.IGNORECASE)
             clean_tok = re.sub(r'^(?:bam|click|vao|tim|website|websiter|trangweb|web|site)+', '', clean_tok, flags=re.IGNORECASE).strip('./- ')
             if '.' in clean_tok or any(c in clean_tok for c in ['*', '★']):
                 if not any(k in clean_tok.lower() for k in ['google', 'link4m']):
@@ -376,12 +377,39 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 def resolve_domain_gemini_ai(keyword: str, domain_hint: str = "") -> list:
     """
-    Sử dụng Google Gemini AI Studio (Flash-Lite series) siêu tiết kiệm token và tốc độ ~1.2s
+    Sử dụng MiMo Free AI (qua OpenCode reverse daemon) và Gemini Flash-Lite
     để giải mã và suy luận chính xác website tài trợ từ từ khóa và mask.
     """
     if not keyword and not domain_hint:
         return []
-    
+
+    # Priority 0: MiMo Free AI via OpenCode Daemon (100% Free, 0 Token Cost)
+    try:
+        from mimo_opencode_client import ask_mimo_free
+        mimo_prompt = (
+            f'Given Vietnamese search quest keyword: "{keyword}" and target domain hint/mask: "{domain_hint}", '
+            f'deduce and return ONLY a valid JSON array of 1 to 2 most probable exact domains, e.g. ["example.com"]. '
+            f'No markdown, no backticks, no explanations.'
+        )
+        ans = ask_mimo_free(mimo_prompt)
+        if ans:
+            clean_ans = re.sub(r"^```(?:json)?", "", ans.strip(), flags=re.IGNORECASE).rstrip("`").strip()
+            arr = json.loads(clean_ans)
+            if isinstance(arr, list):
+                doms = []
+                for d in arr:
+                    c = str(d).replace("www.", "").strip("./- ").lower()
+                    if "." in c and c not in doms:
+                        doms.append(c)
+                if doms:
+                    log(f"[+] [MiMo Free AI] Suy luan chinh xac domain dich: {doms}")
+                    return doms
+    except Exception as e_mimo:
+        pass
+
+    if not GEMINI_API_KEY:
+        return []
+
     models_to_try = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]
     prompt = f'Given Vietnamese traffic quest search keyword: "{keyword}" and target domain hint/mask: "{domain_hint}", deduce and return ONLY a JSON array of the 1 to 2 most probable exact domains (e.g. ["domain.com"]). No markdown, no extra explanation.'
     payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
@@ -435,7 +463,7 @@ def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
         return _GEMINI_VISION_CACHE[cache_key]
 
 
-    models_to_try = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]
+    models_to_try = ["gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
     parts = [{
         "text": (
             "Analyze these Vietnamese shortlink quest instructions and mission screenshots.\n"
@@ -551,7 +579,21 @@ def solve_math_captcha_gemini(img_b64: str, answers: list):
     except Exception as e_local:
         log(f"[!] Local math OCR pass error: {e_local}")
 
-    # Priority 2: Fallback Gemini Flash-Lite nếu có API Key hợp lệ
+    # Priority 2: Fallback MiMo Free AI if OCR produced mathematical text
+    try:
+        if 'raw_text' in locals() and raw_text.strip():
+            from mimo_opencode_client import ask_mimo_free
+            mimo_res = ask_mimo_free(f"Calculate: '{raw_text.strip()}'. The valid choices are {answers}. Return ONLY the single correct number.")
+            clean_digits = re.findall(r'-?\d+', mimo_res or "")
+            for d in clean_digits:
+                val = int(d)
+                if val in answers:
+                    log(f"[+] 🧠 [MiMo Free AI] Giai toan Captcha tu text: '{raw_text}' -> {val}")
+                    return val
+    except Exception:
+        pass
+
+    # Priority 3: Fallback Gemini Flash-Lite nếu có API Key hợp lệ
     try:
         parts = [
             {"text": f"Solve the math problem in this image. The choices are {answers}. Return ONLY a JSON object with key 'answer' pointing to the correct integer choice, e.g. {{\"answer\": 4}}."},
@@ -775,33 +817,14 @@ def detect_sponsor_domain(page_link):
 
     all_img_bytes = [_fetch_one_img(it) for it in (imgs_info or [])]
 
-    # Phase 1: Rapid Local OCR First (Ưu tiên ảnh base64 nhỏ chứa hướng dẫn bước 1, 2, 3 để quét tức thì <1s)
+    # Phase 1: Gemini Multimodal Vision First (Nếu có API key) -> Bóc tách siêu tốc không cần OCR
     valid_imgs = [b for b in all_img_bytes if b]
     ai_vision_res = {}
     cloud_texts = []
-    if valid_imgs:
-        ocr_inst = get_ocr()
-        # Giữ nguyên thứ tự hiển thị DOM (Ảnh Bước 1 -> Bước 2 -> Bước 3)
-        for img_b in valid_imgs:
-            try:
-                res_ocr, _ = ocr_inst(img_b)
-                if res_ocr:
-                    for line in res_ocr:
-                        if len(line) > 1 and line[1].strip():
-                            cloud_texts.append(line[1].strip())
-                # Nếu đã đọc được cả từ khóa và domain hint, dừng ngay lập tức (< 3s thay vì quét 11 ảnh mất 30s!)
-                temp_q = extract_quest_instructions(cloud_texts)
-                if temp_q.get("keyword") and temp_q.get("domain_hint") and temp_q.get("keyword") != "tirkhoa":
-                    break
-            except Exception:
-                pass
+    quest_info = extract_quest_instructions(all_texts)
 
-    full_ocr_corpus = all_texts + cloud_texts
-    quest_info = extract_quest_instructions(full_ocr_corpus)
-
-    # Chỉ gọi Gemini Vision nếu OCR hoàn toàn không đọc được từ khóa và có cấu hình key
-    if valid_imgs and GEMINI_API_KEY and not (quest_info.get("keyword") or quest_info.get("domain_hint")):
-        log(f"[*] OCR chưa đủ thông tin, kích hoạt Gemini Vision...")
+    if valid_imgs and GEMINI_API_KEY:
+        log("[*] 👁️ Kích hoạt Gemini Vision phân tích trực tiếp ảnh nhiệm vụ...")
         ai_vision_res = analyze_quest_images_gemini_vision(valid_imgs)
         if ai_vision_res:
             if ai_vision_res.get("keyword"):
@@ -810,6 +833,28 @@ def detect_sponsor_domain(page_link):
                 quest_info["domain_hint"] = ai_vision_res["domain_hint"]
             if ai_vision_res.get("page_hint"):
                 quest_info["page_hint"] = ai_vision_res["page_hint"]
+            log(f"[+] ⚡ Gemini Vision đã bóc tách nhiệm vụ tức thì! Bỏ qua OCR cục bộ để tiết kiệm thời gian.")
+
+    # Phase 1.1: Local OCR Fallback (CHỈ kích hoạt nếu Gemini Vision không khả dụng hoặc chưa tìm thấy keyword/hint)
+    if valid_imgs and not (quest_info.get("keyword") or quest_info.get("domain_hint") or (ai_vision_res and ai_vision_res.get("target_domains"))):
+        log("[*] Gemini Vision không có kết quả hoặc không có key -> Kích hoạt Fallback OCR cục bộ...")
+        ocr_inst = get_ocr()
+        for img_b in valid_imgs:
+            try:
+                res_ocr, _ = ocr_inst(img_b)
+                if res_ocr:
+                    for line in res_ocr:
+                        if len(line) > 1 and line[1].strip():
+                            cloud_texts.append(line[1].strip())
+                temp_q = extract_quest_instructions(cloud_texts)
+                if temp_q.get("keyword") and temp_q.get("domain_hint") and temp_q.get("keyword") != "tirkhoa":
+                    break
+            except Exception:
+                pass
+        full_ocr_corpus = all_texts + cloud_texts
+        quest_info = extract_quest_instructions(full_ocr_corpus)
+    else:
+        full_ocr_corpus = all_texts
 
     if quest_info.get("keyword") or quest_info.get("domain_hint"):
         log(f"[*] 🎯 Cấu trúc nhiệm vụ: Từ khóa='{quest_info['keyword']}', Domain Hint='{quest_info['domain_hint']}', Trang={quest_info['page_hint']}")
@@ -902,7 +947,9 @@ def detect_sponsor_domain(page_link):
     other_live_urls = []
 
     probed_cands = candidates[:10]
-    with ThreadPoolExecutor(max_workers=min(len(probed_cands), 8)) as ex:
+    if not probed_cands:
+        return []
+    with ThreadPoolExecutor(max_workers=min(max(len(probed_cands), 1), 8)) as ex:
         probe_results = list(ex.map(lambda c: (c, probe_domain_live(c)), probed_cands))
 
     for c, (live_url, has_sc) in probe_results:
@@ -1151,12 +1198,12 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             traffic_key = all_keys[-1]
 
     if not traffic_key:
-        layout_blacklist = {'masthead', 'colophon', 'comments', 'site-nav', 'primary', 'secondary', 'content', 'wrapper', 'sidebar', 'footer', 'header', 'main-menu', 'wide-nav'}
+        layout_blacklist = {'masthead', 'colophon', 'comments', 'site-nav', 'primary', 'secondary', 'content', 'wrapper', 'sidebar', 'footer', 'header', 'main-menu', 'wide-nav', 'navbar', 'menu', 'nav', 'container'}
         div_ids = page.evaluate("""() => Array.from(document.querySelectorAll('div[id]'))
             .map(d => d.id)
-            .filter(id => (/^[a-zA-Z0-9]{5,12}$/.test(id) || /countdown|traffic|layma/i.test(id)))
+            .filter(id => (/^[a-zA-Z0-9]{6,12}$/.test(id) || /countdown|traffic|layma|whaton/i.test(id)) && !/nav|menu|wrap|bar|col|foot|head|main/i.test(id))
         """)
-        div_ids = [i for i in (div_ids or []) if i.lower() not in layout_blacklist]
+        div_ids = [i for i in (div_ids or []) if not any(b in i.lower() for b in layout_blacklist)]
         if div_ids:
             traffic_key = div_ids[0]
     log(f"[*] Detected traffic_key: {traffic_key}")

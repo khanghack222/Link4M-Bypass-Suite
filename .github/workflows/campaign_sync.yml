@@ -1,0 +1,36 @@
+name: Realtime Sponsor Campaign Sync & Brain Verification
+on:
+  schedule:
+    # Quét định kỳ mỗi 6 tiếng tự động cập nhật chiến dịch
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-campaigns:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Campaign Scanner & Proxy Harvester
+        run: |
+          python src/core/campaign_scanner.py
+          python tools/harvest_proxies.py
+
+      - name: Commit and Push Updated Brain & Proxies
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/bot_brain.json proxies.txt
+          git commit -m "chore(sync): auto-harvest VIP clean proxies and sponsor intelligence [skip ci]" || echo "No changes to commit"
+          git push || echo "Push failed or no changes"

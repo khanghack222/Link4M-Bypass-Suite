@@ -1,8 +1,28 @@
 import sys, json, re, urllib.request, ssl, socket, concurrent.futures
 sys.stdout.reconfigure(encoding='utf-8')
-from rapidocr_onnxruntime import RapidOCR
 
-engine = RapidOCR()
+_rapid_engine = None
+_dddd_engine = None
+
+def get_dddd():
+    global _dddd_engine
+    if _dddd_engine is None:
+        try:
+            import ddddocr
+            _dddd_engine = ddddocr.DdddOcr(show_ad=False)
+        except Exception:
+            _dddd_engine = False
+    return _dddd_engine if _dddd_engine is not False else None
+
+def get_engine():
+    global _rapid_engine
+    if _rapid_engine is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _rapid_engine = RapidOCR()
+        except Exception:
+            _rapid_engine = False
+    return _rapid_engine if _rapid_engine is not False else None
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
@@ -44,20 +64,45 @@ def resolve_domain(img_url):
         data = urllib.request.urlopen(req, context=ctx, timeout=5).read()
     except Exception as e:
         return []
-    lines, _ = engine(data)
+
     candidates = []
-    if lines:
-        for l in lines:
-            text = l[1].strip()
-            for p in text.split():
+
+    # Priority 1: Ultra-fast ddddocr pass (~10ms, 10MB RAM)
+    dddd = get_dddd()
+    if dddd and data:
+        try:
+            d_text = dddd.classification(data)
+            for p in (d_text or "").split():
                 p = p.strip('()[]{}<>,;:\'\"')
                 m = re.search(r'(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', p)
                 if m:
                     d = m.group(1).lower()
-                    if d in IGNORE or any(d.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp'] + list(JUNK_TLD)):
-                        continue
-                    if d not in candidates:
-                        candidates.append(d)
+                    if d not in IGNORE and not any(d.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp'] + list(JUNK_TLD)):
+                        if d not in candidates:
+                            candidates.append(d)
+        except Exception:
+            pass
+
+    # Priority 2: RapidOCR multi-line pass if no candidate or fallback needed
+    if not candidates:
+        engine = get_engine()
+        if engine and data:
+            try:
+                lines, _ = engine(data)
+                if lines:
+                    for l in lines:
+                        text = l[1].strip()
+                        for p in text.split():
+                            p = p.strip('()[]{}<>,;:\'\"')
+                            m = re.search(r'(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', p)
+                            if m:
+                                d = m.group(1).lower()
+                                if d in IGNORE or any(d.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp'] + list(JUNK_TLD)):
+                                    continue
+                                if d not in candidates:
+                                    candidates.append(d)
+            except Exception:
+                pass
 
     ranked = [d for d in candidates if d.endswith(GOOD_TLD)] + [d for d in candidates if not d.endswith(GOOD_TLD)]
     verified = []

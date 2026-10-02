@@ -76,7 +76,7 @@ CAMPAIGN_RULES = [
     (['sunwin', 'sun win', 'sun', 'urano', 'waygo', 'sixtyseven'], ['https://urano.com.co', 'https://waygo.com.co', 'https://sunwin.sixtyseven.co.in']),
     (['w88', 'w 88', 'ananta', 'anantafarming'], ['https://anantafarming.in.net', 'https://anantafarming.com']),
     (['fun', 'fun88', 'greenco', 'intermarket', 'inter', 'inte', 'linkvaofun88'], ['https://intermarket.com.co', 'https://greenco.com.co']),
-    (['hitclub', 'hit club', 'stridewalk', 'stride'], ['https://hitclub.stridewalk.in', 'https://stridewalk.in']),
+    (['hitclub', 'hit club', 'stridewalk', 'stride'], ['https://hitclub.cards', 'https://hitclub.stridewalk.in', 'https://stridewalk.in']),
     (['qh88', 'qh 88', 'qmmnews', 'qmm'], ['https://qmmnews.in.net']),
     (['ok365', 'ok 365'], ['https://ok365.com']),
     (['mu88', 'mu 88', 'antena', 'antenacat', 'antenacata', 'catalana'], ['https://antenacatalana.net']),
@@ -149,6 +149,13 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_g
 
     kw_clean = (keyword_text or "").lower().strip()
 
+    # 0. Direct check if keyword_text is already a domain (e.g. 'sivialco.org' or 'brand.com')
+    if kw_clean and ('.' in kw_clean or any(ext in kw_clean for ext in ['.com', '.org', '.net', '.vn', '.co'])):
+        v_direct, _ = check_candidate_worker(kw_clean)
+        if v_direct:
+            log(f"[+] Active campaign keyword is directly a verified live sponsor domain: {v_direct}")
+            return v_direct
+
     # 1. Match known campaigns / rule triggers FIRST IF VERIFIED LIVE
     if kw_clean:
         for triggers, d_list in CAMPAIGN_RULES:
@@ -160,6 +167,17 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_g
                     if verified:
                         log(f"[+] Match known campaign triggers {triggers} and verified live: {verified}")
                         return verified
+                # Dynamic search fallback for brand triggers
+                try:
+                    matched_trigger = next(t for t in triggers if t in kw_clean)
+                    search_doms = fallback_ai_search(matched_trigger, use_gemini=False)
+                    for dom in search_doms:
+                        verified, _ = check_candidate_worker(dom)
+                        if verified:
+                            log(f"[+] Live search engine fallback verified live sponsor for {matched_trigger}: {verified}")
+                            return verified
+                except Exception:
+                    pass
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -215,6 +233,17 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_g
                         if verified:
                             log(f"[+] Match known campaign triggers in OCR {triggers} (0 tokens): {verified}")
                             return verified
+                    # Dynamic search fallback for brand triggers found in OCR lines
+                    try:
+                        matched_trigger = next(t for t in triggers if t in ocr_full_str)
+                        search_doms = fallback_ai_search(matched_trigger, use_gemini=False)
+                        for dom in search_doms:
+                            verified, _ = check_candidate_worker(dom)
+                            if verified:
+                                log(f"[+] Live search for OCR trigger {matched_trigger} found live sponsor: {verified}")
+                                return verified
+                    except Exception:
+                        pass
 
             # 2b. Check candidates from RapidOCR immediately
             for c in (candidates or []):
@@ -601,7 +630,7 @@ def run(target_url: str = None, headless: bool = True):
 
         log("[TAB 1] Navigating to Gtraffic shortlink...")
         try:
-            page1.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+            page1.goto(target_url, wait_until="commit", timeout=25000)
         except Exception as e:
             log(f"[!] Warning on initial goto: {e}")
         
@@ -760,7 +789,35 @@ def run(target_url: str = None, headless: bool = True):
                     content_type="application/javascript",
                     body=real_andanh_code
                 ))
+            btd_file = os.path.join(ROOT_DIR, "src", "core", "btd.js")
+            real_btd_code = ""
+            if os.path.exists(btd_file):
+                try:
+                    with open(btd_file, "r", encoding="utf-8") as f_btd:
+                        real_btd_code = f_btd.read()
+                except Exception:
+                    pass
 
+            if real_btd_code:
+                page2.route("**/btd.js", lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/javascript",
+                    body=real_btd_code
+                ))
+            def handle_browser_challenge(route):
+                url = route.request.url
+                import urllib.parse
+                parsed = urllib.parse.urlparse(url)
+                params = urllib.parse.parse_qs(parsed.query)
+                rid_val = params.get("rid", [""])[0]
+                js_reply = f"window.__browser_challenge_ok = '{rid_val}';"
+                route.fulfill(
+                    status=200,
+                    content_type="application/javascript",
+                    body=js_reply
+                )
+
+            page2.route("**/browser-challenge.js*", handle_browser_challenge)
             # 1. Neutralize detectIncognito cleanly & inject stealth in page2
             page2.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -808,12 +865,17 @@ def run(target_url: str = None, headless: bool = True):
 
             is_direct = "direct.gtraffic.io" in target_url or "dr-client" in target_url
             ref_header = "" if is_direct else "https://www.google.com/"
+            btn_selector = '#trade-btn-clf svg, #trade-btn-clf, #trade-btn, #trade-d-btn, .trade-d-btn-container, #traffic-button-no, .trade-btn-clf, .trade-btn, #trade-d-btn button, #trade-d-btn a, button:has-text("LẤY MÃ"), a:has-text("LẤY MÃ"), [id*="trade-btn"]'
             log(f"[TAB 2] Opening sponsor site (Direct={is_direct}): {sponsor_domain}")
             try:
                 if ref_header:
-                    page2.goto(sponsor_domain, wait_until="domcontentloaded", referer=ref_header, timeout=40000)
+                    page2.goto(sponsor_domain, wait_until="commit", referer=ref_header, timeout=25000)
                 else:
-                    page2.goto(sponsor_domain, wait_until="domcontentloaded", timeout=40000)
+                    page2.goto(sponsor_domain, wait_until="commit", timeout=25000)
+                try:
+                    page2.wait_for_selector(btn_selector, timeout=8000)
+                except Exception:
+                    pass
             except Exception as e:
                 log(f"[!] Warning on sponsor goto: {e}")
             time.sleep(2)
@@ -835,8 +897,6 @@ def run(target_url: str = None, headless: bool = True):
             except Exception:
                 pass
 
-            # Locate GTraffic button (handles trade-btn-clf, traffic-button-no, trade-btn, trade-d-btn, etc.)
-            btn_selector = '#trade-btn-clf svg, #trade-btn-clf, #trade-btn, #trade-d-btn, .trade-d-btn-container, #traffic-button-no, .trade-btn-clf, .trade-btn, #trade-d-btn button, #trade-d-btn a, button:has-text("LẤY MÃ"), a:has-text("LẤY MÃ"), [id*="trade-btn"]'
             log(f"[TAB 2] Scrolling to locate Gtraffic button...")
 
             # Scroll to bottom first
@@ -904,35 +964,56 @@ def run(target_url: str = None, headless: bool = True):
                 except Exception:
                     pass
 
-            # Trigger click with JavaScript for all button variants
+            # Ensure BTD / Direct GTraffic button scripts are initialized if #trade-d-btn is present
             try:
                 page2.evaluate("""() => {
-                    const targets = [
-                        document.querySelector('#trade-btn-clf svg'),
-                        document.getElementById('trade-btn-clf'),
-                        document.getElementById('trade-d-btn'),
-                        document.querySelector('.trade-d-btn-container'),
-                        document.getElementById('trade-btn'),
-                        document.getElementById('traffic-button-no')
-                    ].filter(Boolean);
-                    for (const el of targets) {
-                        el.scrollIntoView({ behavior: 'instant', block: 'center' });
-                        if (typeof el.onclick === 'function') el.onclick();
-                        el.click();
-                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    window.detectIncognito = async () => ({ isPrivate: false, browserName: 'Chrome' });
+                    if (typeof sa === 'undefined' && typeof window._0x2c39 !== 'undefined') {
+                        window.sa = function(n, r, t, u, e) {
+                            var c = window._0x2c39;
+                            var o = { sdirD: (n, r) => n % r, BuWNm: (n, r) => n + r, SZvSl: (n, r) => n - r, gzaky: (n, r) => n + r, TsPBB: (n, r) => n * r, iYQDF: (n, r) => n + r, hdTJL: (n, r) => n * r, fhXzr: (n, r) => n + r };
+                            return Math[c(630)](o[c(633)](o[c(485)](o[c(402)](o[c(621)](o[c(363)](n, o[c(402)](o[c(621)](o[c(715)](r, n), t), 1)), o[c(665)](u, o[c(485)](o[c(402)](o[c(618)](e, t), n), 3))), e), 88), 10));
+                        };
                     }
                 }""")
+                if page2.locator("#trade-d-btn").count() > 0:
+                    has_click = page2.evaluate("() => typeof document.getElementById('trade-d-btn')?.onclick === 'function'")
+                    if not has_click:
+                        if real_andanh_code:
+                            page2.evaluate(f"(() => {{ {real_andanh_code} }})()")
+                        page2.evaluate("window.detectIncognito = async () => ({ isPrivate: false, browserName: 'Chrome' });")
+                        if real_btd_code:
+                            page2.evaluate(f"(() => {{ {real_btd_code} }})()")
+            except Exception as e_btd:
+                log(f"[*] BTD injection note: {e_btd}")
+            # Trigger click cleanly
+            try:
+                if page2.locator("#trade-d-btn").count() > 0:
+                    page2.click("#trade-d-btn")
+                else:
+                    page2.evaluate("""() => {
+                        const targets = [
+                            document.querySelector('#trade-btn-clf svg'),
+                            document.getElementById('trade-btn-clf'),
+                            document.getElementById('trade-btn'),
+                            document.getElementById('traffic-button-no')
+                        ].filter(Boolean);
+                        for (const el of targets) {
+                            el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                            if (typeof el.onclick === 'function') el.onclick();
+                            el.click();
+                            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        }
+                    }""")
+                    if btn:
+                        try:
+                            btn.scroll_into_view_if_needed()
+                            time.sleep(0.5)
+                            btn.click(force=True, timeout=3000)
+                        except Exception:
+                            pass
             except Exception:
                 pass
-
-            if btn:
-                try:
-                    btn.scroll_into_view_if_needed()
-                    time.sleep(0.5)
-                    btn.click(force=True, timeout=3000)
-                except Exception:
-                    pass
-
             log("⚡ KÍCH HOẠT: Đã nhấn nút 'LẤY MÃ' ➔ Bộ đếm bắt đầu chạy!")
 
             # Check for CaptchaNo challenge
@@ -987,23 +1068,27 @@ def run(target_url: str = None, headless: bool = True):
                 # Anti-stall scrolling satisfies is_scroll2 requirement
                 page2.mouse.wheel(0, 100 if (s % 2 == 0) else -100)
                 time.sleep(1)
-
                 dom_data = page2.evaluate("""() => {
-                    const c = document.querySelector('#trade-btn-clf__content, #trade-btn__content, #traffic-button-no__content, [id$="__content"]');
-                    const b = document.querySelector('#trade-btn-clf, #trade-btn, #traffic-button-no, #trade-d-btn, #notice-btn, [id*="trade-btn"]');
+                    const cp = document.querySelector('.copy-code, #copy-code');
+                    const c = document.querySelector('#trade-btn-clf__content, #trade-btn__content, #traffic-button-no__content, #trade-d-btn__content');
+                    const b = document.querySelector('#trade-btn-clf, #trade-btn, #traffic-button-no, #trade-d-btn');
                     const btnCodes = Array.from(document.querySelectorAll('[id*="trade-btn"][data-code], [id*="traffic-button"][data-code], .trade-btn[data-code]')).map(el => el.dataset.code);
                     return {
-                        content: (c && c.textContent) || (b && b.textContent) || "",
-                        btn: (b && b.textContent) || "",
+                        content: (cp && cp.innerText) || (c && c.innerText) || (b && b.innerText) || "",
+                        btn: (b && b.innerText) || "",
                         btnCodes: btnCodes
                     };
                 }""")
 
                 c_val = str(dom_data.get("content", "")).strip()
 
-                # Anti-stall: Auto-solve Security Modal / Captcha during countdown
-                if any(k in c_val.lower() for k in ["xác minh", "bảo mật", "kết quả", "tiếp tục"]):
-                    log("[!] Phát hiện modal xác minh bảo mật giữa đếm ngược! Tự động xử lý...")
+                # Anti-stall: Auto-solve Security Modal / Captcha ONLY when visibly active
+                is_modal_active = page2.evaluate("""() => {
+                    const m = document.querySelector('.verify-d-container:not(.hidden), .captchano-container:not(.hidden)');
+                    return !!m;
+                }""")
+                if is_modal_active:
+                    log("[!] Phát hiện modal xác minh bảo mật active giữa đếm ngược! Tự động xử lý...")
                     page2.evaluate("""() => {
                         const inputs = Array.from(document.querySelectorAll('input[type="radio"], input[type="checkbox"], .choice, [class*="option"]'));
                         if (inputs.length > 0) {
@@ -1201,7 +1286,7 @@ def run(target_url: str = None, headless: bool = True):
                     used_rid = session_rid if "session_rid" in locals() and session_rid else str(uuid.uuid4())
                     
                     if kw_id and extracted_code:
-                        tracking_url = "https://client.gtraffic.io/api/url/tracking-url"
+                        tracking_url = f"https://{'dr-client' if is_direct else 'client'}.gtraffic.io/api/url/tracking-url"
                         payload = {
                             "browser_name": "Chrome",
                             "browser_version": "124.0.0.0",
@@ -1222,7 +1307,7 @@ def run(target_url: str = None, headless: bool = True):
                             "Content-Type": "application/json",
                             "rid": used_rid,
                             "ncl": "000000000",
-                            "Origin": "https://gtraffic.io",
+                            "Origin": f"https://{'direct.' if is_direct else ''}gtraffic.io",
                             "Referer": target_url
                         }
                         req_track = urllib.request.Request(tracking_url, data=json.dumps(payload).encode(), headers=api_headers)

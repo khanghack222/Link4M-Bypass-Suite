@@ -479,5 +479,5 @@ def get_solver(headless: bool = True, **kwargs) -> RecaptchaSolver:
     return _SOLVER_INSTANCE
 
 RecaptchaAudioSolver = RecaptchaSolver
-
+get_solver_instance = get_solver
 

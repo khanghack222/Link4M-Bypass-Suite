@@ -46,4 +46,15 @@ def unmask_domain_candidates(raw_text: str) -> List[str]:
         p, suf = m.group(1).lower(), m.group(2).lower()
         results.extend([f"{p}.za.{suf}", f"{p}.{suf}", f"{p}.com.{suf}", f"{p}.com", f"{p}.net", f"{p}.org"])
 
-    return list(dict.fromkeys(results))
+    def _sanitize(dom_str: str) -> str:
+        s = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*\d*\s*', '', dom_str, flags=re.IGNORECASE)
+        s = re.sub(r'^(?:bam|click|vao|tim|website|websiter|trangweb|web|site)+', '', s, flags=re.IGNORECASE)
+        return s.strip('./- ')
+
+    out = []
+    for r in results:
+        cleaned = _sanitize(r)
+        if '.' in cleaned and len(cleaned.split('.')[0]) >= 2:
+            out.append(cleaned)
+
+    return list(dict.fromkeys(out))

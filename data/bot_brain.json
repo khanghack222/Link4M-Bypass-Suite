@@ -1,11 +1,13 @@
 {
   "version": "2.0.0-adaptive",
   "stats": {
-    "total_runs": 16,
-    "total_success": 7,
-    "total_heals": 5,
+    "total_runs": 25,
+    "total_success": 11,
+    "total_heals": 10,
     "time_saved_sec": 0.0,
-    "last_updated": 1790488249
+    "last_updated": 1790860579,
+    "last_synced": 1790597057,
+    "verified_domains_count": 40
   },
   "domain_intelligence": {
     "tructiepkeobongda.com": {
@@ -16,7 +18,9 @@
       "last_fail_reason": "code_not_found",
       "last_fail": 1789780437,
       "ip": "104.21.18.134",
-      "network": "what-on.com"
+      "network": "what-on.com",
+      "live": true,
+      "has_widget": true
     },
     "theyhouse.co": {
       "domain": "theyhouse.co",
@@ -30,7 +34,9 @@
       "last_code": "tKowQf",
       "last_success": 1789781079,
       "ip": "172.67.191.36",
-      "network": "what-on.com"
+      "network": "what-on.com",
+      "live": true,
+      "has_widget": true
     },
     "giaiphapdokiem.vn": {
       "domain": "giaiphapdokiem.vn",
@@ -38,7 +44,10 @@
       "success_count": 0,
       "fail_count": 2,
       "last_fail_reason": "code_not_found",
-      "last_fail": 1789781725
+      "last_fail": 1789781725,
+      "live": true,
+      "has_widget": true,
+      "network": "what-on.com"
     },
     "soikeonhacai24h.net": {
       "domain": "soikeonhacai24h.net",
@@ -46,7 +55,10 @@
       "success_count": 0,
       "fail_count": 1,
       "last_fail_reason": "code_not_found",
-      "last_fail": 1789782163
+      "last_fail": 1789782163,
+      "live": true,
+      "has_widget": true,
+      "network": "what-on.com"
     },
     "dichvuchuyennhahanoi.com": {
       "domain": "dichvuchuyennhahanoi.com",
@@ -60,7 +72,9 @@
       "last_code": "iN4Cus",
       "last_success": 1789782627,
       "ip": "172.67.219.58",
-      "network": "website-analytics.net"
+      "network": "website-analytics.net",
+      "live": true,
+      "has_widget": true
     },
     "ghk.gb.net": {
       "domain": "ghk.gb.net",
@@ -73,7 +87,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "rik88.gb.net": {
       "domain": "rik88.gb.net",
@@ -86,7 +101,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true
     },
     "dawnseeker.za.com": {
       "domain": "dawnseeker.za.com",
@@ -99,7 +115,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true
     },
     "betflik24win.co": {
       "domain": "betflik24win.co",
@@ -112,7 +129,9 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true,
+      "has_widget": true
     },
     "happy.jpn.com": {
       "domain": "happy.jpn.com",
@@ -125,12 +144,13 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "memberqq.me": {
       "domain": "memberqq.me",
       "traffic_key": "CFPLb",
-      "network": "what-on.com",
+      "network": "website-analytics.net",
       "success_count": 1,
       "fail_count": 0,
       "ip": "104.21.18.238",
@@ -138,7 +158,9 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true,
+      "has_widget": true
     },
     "agobet.cc": {
       "domain": "agobet.cc",
@@ -151,7 +173,9 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true,
+      "has_widget": true
     },
     "recsport.tv": {
       "domain": "recsport.tv",
@@ -164,7 +188,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true
     },
     "d55slot.vip": {
       "domain": "d55slot.vip",
@@ -177,7 +202,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "preciouscollection.co.in": {
       "domain": "preciouscollection.co.in",
@@ -190,7 +216,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true
     },
     "ro88.cn.com": {
       "domain": "ro88.cn.com",
@@ -203,7 +230,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "aviator-slot.games": {
       "domain": "aviator-slot.games",
@@ -216,7 +244,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "santuy88slot.net": {
       "domain": "santuy88slot.net",
@@ -229,7 +258,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "hitclube.cc": {
       "domain": "hitclube.cc",
@@ -242,7 +272,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "vitalticks.in": {
       "domain": "vitalticks.in",
@@ -255,7 +286,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "marcjestin.me": {
       "domain": "marcjestin.me",
@@ -268,7 +300,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true
     },
     "tamjaibet.cc": {
       "domain": "tamjaibet.cc",
@@ -281,7 +314,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "ex8898.com": {
       "domain": "ex8898.com",
@@ -294,7 +328,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "ayoslots.co": {
       "domain": "ayoslots.co",
@@ -307,7 +342,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "agilafc.com": {
       "domain": "agilafc.com",
@@ -320,7 +356,9 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true,
+      "has_widget": true
     },
     "vijaylaxmigranito.in": {
       "domain": "vijaylaxmigranito.in",
@@ -333,7 +371,8 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": false
     },
     "nhandinhkeobongdaonl.com": {
       "domain": "nhandinhkeobongdaonl.com",
@@ -351,7 +390,9 @@
       "last_fail_reason": "code_not_found",
       "last_fail": 1790477729,
       "last_code": "bQTjLE",
-      "best_time_sec": 85.71
+      "best_time_sec": 85.71,
+      "live": true,
+      "has_widget": true
     },
     "soccervirtualcup.com": {
       "domain": "soccervirtualcup.com",
@@ -364,7 +405,9 @@
       "winning_strategies": {
         "dom": 1
       },
-      "last_success": 1789782848
+      "last_success": 1789782848,
+      "live": true,
+      "has_widget": true
     },
     "soikeous.org": {
       "domain": "soikeous.org",
@@ -372,7 +415,8 @@
       "success_count": 0,
       "fail_count": 1,
       "last_fail_reason": "DNS_NXDOMAIN",
-      "last_fail": 1789782848
+      "last_fail": 1789782848,
+      "live": false
     },
     "edutak.in": {
       "domain": "edutak.in",
@@ -384,7 +428,10 @@
       },
       "best_time_sec": 65.62,
       "last_code": "successful",
-      "last_success": 1790478124
+      "last_success": 1790478124,
+      "live": true,
+      "has_widget": true,
+      "network": "website-analytics.net"
     },
     "soikeobong.live": {
       "domain": "soikeobong.live",
@@ -396,7 +443,10 @@
       },
       "best_time_sec": 84.53,
       "last_code": "e0Xf8N",
-      "last_success": 1790482155
+      "last_success": 1790482155,
+      "live": true,
+      "has_widget": true,
+      "network": "what-on.com"
     },
     "nitrc.org": {
       "domain": "nitrc.org",
@@ -404,7 +454,9 @@
       "success_count": 0,
       "fail_count": 1,
       "last_fail_reason": "code_not_found",
-      "last_fail": 1790483699
+      "last_fail": 1790483699,
+      "live": true,
+      "has_widget": true
     },
     "sdmri.org": {
       "domain": "sdmri.org",
@@ -412,7 +464,10 @@
       "success_count": 0,
       "fail_count": 1,
       "last_fail_reason": "code_not_found",
-      "last_fail": 1790483774
+      "last_fail": 1790483774,
+      "live": true,
+      "has_widget": true,
+      "network": "website-analytics.net"
     },
     "tylekeongoaihanganh.com": {
       "domain": "tylekeongoaihanganh.com",
@@ -424,7 +479,10 @@
       },
       "best_time_sec": 158.25,
       "last_code": "4ltmiv",
-      "last_success": 1790487394
+      "last_success": 1790487394,
+      "live": true,
+      "has_widget": true,
+      "network": "website-analytics.net"
     },
     "keotructuyen.tv": {
       "domain": "keotructuyen.tv",
@@ -436,7 +494,109 @@
       },
       "best_time_sec": 87.09,
       "last_code": "WVdFFk",
-      "last_success": 1790488077
+      "last_success": 1790488077,
+      "live": true,
+      "has_widget": true,
+      "network": "what-on.com"
+    },
+    "iuventus.co": {
+      "domain": "iuventus.co",
+      "traffic_key": "rU6jMp2",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "best_time_sec": 91.55,
+      "last_code": "D4EkRY",
+      "last_success": 1790499582,
+      "live": true,
+      "has_widget": true,
+      "network": "website-analytics.net"
+    },
+    "keotructuyen.asia": {
+      "domain": "keotructuyen.asia",
+      "traffic_key": "idk85LkX",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "best_time_sec": 89.74,
+      "last_code": "6JvNjw",
+      "last_success": 1790508704,
+      "live": true,
+      "has_widget": true,
+      "network": "what-on.com"
+    },
+    "lauquintero.co": {
+      "domain": "lauquintero.co",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790515041,
+      "live": false
+    },
+    "888xoso.net": {
+      "domain": "888xoso.net",
+      "traffic_key": "navbar",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "best_time_sec": 71.51,
+      "last_code": "XSMB",
+      "last_success": 1790515130,
+      "live": true
+    },
+    "photo-chronicles.com": {
+      "domain": "photo-chronicles.com",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790596434,
+      "live": true,
+      "has_widget": true,
+      "network": "website-analytics.net"
+    },
+    "valsam.com.mx": {
+      "domain": "valsam.com.mx",
+      "traffic_key": "eqAXa",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "best_time_sec": 89.91,
+      "last_code": "700000",
+      "last_success": 1790852401
+    },
+    "wheystore.vn": {
+      "domain": "wheystore.vn",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790853878
+    },
+    "wheyshop.vn": {
+      "domain": "wheyshop.vn",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790853973
+    },
+    "live.7mvn9.com": {
+      "domain": "live.7mvn9.com",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790856182
     }
   },
   "dns_cache": {
@@ -843,6 +1003,312 @@
       "duration": 165.19,
       "heals": 0,
       "timestamp": 1790488249
+    },
+    {
+      "session_id": "sess_1790501709053",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 300.42,
+      "heals": 0,
+      "timestamp": 1790502009
+    },
+    {
+      "session_id": "sess_1790502359425",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 233.4,
+      "heals": 0,
+      "timestamp": 1790502592
+    },
+    {
+      "session_id": "sess_1790502653586",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": true,
+      "duration": 154.29,
+      "heals": 0,
+      "timestamp": 1790502807
+    },
+    {
+      "session_id": "sess_1790509036195",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 242.36,
+      "heals": 0,
+      "timestamp": 1790509278
+    },
+    {
+      "session_id": "sess_1790509596341",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 162.37,
+      "heals": 0,
+      "timestamp": 1790509758
+    },
+    {
+      "session_id": "sess_1790510160571",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 602.64,
+      "heals": 0,
+      "timestamp": 1790510763
+    },
+    {
+      "session_id": "sess_1790512119256",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 279.08,
+      "heals": 0,
+      "timestamp": 1790512398
+    },
+    {
+      "session_id": "sess_1790513507518",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 197.76,
+      "heals": 0,
+      "timestamp": 1790513705
+    },
+    {
+      "session_id": "sess_1790515353828",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 162.13,
+      "heals": 0,
+      "timestamp": 1790515515
+    },
+    {
+      "session_id": "sess_1790518452462",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 956.89,
+      "heals": 0,
+      "timestamp": 1790519409
+    },
+    {
+      "session_id": "sess_1790599925881",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 225.24,
+      "heals": 0,
+      "timestamp": 1790600151
+    },
+    {
+      "session_id": "sess_1790602410443",
+      "platform": "LAYMA",
+      "sponsor": null,
+      "success": false,
+      "duration": 12.65,
+      "heals": 0,
+      "timestamp": 1790602423
+    },
+    {
+      "session_id": "sess_1790602472437",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 62.33,
+      "heals": 0,
+      "timestamp": 1790602534
+    },
+    {
+      "session_id": "sess_1790680242699",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 288.52,
+      "heals": 0,
+      "timestamp": 1790680531
+    },
+    {
+      "session_id": "sess_1790681897618",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 36.12,
+      "heals": 0,
+      "timestamp": 1790681933
+    },
+    {
+      "session_id": "sess_1790682153098",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 24.76,
+      "heals": 0,
+      "timestamp": 1790682177
+    },
+    {
+      "session_id": "sess_1790682269709",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 88.68,
+      "heals": 0,
+      "timestamp": 1790682358
+    },
+    {
+      "session_id": "sess_1790682734238",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 59.31,
+      "heals": 0,
+      "timestamp": 1790682793
+    },
+    {
+      "session_id": "sess_1790683875072",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 25.31,
+      "heals": 0,
+      "timestamp": 1790683900
+    },
+    {
+      "session_id": "sess_1790688479677",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 87.29,
+      "heals": 0,
+      "timestamp": 1790688566
+    },
+    {
+      "session_id": "sess_1790689393946",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 142.81,
+      "heals": 0,
+      "timestamp": 1790689536
+    },
+    {
+      "session_id": "sess_1790690235698",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 159.37,
+      "heals": 0,
+      "timestamp": 1790690395
+    },
+    {
+      "session_id": "sess_1790690651884",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 165.68,
+      "heals": 0,
+      "timestamp": 1790690817
+    },
+    {
+      "session_id": "sess_1790690885069",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 175.31,
+      "heals": 0,
+      "timestamp": 1790691060
+    },
+    {
+      "session_id": "sess_1790767288598",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 143.68,
+      "heals": 0,
+      "timestamp": 1790767432
+    },
+    {
+      "session_id": "sess_1790769309892",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 142.08,
+      "heals": 0,
+      "timestamp": 1790769451
+    },
+    {
+      "session_id": "sess_1790769962661",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 138.95,
+      "heals": 0,
+      "timestamp": 1790770101
+    },
+    {
+      "session_id": "sess_1790852009379",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 22.72,
+      "heals": 0,
+      "timestamp": 1790852032
+    },
+    {
+      "session_id": "sess_1790852841827",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 27.29,
+      "heals": 0,
+      "timestamp": 1790852869
+    },
+    {
+      "session_id": "sess_1790852980614",
+      "platform": "LAYMA",
+      "sponsor": null,
+      "success": true,
+      "duration": 97.11,
+      "heals": 0,
+      "timestamp": 1790853077
+    },
+    {
+      "session_id": "sess_1790853084982",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 48.83,
+      "heals": 0,
+      "timestamp": 1790853133
+    },
+    {
+      "session_id": "sess_1790853155224",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 142.38,
+      "heals": 0,
+      "timestamp": 1790853297
+    },
+    {
+      "session_id": "sess_1790855922265",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 29.15,
+      "heals": 0,
+      "timestamp": 1790855951
+    },
+    {
+      "session_id": "sess_1790860532439",
+      "platform": "LINK4M",
+      "sponsor": null,
+      "success": false,
+      "duration": 47.39,
+      "heals": 0,
+      "timestamp": 1790860579
     }
   ],
   "blacklist": [

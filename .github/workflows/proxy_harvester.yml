@@ -1,0 +1,35 @@
+name: Daily VIP Proxy Harvester & Deep Healthcheck
+on:
+  schedule:
+    # Chạy tự động mỗi 1 tiếng để luôn có proxy dồi dào, tươi mới cho lượng lớn user
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  harvest-proxies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests PySocks urllib3
+
+      - name: Deep Harvest & Verify 100% Live Proxies
+        run: |
+          python tools/harvest_proxies.py
+
+      - name: Commit and Push Clean Proxies
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add proxies.txt
+          git commit -m "chore(proxy): auto-update 100% verified VIP residential/datacenter proxy pool [skip ci]" || echo "No changes to commit"
+          git push || echo "Push failed or no changes"

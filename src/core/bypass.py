@@ -14,7 +14,7 @@ except ImportError:
     IS_PATCHRIGHT = False
 
 from config import CHROME_PATH, BASE_DIR, LOG_FILE, DEST_FILE, CODE_FILE, log, copy_to_clipboard, STEALTH_INIT_SCRIPT, save_destination, log_result_card
-from recaptcha_solver import get_solver, RecaptchaAudioSolver
+from recaptcha_solver import get_solver, get_solver_instance, RecaptchaAudioSolver
 from sponsor import detect_sponsor_domain, solve_sponsor_quest
 try:
     from brain import get_brain
@@ -90,6 +90,28 @@ def run(target_url: str = None, headless: bool = True):
             ignore_https_errors=True
         )
         context.add_init_script(STEALTH_INIT_SCRIPT)
+        # Khóa window.jQuery và window.$ không bị yoads_network.js đánh cắp bằng noConflict(true)
+        context.add_init_script("""
+            let _jq_real = undefined;
+            Object.defineProperty(window, 'jQuery', {
+                get: () => _jq_real,
+                set: (val) => {
+                    if (val && typeof val.fn !== 'undefined' && !_jq_real) {
+                        _jq_real = val;
+                    } else if (!_jq_real) {
+                        _jq_real = val;
+                    }
+                },
+                configurable: false
+            });
+            Object.defineProperty(window, '$', {
+                get: () => _jq_real,
+                set: (val) => {
+                    if (!_jq_real && val) _jq_real = val;
+                },
+                configurable: false
+            });
+        """)
 
         page_link = context.new_page()
         final_destination_url = None
@@ -179,15 +201,11 @@ def run(target_url: str = None, headless: bool = True):
             if page_link.locator("#advertise-html-wrapper img, img[src*='uploads/advertiser'], [placeholder*='Nhập mã'], #password-2, input[name='password']").count() > 0 or sponsor_campaign_detected is True:
                 has_sponsor_mission = True
                 break
-            if sponsor_campaign_detected is False:
-                has_captcha_direct = True
-                break
             time.sleep(0.5)
 
-        if not has_sponsor_mission and sponsor_campaign_detected is not True:
+        if not has_sponsor_mission:
             if page_link.locator("#recaptcha iframe, .g-recaptcha iframe, iframe[src*='recaptcha']").count() > 0:
                 has_captcha_direct = True
-
         # KIỂM TRA LUỒNG: CỔNG CAPTCHA TRỰC TIẾP HAY NHIỆM VỤ WEB TÀI TRỢ
         if has_captcha_direct and not has_sponsor_mission:
             allow_intercept_new_tab = True
