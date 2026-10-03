@@ -338,6 +338,27 @@ def run(target_url: str = None, headless: bool = None):
                         except Exception:
                             pass
 
+                    # Priority 2: Gemini Multimodal Vision AI
+                    if not target:
+                        try:
+                            from ai_captcha_helper import solve_qcaptcha_grid_ai
+                            def fetch_raw_bytes(idx_url):
+                                idx, u = idx_url
+                                if u.startswith('/'):
+                                    u = base_frame_url + u
+                                try:
+                                    headers = {'Referer': cur_cf.url, 'Origin': base_frame_url}
+                                    return http_session.get(u, headers=headers, timeout=4).content
+                                except Exception:
+                                    return b""
+                            raw_tiles = list(executor.map(fetch_raw_bytes, [(i, u) for i, u in enumerate(assets)]))
+                            ai_indices = solve_qcaptcha_grid_ai(raw_tiles, question=q_text, c_type=c_type)
+                            if ai_indices:
+                                target = ai_indices
+                                print(f"   [Gemini Vision AI] Nhận diện QCaptcha thành công: {target}")
+                        except Exception as e_ai_qc:
+                            print(f"   [Gemini Vision AI] Note: {e_ai_qc}")
+
                     if not target:
                         print(f"   [!] Đổi câu hỏi khác...")
                         try:

@@ -112,7 +112,9 @@ def run(target_link: str = None, headless: bool = None):
             '--disable-dev-shm-usage',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding'
+            '--disable-renderer-backgrounding',
+            '--enable-features=DnsOverHttps',
+            '--dns-over-https-templates=https://chrome.cloudflare-dns.com/dns-query'
         ]
         if os.path.exists(ext_dir):
             args.extend([

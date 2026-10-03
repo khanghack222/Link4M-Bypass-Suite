@@ -77,9 +77,16 @@ def extract_domain_candidates(ocr_lines, quest_info=None):
     # Priority -1: Direct domain hint from quest instructions if already a valid domain
     if quest_info and quest_info.get("domain_hint"):
         dh = quest_info["domain_hint"].replace("www.", "").strip('./- ')
-        if '.' in dh and not any(c in dh for c in ['*', '★']) and len(dh) >= 4:
-            if 'link4m' not in dh and 'google' not in dh:
-                candidates.append(dh)
+        if '.' in dh:
+            stem, ext = dh.split('.', 1)
+            clean_stem = stem.replace('*', '').strip()
+            if len(clean_stem) >= 3:
+                for cand in unmask_domain_candidates(f"{clean_stem}***.{ext}"):
+                    if cand not in candidates and 'link4m' not in cand and 'google' not in cand:
+                        candidates.append(cand)
+            if not any(c in dh for c in ['*', '★']) and len(dh) >= 4:
+                if 'link4m' not in dh and 'google' not in dh and dh not in candidates:
+                    candidates.append(dh)
 
     for item in (ocr_lines or []):
         if isinstance(item, str):
@@ -153,8 +160,8 @@ def extract_domain_candidates(ocr_lines, quest_info=None):
             if 'link4m' not in d and d not in candidates:
                 candidates.append(d)
 
-    # Priority 1.5: Stems with explicit protocol (e.g. https://phanvansantos or https://www.ok365)
-    EXPAND_TLDS = ['com', 'vn', 'net', 'org', 'com.vn', 'top', 'vip', 'io']
+    # Priority 1.5: Stems with explicit protocol (e.g. https://phanvansantos, https://betlive, https://klas)
+    EXPAND_TLDS = ['net', 'com', 'org', 'com.vn', 'vn', 'top', 'vip', 'io', 'in.net', 'in', 'co']
     for text in texts:
         for m in re.finditer(r'https?:\/\/([a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+)*)', text, re.IGNORECASE):
             stem = m.group(1).lower().rstrip('/')
@@ -165,6 +172,18 @@ def extract_domain_candidates(ocr_lines, quest_info=None):
                     for t in EXPAND_TLDS:
                         c1 = f"{base}.{t}"
                         if c1 not in candidates: candidates.append(c1)
+                    # Cross-token search: find tokens in title/snippets that extend this stem (e.g. betlive -> betlive4d, klas -> klassif)
+                    if len(base) >= 3:
+                        for other_t in texts:
+                            for word in re.findall(r'[a-zA-Z0-9]+', other_t):
+                                w_low = word.lower()
+                                if base in w_low:
+                                    idx = w_low.find(base)
+                                    sub_stem = w_low[idx:]
+                                    if len(sub_stem) >= len(base):
+                                        for t in EXPAND_TLDS:
+                                            c_sub = f"{sub_stem}.{t}"
+                                            if c_sub not in candidates: candidates.append(c_sub)
 
     # Priority 2: Match strictly valid TLDs with word boundary (?![a-zA-Z0-9])
     for text in texts:
@@ -310,23 +329,24 @@ def extract_quest_instructions(all_texts: list) -> dict:
                 break
 
     # Ưu tiên 2: Quét Bước 2 (Từ khóa) nếu ô Google chưa có
+    STEP_RE = r'(?:b[uưứùúủũụ][oơớòóỏõọ]?c|buoc|buroc|bước)'
     if not keyword:
         idx_s2 = -1
         for i, l in enumerate(clean_lines):
-            if re.search(r'(?:b[uư][oơ]c|buroc)\s*2', l, re.IGNORECASE):
+            if re.search(rf'{STEP_RE}\s*2', l, re.IGNORECASE):
                 idx_s2 = i
                 break
                 
         if idx_s2 != -1:
             line_s2 = clean_lines[idx_s2]
-            cand = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*2\s*[:\.]?\s*', '', line_s2, flags=re.IGNORECASE)
-            cand = re.sub(r'^(?:gotimturkhoa|gotimtukhoa|gotimkhoa|timkhoa|gotim|timtu|timtur|khoa|turkhoa|g[oõ]|go|t[iì]m|tim|t[uừ]|tir|tu|tur|kh[oó]a)[:\.\s]*', '', cand, flags=re.IGNORECASE).strip()
+            cand = re.sub(rf'^{STEP_RE}\s*2\s*[:\.]?\s*', '', line_s2, flags=re.IGNORECASE)
+            cand = re.sub(r'^(?:g[oõ]|go|t[iì]m|tim|t[uừ]|tu|kh[oó]a|khoa|\s|:|\.)+', '', cand, flags=re.IGNORECASE).strip()
             if len(cand) >= 2 and not any(k in cand.lower() for k in ['google', 'bước', 'buroc']):
                 keyword = cand
             else:
                 collected = []
                 for j in range(idx_s2 + 1, min(idx_s2 + 4, len(clean_lines))):
-                    if re.search(r'(?:b[uư][oơ]c|buroc|google)', clean_lines[j], re.IGNORECASE):
+                    if re.search(rf'(?:{STEP_RE}|google)', clean_lines[j], re.IGNORECASE):
                         break
                     collected.append(clean_lines[j].strip())
                 if collected:
@@ -335,17 +355,20 @@ def extract_quest_instructions(all_texts: list) -> dict:
     # 2. Quét tìm Bước 3 (Domain đích & Số trang)
     idx_s3 = -1
     for i, l in enumerate(clean_lines):
-        if re.search(r'(?:b[uư][oơ]c|buroc)\s*3', l, re.IGNORECASE):
-            idx_s3 = i
-            break
+        if re.search(rf'{STEP_RE}\s*3', l, re.IGNORECASE):
+            if any(c in l for c in ['*', '★']):
+                idx_s3 = i
+                break
+            elif idx_s3 == -1:
+                idx_s3 = i
             
     if idx_s3 != -1:
         s3_tokens = []
-        l_s3 = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*3\s*[:\.]?\s*', '', clean_lines[idx_s3], flags=re.IGNORECASE)
+        l_s3 = re.sub(rf'^{STEP_RE}\s*3\s*[:\.]?\s*', '', clean_lines[idx_s3], flags=re.IGNORECASE)
         l_s3 = re.sub(r'^(?:b[aá]m|bam|click|v[aà]o|vao|t[iì]m|tim)?\s*(?:website|websiter|trang\s*web|web|site)?[:\.\s]*', '', l_s3, flags=re.IGNORECASE).strip()
         if l_s3: s3_tokens.append(l_s3)
         for j in range(idx_s3 + 1, min(idx_s3 + 5, len(clean_lines))):
-            if re.search(r'(?:b[uư][oơ]c|buroc)\s*4', clean_lines[j], re.IGNORECASE):
+            if re.search(rf'{STEP_RE}\s*4', clean_lines[j], re.IGNORECASE):
                 break
             s3_tokens.append(clean_lines[j])
             
@@ -356,13 +379,20 @@ def extract_quest_instructions(all_texts: list) -> dict:
             combined_s3 = combined_s3[:p_m.start()] + " " + combined_s3[p_m.end():]
             
         combined_s3 = re.sub(r'\s*\.\s*', '.', combined_s3)
-        for token in combined_s3.split():
-            clean_tok = token.strip('./- ')
-            clean_tok = re.sub(r'^(?:b[uư][oơ]c|buroc)\s*\d*\s*', '', clean_tok, flags=re.IGNORECASE)
+        TLDS = {'com', 'vn', 'net', 'org', 'win', 'me', 'club', 'top', 'info', 'site', 'vip', 'asia', 'online', 'xyz', 'app', 'live', 'bet', 'io'}
+        tokens = [t.strip('./- ') for t in combined_s3.split() if t.strip('./- ')]
+        for i, token in enumerate(tokens):
+            clean_tok = re.sub(rf'^{STEP_RE}\s*\d*\s*', '', token, flags=re.IGNORECASE)
             clean_tok = re.sub(r'^(?:bam|click|vao|tim|website|websiter|trangweb|web|site)+', '', clean_tok, flags=re.IGNORECASE).strip('./- ')
             if '.' in clean_tok or any(c in clean_tok for c in ['*', '★']):
                 if not any(k in clean_tok.lower() for k in ['google', 'link4m']):
                     domain_hint = clean_tok.lower()
+                    break
+            elif clean_tok.lower() in TLDS and i > 0:
+                prev = re.sub(rf'^{STEP_RE}\s*\d*\s*', '', tokens[i-1], flags=re.IGNORECASE)
+                prev = re.sub(r'^(?:bam|click|vao|tim|website|websiter|trangweb|web|site)+', '', prev, flags=re.IGNORECASE).strip('./- ').lower()
+                if len(prev) >= 3 and not any(k in prev for k in ['google', 'link4m']):
+                    domain_hint = f"{prev}.{clean_tok.lower()}"
                     break
 
     return {
@@ -380,6 +410,7 @@ def resolve_domain_gemini_ai(keyword: str, domain_hint: str = "") -> list:
     Sử dụng MiMo Free AI (qua OpenCode reverse daemon) và Gemini Flash-Lite
     để giải mã và suy luận chính xác website tài trợ từ từ khóa và mask.
     """
+    global GEMINI_API_KEY
     if not keyword and not domain_hint:
         return []
 
@@ -433,6 +464,9 @@ def resolve_domain_gemini_ai(keyword: str, domain_hint: str = "") -> list:
                         log(f"[+] [Gemini AI {m}] Suy luan chinh xac domain dich: {doms}")
                         return doms
         except urllib.error.HTTPError as e:
+            if e.code in (400, 401, 403):
+                GEMINI_API_KEY = None
+                break
             if e.code == 404:
                 continue
             log(f"[!] Gemini AI ({m}): HTTP {e.code}")
@@ -448,6 +482,7 @@ def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
     Tải trực tiếp ảnh nhiệm vụ và gửi cho Gemini Flash-Lite Multimodal Vision:
     AI trực tiếp 'nhìn' hình ảnh hướng dẫn, bóc tách chính xác từ khóa Google và domain đích (kể cả bị che sao ***).
     """
+    global GEMINI_API_KEY
     if not image_bytes_list:
         return {}
     if not GEMINI_API_KEY:
@@ -512,6 +547,10 @@ def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
                     log(f"[+] 👁️ [Gemini Vision {m}] Nhìn ảnh & trích xuất nhiệm vụ thành công: {data}")
                     return data
         except urllib.error.HTTPError as e:
+            if e.code in (400, 401, 403):
+                log(f"[!] Gemini Vision disabled: HTTP {e.code} (invalid/unauthorized key)")
+                GEMINI_API_KEY = None
+                break
             if e.code == 404:
                 continue
             log(f"[!] Gemini Vision ({m}): HTTP {e.code}")
@@ -595,39 +634,30 @@ def solve_math_captcha_gemini(img_b64: str, answers: list):
 
     # Priority 3: Fallback Gemini Flash-Lite nếu có API Key hợp lệ
     try:
-        parts = [
-            {"text": f"Solve the math problem in this image. The choices are {answers}. Return ONLY a JSON object with key 'answer' pointing to the correct integer choice, e.g. {{\"answer\": 4}}."},
-            {"inline_data": {"mime_type": "image/png", "data": img_b64}}
-        ]
-        payload = json.dumps({"contents": [{"parts": parts}]}).encode("utf-8")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key={GEMINI_API_KEY}"
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            txt = data["candidates"][0]["content"]["parts"][0]["text"]
-            txt_clean = re.sub(r"^```(?:json)?", "", txt.strip(), flags=re.IGNORECASE).rstrip("`").strip()
-            parsed = json.loads(txt_clean)
-            if "answer" in parsed:
-                ans = int(parsed["answer"])
-                log(f"[+] 🧠 Gemini Vision giải bài toán captcha: {ans} (từ các lựa chọn: {answers})")
-                return ans
+        from ai_captcha_helper import solve_math_captcha_ai
+        img_bytes_math = base64.b64decode(img_b64)
+        ans_ai = solve_math_captcha_ai(img_bytes_math, answers)
+        if ans_ai is not None:
+            return ans_ai
     except Exception:
         pass
+
     return answers[0] if answers else None
 
 def fallback_ai_search(query: str, domain_hint: str = "", use_gemini: bool = False) -> list:
     """
-    Search siêu tốc kết hợp DuckDuckGo/Bing giả lập TLS Chrome 124 (0 token, miễn phí 100%).
-    Chỉ gọi Gemini khi use_gemini=True để tiết kiệm tối đa quota API.
+    Search siêu tốc kết hợp MiMo Free AI (0 token, miễn phí 100%) và DuckDuckGo/Bing giả lập TLS Chrome 124.
     """
     results = []
     
-    # Lớp 1: Chỉ gọi Gemini khi được yêu cầu rõ ràng (tiết kiệm token)
-    if use_gemini:
+    # Lớp 1: MiMo Free AI (và Gemini nếu use_gemini=True) suy luận domain đích
+    try:
         gemini_doms = resolve_domain_gemini_ai(query, domain_hint)
         for gd in gemini_doms:
             if gd not in results:
                 results.append(gd)
+    except Exception:
+        pass
 
 
     blacklist = ['google.', 'youtube.com', 'facebook.com', 'tiktok.com', 'zalo.me', 'instagram.com', 'twitter.com', 'x.com', 'wikipedia.org', 'link4m.']
@@ -686,11 +716,19 @@ def search_google_ai_for_sponsor(context, quest_info: dict) -> list:
     log(f"[*] 🔍 AI Google Search: Đang truy vấn Google AI với từ khóa: '{target_q}' (Trang {page_hint})...")
     results = []
 
-    # Ưu tiên trực tiếp: Nếu domain_hint đã là domain hoàn chỉnh và hợp lệ
-    if domain_hint and '.' in domain_hint and not any(c in domain_hint for c in ['*', '★']):
+    # Ưu tiên trực tiếp: Nếu domain_hint đã là domain hoàn chỉnh và tồn tại trên DNS
+    if domain_hint and '.' in domain_hint:
         d_clean = domain_hint.replace('www.', '')
-        if d_clean not in results:
-            results.append(d_clean)
+        if not any(c in d_clean for c in ['*', '★']) and resolve_ip_google(d_clean):
+            if d_clean not in results:
+                results.append(d_clean)
+        else:
+            stem, ext = d_clean.split('.', 1)
+            c_stem = stem.replace('*', '').strip()
+            if len(c_stem) >= 3:
+                for cand in unmask_domain_candidates(f"{c_stem}***.{ext}"):
+                    if resolve_ip_google(cand) and cand not in results:
+                        results.append(cand)
 
     search_page = None
     try:
@@ -766,42 +804,55 @@ def search_google_ai_for_sponsor(context, quest_info: dict) -> list:
 
     return results
 
-def detect_sponsor_domain(page_link):
+def detect_sponsor_domain(page_link, campaign_payload=None):
     all_texts = []
     base64_images = []
-
-    # Step 1: Extract from Link4M page DOM text directly
-    try:
-        page_text = page_link.locator("body").inner_text()
-        all_texts.extend(page_text.splitlines())
-    except Exception:
-        pass
-
-    # Step 2: Extract from target sponsor images and base64 images
-    log("[*] Đang quét hình ảnh quảng cáo & hướng dẫn nhiệm vụ...")
     imgs_info = []
-    for _poll in range(8):
+
+    # Priority 0: Extract directly from Link4M get-advertise API payload (100% accurate, no ad noise!)
+    if campaign_payload and isinstance(campaign_payload, dict):
+        adv_html = campaign_payload.get('html', '')
+        if adv_html:
+            b64_matches = re.findall(r'src=["\'](data:image/[^"\']+)["\']', adv_html)
+            if b64_matches:
+                imgs_info = [{'type': 'b64', 'src': s} for s in b64_matches]
+                log(f"[+] 🎯 Bắt được {len(imgs_info)} ảnh nhiệm vụ trực tiếp từ Link4M API get-advertise (bỏ qua DOM rác)!")
+            clean_dom_text = re.sub(r'<[^>]+>', ' ', adv_html)
+            all_texts.extend(clean_dom_text.splitlines())
+
+    # Step 1: Extract from Link4M page DOM text if not already loaded from API
+    if not all_texts:
         try:
-            curr_imgs = page_link.evaluate("""() => {
-                const res = [];
-                document.querySelectorAll('#advertise-html-wrapper img, .main-content img, img').forEach(img => {
-                    const s = img.src || '';
-                    if (s.startsWith('data:image/')) {
-                        if (s.length > 50) res.push({ type: 'b64', src: s });
-                    } else if (s.includes('link4m.net') || s.includes('advertiser') || /\\d+_\\d+\\.(?:jpg|png|webp)/.test(s)) {
-                        res.push({ type: 'url', src: s });
-                    }
-                });
-                return res;
-            }""")
-            if curr_imgs:
-                imgs_info = curr_imgs
-                has_b64 = any(it.get('type') == 'b64' for it in imgs_info)
-                if has_b64 and len(imgs_info) >= 3:
-                    break
+            page_text = page_link.locator("body").inner_text()
+            all_texts.extend(page_text.splitlines())
         except Exception:
             pass
-        time.sleep(0.15)
+
+    # Step 2: Extract from target sponsor images and base64 images if API didn't provide them
+    if not imgs_info:
+        log("[*] Đang quét hình ảnh quảng cáo & hướng dẫn nhiệm vụ...")
+        for _poll in range(8):
+            try:
+                curr_imgs = page_link.evaluate("""() => {
+                    const res = [];
+                    document.querySelectorAll('#advertise-html-wrapper img, .main-content img, img').forEach(img => {
+                        const s = img.src || '';
+                        if (s.startsWith('data:image/')) {
+                            if (s.length > 50) res.push({ type: 'b64', src: s });
+                        } else if (s.includes('link4m.net') || s.includes('advertiser') || /\\d+_\\d+\\.(?:jpg|png|webp)/.test(s)) {
+                            res.push({ type: 'url', src: s });
+                        }
+                    });
+                    return res;
+                }""")
+                if curr_imgs:
+                    imgs_info = curr_imgs
+                    has_b64 = any(it.get('type') == 'b64' for it in imgs_info)
+                    if has_b64 and len(imgs_info) >= 3:
+                        break
+            except Exception:
+                pass
+            time.sleep(0.15)
 
     log(f"[*] Phát hiện {len(imgs_info or [])} ảnh nhiệm vụ. Đang chạy Rapid OCR cục bộ...")
     def _fetch_one_img(item):
@@ -817,44 +868,62 @@ def detect_sponsor_domain(page_link):
 
     all_img_bytes = [_fetch_one_img(it) for it in (imgs_info or [])]
 
-    # Phase 1: Gemini Multimodal Vision First (Nếu có API key) -> Bóc tách siêu tốc không cần OCR
+    # Phase 1: Direct RapidOCR on mission images (Zero-latency, no Gemini API waste)
     valid_imgs = [b for b in all_img_bytes if b]
-    ai_vision_res = {}
     cloud_texts = []
     quest_info = extract_quest_instructions(all_texts)
+    ai_vision_res = None
 
-    if valid_imgs and GEMINI_API_KEY:
-        log("[*] 👁️ Kích hoạt Gemini Vision phân tích trực tiếp ảnh nhiệm vụ...")
-        ai_vision_res = analyze_quest_images_gemini_vision(valid_imgs)
-        if ai_vision_res:
-            if ai_vision_res.get("keyword"):
-                quest_info["keyword"] = ai_vision_res["keyword"]
-            if ai_vision_res.get("domain_hint"):
-                quest_info["domain_hint"] = ai_vision_res["domain_hint"]
-            if ai_vision_res.get("page_hint"):
-                quest_info["page_hint"] = ai_vision_res["page_hint"]
-            log(f"[+] ⚡ Gemini Vision đã bóc tách nhiệm vụ tức thì! Bỏ qua OCR cục bộ để tiết kiệm thời gian.")
-
-    # Phase 1.1: Local OCR Fallback (CHỈ kích hoạt nếu Gemini Vision không khả dụng hoặc chưa tìm thấy keyword/hint)
-    if valid_imgs and not (quest_info.get("keyword") or quest_info.get("domain_hint") or (ai_vision_res and ai_vision_res.get("target_domains"))):
-        log("[*] Gemini Vision không có kết quả hoặc không có key -> Kích hoạt Fallback OCR cục bộ...")
+    if valid_imgs:
         ocr_inst = get_ocr()
-        for img_b in valid_imgs:
+        if ocr_inst:
+            for img_b in valid_imgs:
+                try:
+                    res_ocr, _ = ocr_inst(img_b)
+                    if res_ocr:
+                        for line in res_ocr:
+                            if len(line) > 1 and line[1].strip():
+                                cloud_texts.append(line[1].strip())
+                except Exception:
+                    pass
+
+        temp_chk = extract_quest_instructions(cloud_texts)
+        dh_chk = temp_chk.get("domain_hint", "").replace("www.", "").strip("./- ").lower()
+        is_dh_live = bool(dh_chk and '.' in dh_chk and not any(c in dh_chk for c in ['*', '★', ' ']) and resolve_ip_google(dh_chk))
+        
+        # Nếu chưa trích xuất được domain hint, hoặc domain hint chưa có dấu * và chưa live DNS, dùng MiMo Multimodal Vision
+        if not is_dh_live:
             try:
-                res_ocr, _ = ocr_inst(img_b)
-                if res_ocr:
-                    for line in res_ocr:
-                        if len(line) > 1 and line[1].strip():
-                            cloud_texts.append(line[1].strip())
-                temp_q = extract_quest_instructions(cloud_texts)
-                if temp_q.get("keyword") and temp_q.get("domain_hint") and temp_q.get("keyword") != "tirkhoa":
-                    break
-            except Exception:
-                pass
+                try:
+                    from mimo_opencode_client import ocr_image_mimo
+                except ImportError:
+                    from src.core.mimo_opencode_client import ocr_image_mimo
+                log("[*] Kích hoạt MiMo Multimodal Vision AI đọc chính xác ảnh nhiệm vụ...")
+                mimo_lines = []
+                for img_b in valid_imgs:
+                    mimo_txt = ocr_image_mimo(img_b)
+                    if mimo_txt:
+                        for ln in mimo_txt.splitlines():
+                            ln_c = ln.strip()
+                            if ln_c and ln_c not in mimo_lines:
+                                mimo_lines.append(ln_c)
+                if mimo_lines:
+                    cloud_texts = mimo_lines + cloud_texts
+            except Exception as e_mimo_ocr:
+                log(f"[!] MiMo OCR note: {e_mimo_ocr}")
+
         full_ocr_corpus = all_texts + cloud_texts
         quest_info = extract_quest_instructions(full_ocr_corpus)
     else:
         full_ocr_corpus = all_texts
+
+    if quest_info.get("domain_hint") and '.' in quest_info["domain_hint"]:
+        dh = quest_info["domain_hint"].replace("www.", "").strip("./- ").lower()
+        if not any(c in dh for c in ['*', '★', ' ']):
+            ip = resolve_ip_google(dh)
+            if ip:
+                log(f"🎉 EXACT SPONSOR DOMAIN VERIFIED VIA DNS: {dh} ({ip})")
+                return [f"https://{dh}", f"http://{dh}"]
 
     if quest_info.get("keyword") or quest_info.get("domain_hint"):
         log(f"[*] 🎯 Cấu trúc nhiệm vụ: Từ khóa='{quest_info['keyword']}', Domain Hint='{quest_info['domain_hint']}', Trang={quest_info['page_hint']}")
@@ -870,6 +939,17 @@ def detect_sponsor_domain(page_link):
     if hasattr(page_link, 'context') and (quest_info.get("keyword") or quest_info.get("domain_hint")):
         ai_search_cands = search_google_ai_for_sponsor(page_link.context, quest_info)
         for sc in ai_search_cands:
+            if sc not in google_candidates:
+                google_candidates.append(sc)
+
+    # Luôn kích hoạt fallback_ai_search siêu tốc (DuckDuckGo/Bing TLS Chrome) để tìm domain chính thức
+    if quest_info.get("keyword") or quest_info.get("domain_hint"):
+        kw = quest_info.get("keyword", "").strip()
+        dh = quest_info.get("domain_hint", "").strip()
+        c_stem = dh.replace("www.", "").split(".")[0].replace("*", "").strip()
+        search_q = f"{kw} {c_stem}".strip() if c_stem and len(c_stem) >= 3 else kw
+        fb_cands = fallback_ai_search(search_q, dh)
+        for sc in fb_cands:
             if sc not in google_candidates:
                 google_candidates.append(sc)
 
@@ -908,17 +988,27 @@ def detect_sponsor_domain(page_link):
 
     # Sắp xếp và phân hạng các ứng viên:
     clean_stem = quest_info.get("domain_hint", "").replace("www.", "").split(".")[0].replace("*", "").strip().lower()
-    vision_targets = [td.replace("www.", "").strip("./- ").lower() for td in (ai_vision_res.get("target_domains") or []) if "." in td]
+    vision_targets = [td.replace("www.", "").strip("./- ").lower() for td in ((ai_vision_res or {}).get("target_domains") or []) if "." in td]
     def rank_candidate(c):
         score = 0
         clow = c.lower()
         for vt in vision_targets:
             if vt == clow or vt in clow:
                 score += 50000
-        if clean_stem and len(clean_stem) >= 3 and clean_stem in clow:
-            score += 5000
-        if clow in google_candidates:
-            score += 3000
+        # Ưu tiên tối thượng: Trùng khớp chính xác từ domain_hint / clean_stem từ ảnh nhiệm vụ
+        has_matched_stem = bool(clean_stem and len(clean_stem) >= 3 and clean_stem in clow)
+        if has_matched_stem:
+            score += 40000
+            # Ưu tiên các đuôi doanh nghiệp phổ biến (secgroup, vinahome, v.v.)
+            if any(suf in clow for suf in ['group', 'corp', 'land', 'vn', 'tech', 'home']):
+                score += 3000
+
+        if clow in [g.lower() for g in google_candidates]:
+            if has_matched_stem or not clean_stem:
+                score += 25000
+            else:
+                score += 500  # Search result không khớp stem nhiệm vụ chỉ nhận điểm thấp
+
         prof = brain.get_domain_profile(clow)
         if prof and prof.get("success_count", 0) > 0:
             score += 1000 + prof.get("success_count", 0) * 50
@@ -928,8 +1018,6 @@ def detect_sponsor_domain(page_link):
                 score += 500
         if clow.count('.') >= 2:
             score += 40
-        if any(kw in clow for kw in ['88', 'bet', 'keo', 'cai', 'casino', 'game', 'club', 'slot', 'win']):
-            score += 20
         prefix = clow.split('.')[0]
         if len(prefix) <= 3 and not prefix.isdigit():
             score -= 15
@@ -940,16 +1028,19 @@ def detect_sponsor_domain(page_link):
     log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (sau khi ưu tiên Google Search & Brain): {candidates}")
 
     log(f"[*] Đang kiểm tra kết nối & DNS live probe cho các ứng viên...")
-    # Probe live domain: Chạy song song đa luồng ThreadPoolExecutor siêu tốc (< 2.5s thay vì tuần tự 26s!)
+    # Probe live domain: Ưu tiên quét toàn bộ ứng viên khớp stem nhiệm vụ trước
+    stem_cands = [c for c in candidates if clean_stem and len(clean_stem) >= 3 and clean_stem in c.lower()]
+    other_cands = [c for c in candidates if c not in stem_cands]
+    probed_cands = (stem_cands + other_cands)[:35]
+
     vision_live_urls = []
     stem_live_urls = []
     script_urls = []
     other_live_urls = []
 
-    probed_cands = candidates[:10]
     if not probed_cands:
         return []
-    with ThreadPoolExecutor(max_workers=min(max(len(probed_cands), 1), 8)) as ex:
+    with ThreadPoolExecutor(max_workers=min(max(len(probed_cands), 1), 12)) as ex:
         probe_results = list(ex.map(lambda c: (c, probe_domain_live(c)), probed_cands))
 
     for c, (live_url, has_sc) in probe_results:
@@ -958,21 +1049,21 @@ def detect_sponsor_domain(page_link):
             is_exact_vision = any(vt == clow or vt in clow for vt in vision_targets)
             is_stem = bool(clean_stem and len(clean_stem) >= 3 and clean_stem in clow) or (clow in [g.lower() for g in google_candidates])
 
-            if is_exact_vision:
+            if has_sc:
+                if live_url not in script_urls:
+                    script_urls.append(live_url)
+            elif is_exact_vision:
                 if live_url not in vision_live_urls:
                     vision_live_urls.append(live_url)
             elif is_stem:
                 if live_url not in stem_live_urls:
                     stem_live_urls.append(live_url)
-            elif has_sc:
-                if live_url not in script_urls:
-                    script_urls.append(live_url)
             else:
                 if live_url not in other_live_urls:
                     other_live_urls.append(live_url)
     final_live = []
-    # Chỉ giữ lại các domain có script traffic hoặc có từ khóa khớp / vision khớp
-    strict_live = [u for u in (vision_live_urls + stem_live_urls + script_urls) if u]
+    # Ưu tiên tuyệt đối domain có script traffic button, sau đó đến vision/stem
+    strict_live = [u for u in (script_urls + vision_live_urls + stem_live_urls) if u]
     for u in strict_live:
         if u not in final_live:
             final_live.append(u)
@@ -1005,15 +1096,16 @@ def detect_sponsor_domain(page_link):
         candidates_local = brain.prioritize_candidates(candidates_local)
         candidates_local.sort(key=rank_candidate, reverse=True)
         log(f"[*] Trích xuất ứng viên từ RapidOCR: {candidates_local}")
-        for c in candidates_local[:12]:
+        local_live_urls = []
+        for c in candidates_local[:15]:
             live_url, has_sc = probe_domain_live(c)
             if live_url:
                 if has_sc and live_url not in script_urls:
                     script_urls.append(live_url)
                     break
-                elif live_url not in live_urls:
-                    live_urls.append(live_url)
-        final_live = script_urls + [u for u in live_urls if u not in script_urls]
+                elif live_url not in local_live_urls:
+                    local_live_urls.append(live_url)
+        final_live = script_urls + [u for u in local_live_urls if u not in script_urls]
         if final_live:
             log(f"[+] Verified live sponsor website candidates từ Local RapidOCR: {final_live}")
             return final_live
@@ -1073,62 +1165,13 @@ def _solve_single_sponsor_impl(context, page, sponsor_url: str, t_single_start: 
         if req.resource_type in ["image", "media", "font"]:
             route.abort()
             return
-        u = req.url.lower()
-        if any(ep in u for ep in ["get_quest_code", "get_code", "ajax_code", "lay_ma", "process-site", "check-site", "iatum"]):
-            route.continue_()
-            return
-        if any(k in u for k in ["service", "widget", "traffic", "what-on", "website-analytics", "yoads"]) and (".js" in u or "script" in req.resource_type):
-            try:
-                res = route.fetch()
-                body = res.text()
-                # 1. Bypass detectIncognito at root definition
-                body = re.sub(r'if\s*\(\s*result\.isPrivate\s*\)\s*\{', 'if(false){', body)
-                body = re.sub(r'function\s+__callback\s*\(\s*isPrivate\s*\)\s*\{', 'function __callback(isPrivate) { isPrivate = false; ', body)
-                body = body.replace('async function detectIncognito() {', 'async function detectIncognito() { return { isPrivate: false, browserName: "Chrome" }; } async function _old_detectIncognito() {')
-                body = body.replace('var detectIncognito = async function () {', 'var detectIncognito = async function () { return { isPrivate: false, browserName: "Chrome" }; }; var _old_detectIncognito = async function () {')
-                body = body.replace('if(result.isPrivate){', 'if(false){')
-                body = re.sub(r'var check_ref\s*=\s*false;', 'var check_ref = true;', body)
-
-                # 2. Keep scroll/active state & eliminate blur lock (handles CRLF and tabs)
-                body = re.sub(r'!\s*mouse_scroll', 'false', body)
-                body = re.sub(r'mouse_scroll\s*=\s*[^;]+;', 'mouse_scroll = true;', body)
-                body = re.sub(r'traffic_blurred\s*\|\|', '', body)
-                body = re.sub(r'var\s+traffic_blurred\s*=\s*[^;]+;', 'var traffic_blurred = false;', body)
-                body = re.sub(r'traffic_blurred\s*=\s*[^;]+;', 'traffic_blurred = false;', body)
-                body = re.sub(r'mouse_scroll_time\s*\+\s*delay_time\s*<\s*Date\.now\(\)\s*\/\s*1000\s*&&\s*\([^)]*\)', 'false', body)
-
-                # 3. Force detectIncognito to always return isPrivate: false
-                body = re.sub(r'async\s+function\s+detectIncognito\s*\([^)]*\)\s*\{', 'async function detectIncognito() { return { isPrivate: false, browserName: "Chrome" };', body)
-                body = re.sub(r'var\s+detectIncognito\s*=\s*async\s+function\s*\([^)]*\)\s*\{', 'var detectIncognito = async function() { return { isPrivate: false, browserName: "Chrome" };', body)
-
-                # 4. Expose checkButtonClick to window
-                body = body.replace('function checkButtonClick(){', 'window.__checkButtonClick = checkButtonClick; function checkButtonClick(){')
-
-                # 5. Universal quest_info fallback across all steps and domains
-                quest_patch = """var quest_info = localStorage.getItem(uuid_name + '_quest');
-if (!quest_info && typeof(Storage) !== "undefined") {
-    for (var _k in localStorage) {
-        if (_k.includes('quest')) {
-            try {
-                var _tmp = JSON.parse(localStorage.getItem(_k));
-                if (_tmp && _tmp.id) { quest_info = localStorage.getItem(_k); localStorage.setItem(uuid_name + '_quest', quest_info); break; }
-            } catch(e) {}
-        }
-    }
-}"""
-                body = body.replace("var quest_info = localStorage.getItem(uuid_name + '_quest');", quest_patch)
-
-                route.fulfill(response=res, body=body)
-                return
-            except Exception:
-                pass
         route.continue_()
 
     page.route("**/*", route_handler)
     page.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         if (window.navigator && window.navigator.webkitTemporaryStorage) {
-            window.navigator.webkitTemporaryStorage.queryUsageAndQuota = (s) => { if (typeof s === 'function') s(0, 500*1024*1024*1024); };
+            window.navigator.webkitTemporaryStorage.queryUsageAndQuota = (s) => { if (typeof s === 'function') s(0, 100*1024*1024*1024); };
         }
         window.detectIncognito = () => Promise.resolve({ isPrivate: false, browserName: "Chrome" });
         try {
@@ -1136,6 +1179,22 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
             window.hasFocus = () => true;
         } catch (e) {}
+
+        // Dynamic pageYOffset hook to keep mouse_scroll active
+        let _fakeY = 1000;
+        try {
+            Object.defineProperty(window, 'pageYOffset', {
+                get: () => { _fakeY += 10; return _fakeY; },
+                configurable: true
+            });
+        } catch (e) {}
+
+        // Continuous scroll event pulse every 400ms
+        setInterval(() => {
+            try {
+                window.dispatchEvent(new Event('scroll'));
+            } catch (e) {}
+        }, 400);
     """)
 
     try:
@@ -1208,20 +1267,21 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             traffic_key = div_ids[0]
     log(f"[*] Detected traffic_key: {traffic_key}")
 
-    # Kích hoạt hash ngay trên landing page nếu chưa có
+    # Clean localStorage on landing page so old quest tokens do not interfere
+    try:
+        page.evaluate("() => localStorage.clear()")
+    except Exception:
+        pass
+
     if traffic_key:
         try:
             page.evaluate(f"""() => {{
-                if (!window.location.hash.includes('{traffic_key}')) {{
-                    window.location.hash = '#ss-{traffic_key}';
-                    window.dispatchEvent(new HashChangeEvent('hashchange'));
-                }}
                 const targetDiv = document.getElementById('{traffic_key}') || document.querySelector('[data-key="{traffic_key}"]');
                 if (targetDiv) {{
                     targetDiv.scrollIntoView({{ behavior: 'instant', block: 'center' }});
                 }}
             }}""")
-            time.sleep(1.0)
+            time.sleep(0.5)
         except Exception:
             pass
 
@@ -1386,6 +1446,10 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                     dyn_k = page.evaluate("""() => {
                         if (window.traffic_key) return window.traffic_key;
                         if (window.whaton_key) return window.whaton_key;
+                        for (const s of document.querySelectorAll('script[src*="key="]')) {
+                            const m = (s.src || '').match(/[?&]key=([a-zA-Z0-9_-]+)/);
+                            if (m) return m[1];
+                        }
                         for (let k in localStorage) {
                             if (k.includes('quest') || k.includes('traffic')) {
                                 try {
@@ -1486,7 +1550,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
             time.sleep(0.4)
         return None
 
-    def prep():
+    def prep(is_step_2=False):
         for _ in range(3):
             try:
                 page.evaluate(f"""() => {{
@@ -1501,21 +1565,14 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                         document.body.appendChild(ns);
                     }});
                     document.querySelectorAll('#hpps-popup, .hpps-popup, .popup, .modal, [class*="popup"]').forEach(e => e.remove());
-                    if ('{traffic_key}') {{
-                        window.location.hash = '#ss-{traffic_key}';
+                    if ('{traffic_key}' && {str(is_step_2).lower()}) {{
+                        if (!window.location.hash.includes('{traffic_key}')) {{
+                            window.location.hash = '#ss-{traffic_key}';
+                            window.dispatchEvent(new HashChangeEvent('hashchange'));
+                        }}
                         if (typeof forceShowButton === 'function') forceShowButton();
                     }}
                     window.scrollTo(0, document.body.scrollHeight);
-
-                    // Active scroll heartbeat to defeat mouse_scroll timer pause in service-v3.js
-                    if (!window.heartbeat_scroll) {{
-                        let dir = 1;
-                        window.heartbeat_scroll = setInterval(() => {{
-                            window.scrollBy(0, 25 * dir);
-                            dir = -dir;
-                            window.dispatchEvent(new Event('scroll'));
-                        }}, 750);
-                    }}
                 }}""")
                 break
             except Exception:
@@ -1535,17 +1592,16 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                         if (k.includes('quest') || k.includes('traffic')) {
                             try {
                                 const v = JSON.parse(localStorage.getItem(k));
-                                if (v && (v.id || v.traffic_session)) return true;
+                                if (v && (v.id || v.traffic_session || v.timestamp)) return true;
                             } catch (e) {}
                         }
                     }
                     return false;
                 }""")
-                if not has_q:
-                    log("[!] Bước 1 chưa được xác nhận hoàn tất (chưa có quest_info trong localStorage). Không chuyển sang Bước 2!")
-                    break
-                else:
+                if has_q:
                     step_1_completed = True
+                else:
+                    log("[*] quest_info chưa thấy rõ trong localStorage, vẫn tiếp tục sang Bước 2 theo luồng...")
 
             article = None
             try:
@@ -1682,7 +1738,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 pass
             time.sleep(1.5)
 
-        prep()
+        prep(is_step_2=(step > 1))
         time.sleep(0.5)
 
         has_landing_traffic = False
@@ -1708,7 +1764,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                     try:
                         page.goto(art_url, wait_until="domcontentloaded", timeout=25000)
                         time.sleep(1.5)
-                        prep()
+                        prep(is_step_2=True)
                         btn = find_mission_button(timeout_sec=5.0)
                         if btn and btn.count() > 0:
                             log(f"[+] Tìm thấy nút Bước 2 thành công trên: {art_url}")
@@ -1791,11 +1847,11 @@ if (!quest_info && typeof(Storage) !== "undefined") {
 
         log(f"[+] Step {step}: Button located. Clicking...")
         try:
-            btn.scroll_into_view_if_needed(timeout=2000)
-            btn.click(force=True, timeout=2500)
+            btn.evaluate("el => el.click()")
         except Exception:
             try:
-                btn.evaluate("el => el.click()")
+                btn.scroll_into_view_if_needed(timeout=2000)
+                btn.click(force=True, timeout=2500)
             except Exception:
                 pass
         time.sleep(0.5)
@@ -1897,12 +1953,29 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                 if rem <= 0:
                     log(f"[*] Step {step}: Countdown reached 0s. Processing result...")
                     if step == 1:
-                        # Chờ widget tự động gọi checkButtonClick() hoặc hoàn tất Bước 1
-                        time.sleep(2.0)
-                        for w_tick in range(24):
+                        # Kích hoạt sự kiện click kết thúc Bước 1 hoặc chuyển sang Bước 2
+                        time.sleep(1.0)
+                        for w_tick in range(12):
                             if code_found or campaign_dead:
                                 break
                             
+                            try:
+                                page.evaluate(f"""() => {{
+                                    const el = document.getElementById('{traffic_key}');
+                                    if (el) {{
+                                        el.dataset.loading = 'false';
+                                        delete el.dataset.loaded;
+                                        el.dataset.time = '0';
+                                        el.dataset.click = 'true';
+                                        if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
+                                        else if (typeof checkButtonClick === 'function') checkButtonClick();
+                                    }}
+                                    const c = document.querySelector('.whatoncode, .whatoncode-wrapper, [class*="whatoncode"], .whatoncode button, [id=\'{traffic_key}\'] button, [id=\'{traffic_key}\'] div, .completed, #traffic-button, #traffic-button-no, .traffic-button-no, .traffic-button, .traffic-button__content');
+                                    if (c) c.click();
+                                }}""")
+                            except Exception:
+                                pass
+
                             has_quest = page.evaluate("""() => {
                                 for (let k in localStorage) {
                                     if (k.includes('quest') || k.includes('traffic')) {
@@ -1920,25 +1993,6 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                 break
                             if step_1_completed:
                                 break
-
-                            # Nếu sau 4 giây widget chưa tự gọi checkButtonClick, hỗ trợ kích hoạt an toàn
-                            if w_tick in (4, 10, 16, 20):
-                                log(f"[*] Step 1: Kích hoạt checkButtonClick / click nút hỗ trợ...")
-                                try:
-                                    page.evaluate(f"""() => {{
-                                        const el = document.getElementById('{traffic_key}');
-                                        if (el) {{
-                                            el.dataset.loading = 'false';
-                                            delete el.dataset.loaded;
-                                            el.dataset.time = '0';
-                                            el.dataset.click = 'true';
-                                            if (typeof checkButtonClick === 'function') checkButtonClick();
-                                        }}
-                                        const btn = document.querySelector(".whatoncode button, [id='{traffic_key}'] button, .completed, #traffic-button");
-                                        if (btn) btn.click();
-                                    }}""")
-                                except Exception:
-                                    pass
 
                             # Kiểm tra xem mã có xuất hiện luôn ở bước 1 không (single-step campaign)
                             try:
@@ -1970,7 +2024,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                             except Exception:
                                 pass
 
-                            time.sleep(0.5)
+                            time.sleep(0.8)
 
                         log(f"[*] Step 1 finished. step_1_completed={step_1_completed}, code_found={code_found}")
                         break
@@ -1991,9 +2045,10 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                             delete el.dataset.loaded;
                                             el.dataset.time = '0';
                                             el.dataset.click = 'true';
-                                            if (typeof checkButtonClick === 'function') checkButtonClick();
+                                            if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
+                                            else if (typeof checkButtonClick === 'function') checkButtonClick();
                                         }}
-                                        const c = document.querySelector('.whatoncode button, [id=\'{traffic_key}\'] button, .completed, #traffic-button, #traffic-button-no, .traffic-button-no');
+                                        const c = document.querySelector('.whatoncode, .whatoncode-wrapper, [class*="whatoncode"], .whatoncode button, [id=\'{traffic_key}\'] button, [id=\'{traffic_key}\'] div, .completed, #traffic-button, #traffic-button-no, .traffic-button-no');
                                         if (c && (!c.innerText || !c.innerText.includes('Mã KM'))) c.click();
                                     }}""")
                                 except Exception:
@@ -2005,7 +2060,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                     fb_code = page.evaluate(f"""async () => {{
                                         for (let k in localStorage) {{
                                             if (k.includes('quest') || k.includes('traffic')) {{
-                                                try {{{{
+                                                try {{
                                                     const q = JSON.parse(localStorage.getItem(k));
                                                     if (q && q.id) {{
                                                         const eps = [
@@ -2024,7 +2079,7 @@ if (!quest_info && typeof(Storage) !== "undefined") {
                                                             }} catch (e) {{}}
                                                         }}
                                                     }}
-                                                }} catch (e) {{{{}}}}
+                                                }} catch (e) {{}}
                                             }}
                                         }}
                                         return null;

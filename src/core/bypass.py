@@ -150,14 +150,16 @@ def run(target_url: str = None, headless: bool = True):
 
         api_rejected_captcha = False
         sponsor_campaign_detected = None
+        campaign_payload = None
         def handle_resp(res):
-            nonlocal final_destination_url, api_rejected_captcha, sponsor_campaign_detected
+            nonlocal final_destination_url, api_rejected_captcha, sponsor_campaign_detected, campaign_payload
             if "/campaign/get-advertise" in res.url:
                 try:
                     data = res.json()
                     log(f"[+] Intercepted Link4M campaign advertise response: success={data.get('success')}")
                     if data.get("success"):
                         sponsor_campaign_detected = True
+                        campaign_payload = data
                     else:
                         sponsor_campaign_detected = False
                 except Exception:
@@ -237,13 +239,13 @@ def run(target_url: str = None, headless: bool = True):
         if not is_valid_destination(final_destination_url):
             # Luồng 2: Web Tài TrỢ (Sponsor Quest - Tiêu Chuẩn)
             log("[*] Khởi chạy Luồng Web tài trợ (Sponsor Quest)...")
-            try:
-                page_link.wait_for_selector("#advertise-html-wrapper img, img[src^='data:image'], img[src*='uploads/advertiser'], body", timeout=6000)
-            except Exception:
-                pass
-            time.sleep(0.5)
+            # Chờ API campaign hoàn tất trả về payload
+            for _ in range(15):
+                if campaign_payload or sponsor_campaign_detected is not None:
+                    break
+                time.sleep(0.2)
 
-            sponsor_candidates = detect_sponsor_domain(page_link)
+            sponsor_candidates = detect_sponsor_domain(page_link, campaign_payload=campaign_payload)
             if not sponsor_candidates:
                 log("[!] Could not auto-detect sponsor domain. Halting.")
                 browser.close()
@@ -318,14 +320,8 @@ def run(target_url: str = None, headless: bool = True):
                         } catch (e) {}
                     }
 
-                    // Ưu tiên submit form chính #main-form
-                    const targetForms = [];
-                    const mainF = document.querySelector('#main-form');
-                    if (mainF) targetForms.push(mainF);
-                    else {
-                        const allF = document.querySelectorAll('#main-form-2, form');
-                        allF.forEach(f => targetForms.push(f));
-                    }
+                    // Ưu tiên submit form chính đang hoạt động (#main-form-2 và #main-form)
+                    const targetForms = Array.from(document.querySelectorAll('#main-form-2, #main-form, form'));
 
                     targetForms.forEach(f => {
                         const inp = f.querySelector("input[name='password'], input.password, #password, #password-2, [placeholder*='Nhập mã']");
@@ -380,6 +376,9 @@ def run(target_url: str = None, headless: bool = True):
                 break
             time.sleep(0.25)
             ready_url = page_link.evaluate("""() => {
+                if (window.destination_url && window.destination_url.startsWith('http') && !window.destination_url.includes('link4m')) {
+                    return window.destination_url;
+                }
                 const btn = document.querySelector('.get-link, a#get-link, a[href*="download"], #btn-get-link, .btn-success');
                 if (btn) {
                     const h = btn.getAttribute('href') || '';

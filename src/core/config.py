@@ -1,5 +1,10 @@
 import os
 import sys
+
+_py311_site = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python", "Python311", "Lib", "site-packages")
+if os.path.exists(_py311_site) and _py311_site not in sys.path:
+    sys.path.insert(0, _py311_site)
+
 import time
 import subprocess
 
@@ -31,12 +36,9 @@ def ensure_python_runtime():
     """Auto-reruns script under Python 3.11/Playwright interpreter if needed."""
     py_bin = get_python_executable()
     if os.path.exists(py_bin) and os.path.abspath(sys.executable).lower() != os.path.abspath(py_bin).lower():
-        try:
-            import playwright  # noqa: F401
-        except ImportError:
-            cmd = [py_bin] + sys.argv
-            res = subprocess.run(cmd)
-            sys.exit(res.returncode)
+        cmd = [py_bin] + sys.argv
+        res = subprocess.run(cmd)
+        sys.exit(res.returncode)
 
 def load_proxies():
     if not os.path.exists(PROXIES_FILE):
@@ -89,12 +91,45 @@ def log(msg: str):
     except Exception:
         pass
 
-def copy_to_clipboard(text: str):
+def copy_to_clipboard(text: str) -> bool:
+    # Disabled by user request
+    return True
+
+def get_clipboard() -> str:
+    """Reads URL directly from Windows Clipboard with 0.001ms ctypes latency."""
     try:
-        if sys.platform == "win32":
-            subprocess.run(["clip"], input=text.strip().encode("utf-8"), check=True)
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.GetClipboardData.argtypes = [wintypes.UINT]
+        user32.GetClipboardData.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalLock.restype = ctypes.c_wchar_p
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
+
+        if user32.OpenClipboard(None):
+            try:
+                CF_UNICODETEXT = 13
+                h_clip = user32.GetClipboardData(CF_UNICODETEXT)
+                if h_clip:
+                    text = kernel32.GlobalLock(h_clip)
+                    kernel32.GlobalUnlock(h_clip)
+                    if text:
+                        return text.strip()
+            finally:
+                user32.CloseClipboard()
     except Exception:
         pass
+    return ""
+
+def get_clipboard_text() -> str:
+    """Reads text directly from Windows Clipboard."""
+    return get_clipboard()
 STEALTH_INIT_SCRIPT = """
     // 1. Quota & Webdriver & Incognito bypass
     window.detectIncognito = async function() {
@@ -197,7 +232,6 @@ def save_destination(url: str, run_id: str = None):
             fd.write(url)
     except Exception:
         pass
-    copy_to_clipboard(url)
 
 def log_result_card(url: str, engine_name: str, duration: int = None):
     dur_str = f" | Thời gian: {duration}s" if duration is not None else ""
@@ -220,30 +254,6 @@ def read_destination(run_id: str = None) -> str:
                         return u
             except Exception:
                 pass
-    return ""
-
-def get_clipboard() -> str:
-    """Reads URL directly from Windows Clipboard with 0.001ms ctypes latency."""
-    try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        if user32.OpenClipboard(0):
-            try:
-                CF_UNICODETEXT = 13
-                h_clip = user32.GetClipboardData(CF_UNICODETEXT)
-                if h_clip:
-                    kernel32.GlobalLock.restype = ctypes.c_wchar_p
-                    text = kernel32.GlobalLock(h_clip)
-                    kernel32.GlobalUnlock(h_clip)
-                    if text:
-                        line = text.strip().splitlines()[0].strip()
-                        if line.startswith("http://") or line.startswith("https://"):
-                            return line
-            finally:
-                user32.CloseClipboard()
-    except Exception:
-        pass
     return ""
 
 

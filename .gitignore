@@ -89,3 +89,22 @@ traffic_index.js
 scripts_extracted.js
 
 
+node_modules/
+*.pt
+tmp/
+scratch_*
+live_proxy.json
+export_adv.py
+read_adv.py
+deobf_view.js
+tmp_view.js
+adv.json
+service_v3.js
+inspect_opencode.py
+tests/check_*.py
+tests/debug_*.py
+tests/eval_*.js
+tests/get_*.py
+tests/ocr_live.py
+tests/save_kw_img.py
+tools/recaptcha_solver_lursz/

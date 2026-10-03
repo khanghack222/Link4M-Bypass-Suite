@@ -6,12 +6,35 @@ import requests
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 def decode_file_url(url):
-    """Giai ma URL tu duong dan trang trung gian /go/file/<encoded>"""
+    """Giai ma URL tu duong dan trang trung gian /go/file/<encoded> hoac query redirect"""
+    if not url:
+        return None
+
+    # 0. Check query string params (dest, target, url, redirect, file, link)
+    try:
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        for k in ["dest", "target", "url", "redirect", "file", "link", "go"]:
+            if k in qs and qs[k]:
+                val = qs[k][0].strip()
+                if val.startswith("http"):
+                    return val
+                try:
+                    pad = (-len(val)) % 4
+                    dec = base64.b64decode(val + ("=" * pad)).decode("utf-8", errors="ignore")
+                    if dec.startswith("http"):
+                        return dec
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     if '/go/file/' in url:
-        part = url.split('/go/file/')[-1].split('?')[0].split('#')[0]
-        # 1. Base64
+        part = url.split('/go/file/')[-1].split('?')[0].split('#')[0].strip('/')
+        # 1. Base64 với dynamic padding
         try:
-            dec = base64.b64decode(part + '===').decode('utf-8')
+            pad = (-len(part)) % 4
+            dec = base64.b64decode(part + ("=" * pad)).decode('utf-8', errors='ignore')
             if dec.startswith('http'):
                 return dec
         except Exception:
@@ -24,6 +47,7 @@ def decode_file_url(url):
         except Exception:
             pass
     return None
+
 
 def follow_destination(url):
     """Kiem tra chuyen huong link dich neu can"""

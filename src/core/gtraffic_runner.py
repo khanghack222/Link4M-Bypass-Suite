@@ -74,18 +74,19 @@ CAMPAIGN_RULES = [
     (['ki tu', 'kí tự', 'kitu', '360', 'dac biet', 'đặc biệt'], ['https://kitu360.com']),
     (['phan van', 'phan văn', 'phanvan', 'santos'], ['https://phanvansantos.com']),
     (['sunwin', 'sun win', 'sun', 'urano', 'waygo', 'sixtyseven'], ['https://urano.com.co', 'https://waygo.com.co', 'https://sunwin.sixtyseven.co.in']),
-    (['w88', 'w 88', 'ananta', 'anantafarming'], ['https://anantafarming.in.net', 'https://anantafarming.com']),
+    (['w88', 'w 88', 'ananta', 'anantafarming', 'klassif', 'klass', 'w88klassif'], ['https://klassif.io', 'https://w88klassif.com', 'https://anantafarming.in.net', 'https://anantafarming.com']),
     (['fun', 'fun88', 'greenco', 'intermarket', 'inter', 'inte', 'linkvaofun88'], ['https://intermarket.com.co', 'https://greenco.com.co']),
     (['hitclub', 'hit club', 'stridewalk', 'stride'], ['https://hitclub.cards', 'https://hitclub.stridewalk.in', 'https://stridewalk.in']),
     (['qh88', 'qh 88', 'qmmnews', 'qmm'], ['https://qmmnews.in.net']),
     (['ok365', 'ok 365'], ['https://ok365.com']),
-    (['mu88', 'mu 88', 'antena', 'antenacat', 'antenacata', 'catalana'], ['https://antenacatalana.net']),
+    (['mu88', 'mu 88', 'betlive', 'betlive4d', 'antena', 'antenacat', 'antenacata', 'catalana'], ['https://betlive4d.net', 'https://antenacatalana.net']),
     (['van phong', 'văn phòng', 'hai ba trung', 'hai bà trưng', 'tim van phong', 'cho thue van phong', 'timvanphong'], ['https://timvanphong.com.vn']),
     (['thoitiet', 'thời tiết', 'thoitiethomnay'], ['https://thoitiethomnay.org']),
     (['eric ly', 'ericly'], ['https://ericly.net']),
     (['188 bet', '188bet', 'bet188', 'bet 188', 'agobet'], ['https://agobet.cc']),
     (['incafe', 'in cafe', 'cafe'], ['https://incafe.com.co']),
 ]
+
 
 _GEMINI_IMAGE_CACHE = {}
 
@@ -133,14 +134,16 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_g
                         final_u = resp.geturl() or t
                         html = resp.read(524288).decode("utf-8", errors="ignore")
                         is_btn = any(w in html for w in [
-                            'trade-btn', 'trade-btn-clf', 'traffic-button', 'pages.dev/traffic', 'pages.dev/bt',
+                            'trade-btn', 'trade-btn-clf', 'traffic-button', 'trade-d-btn', 'pages.dev/traffic', 'pages.dev/bt',
                             'pages.dev', 'mammon', 'pages.dev/andanh', 'ontops.link', 'client.gtraffic.io',
-                            'dr-client.gtraffic.io', 'captchano', 'verifyclf', 'btf.js', 'btd.js', 'bt.js', 'lấy mã', 'lay ma'
+                            'dr-client.gtraffic.io', 'captchano', 'verifyclf', 'btf.js', 'btd.js', 'bt.js', 'lấy mã', 'lay ma',
+                            'traffic-code', 'nhập mã', 'nhap ma', 'mã xác nhận', 'ma xac nhan', 'countdown', 'layma'
                         ])
                         if is_btn:
                             return (final_u, final_u)
-                except urllib.error.HTTPError:
-                    pass
+                except urllib.error.HTTPError as h_err:
+                    if h_err.code in [200, 301, 302, 403]:
+                        pass
                 except Exception:
                     pass
         except Exception:
@@ -222,7 +225,14 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_g
             log(f"[*] OCR extracted {len(lines)} lines from campaign image: {lines[:3]}")
             candidates = extract_domain_candidates(lines)
 
-            # 2a. Match known campaigns against image OCR lines FIRST
+            # 2a. Check candidates derived directly from image URL & stems FIRST
+            for c in (candidates or []):
+                verified, _ = check_candidate_worker(c)
+                if verified:
+                    log(f"[+] RapidOCR image candidate verified live sponsor: {verified}")
+                    return verified
+
+            # 2b. Match known campaigns against image OCR lines
             ocr_full_str = ' '.join(lines).lower()
             for triggers, d_list in CAMPAIGN_RULES:
                 if isinstance(d_list, str):
@@ -244,13 +254,6 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_g
                                 return verified
                     except Exception:
                         pass
-
-            # 2b. Check candidates from RapidOCR immediately
-            for c in (candidates or []):
-                verified, _ = check_candidate_worker(c)
-                if verified:
-                    log(f"[+] RapidOCR (Free/Offline 0 tokens) xác thực domain: {verified}")
-                    return verified
 
             # 2c. Multimodal AI Vision ONLY if local free OCR failed and allow_gemini=True
             img_bytes = None
@@ -489,7 +492,9 @@ def run(target_url: str = None, headless: bool = True):
         "--disable-dev-shm-usage",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding"
+        "--disable-renderer-backgrounding",
+        "--enable-features=DnsOverHttps",
+        "--dns-over-https-templates=https://chrome.cloudflare-dns.com/dns-query"
     ]
     if os.path.exists(ext_dir):
         args.extend([
@@ -846,18 +851,24 @@ def run(target_url: str = None, headless: bool = True):
                 if extracted_code:
                     return
                 try:
-                    if any(k in res.url for k in ["api/code", "process-code"]):
-                        data = res.json()
-                        c = data.get("code") or data.get("data") or data.get("token") or data.get("c")
-                        if isinstance(c, dict):
-                            c = c.get("code") or c.get("token")
-                        if c and isinstance(c, str):
-                            c_str = c.strip()
-                            if 4 <= len(c_str) <= 25 and not any(w in c_str.lower() for w in ["wait", "giây", "chờ", "vui"]):
-                                extracted_code = c_str
-                                log(f"\n==========================================")
-                                log(f"💎 EXTRACTED CODE FROM NETWORK API: {extracted_code}")
-                                log(f"==========================================\n")
+                    u_low = res.url.lower()
+                    if any(k in u_low for k in ["api/code", "process-code", "get_code", "getcode", "tracking", "token", "get_quest"]):
+                        log(f"[PAGE 2 RESP] {res.status} {res.url}")
+                        try:
+                            data = res.json()
+                            log(f"[PAGE 2 JSON] {data}")
+                            c = data.get("code") or data.get("data") or data.get("token") or data.get("c") or data.get("html")
+                            if isinstance(c, dict):
+                                c = c.get("code") or c.get("token")
+                            if c and isinstance(c, str):
+                                c_str = c.strip()
+                                if 4 <= len(c_str) <= 25 and not any(w in c_str.lower() for w in ["wait", "giây", "chờ", "vui"]):
+                                    extracted_code = c_str
+                                    log(f"\n==========================================")
+                                    log(f"💎 EXTRACTED CODE FROM NETWORK API: {extracted_code}")
+                                    log(f"==========================================\n")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -1037,13 +1048,26 @@ def run(target_url: str = None, headless: bool = True):
                     import base64
                     b64 = src.split(",", 1)[1]
                     img_bytes = base64.b64decode(b64)
-                    ocr = get_ocr()
-                    res, _ = ocr(img_bytes)
-                    ocr_text = " ".join([line[1] for line in (res or [])])
-                    for opt in opts:
-                        if opt in ocr_text:
-                            chosen_opt = opt
-                            break
+                    
+                    # Priority 0: Gemini Multimodal Vision AI
+                    try:
+                        from ai_captcha_helper import solve_captchano_ai
+                        ai_choice = solve_captchano_ai(img_bytes, opts)
+                        if ai_choice:
+                            chosen_opt = ai_choice
+                    except Exception:
+                        pass
+
+                    # Priority 1: Local OCR fallback
+                    if not chosen_opt:
+                        ocr = get_ocr()
+                        if ocr:
+                            res, _ = ocr(img_bytes)
+                            ocr_text = " ".join([line[1] for line in (res or [])])
+                            for opt in opts:
+                                if opt in ocr_text:
+                                    chosen_opt = opt
+                                    break
 
                 if not chosen_opt and opts:
                     chosen_opt = opts[0]
@@ -1069,10 +1093,33 @@ def run(target_url: str = None, headless: bool = True):
                 page2.mouse.wheel(0, 100 if (s % 2 == 0) else -100)
                 time.sleep(1)
                 dom_data = page2.evaluate("""() => {
+                    const dBtn = document.getElementById('trade-d-btn');
+                    const mainBtn = document.getElementById('trade-btn') || document.getElementById('trade-btn-clf');
+
+                    // If trade-d-btn finished (content 0 or disabled), auto-click trade-btn for Step 2!
+                    if (dBtn && (dBtn.classList.contains('trade-d-btn--disabled') || document.getElementById('trade-d-btn__content')?.textContent?.trim() === '0')) {
+                        if (mainBtn && mainBtn.style.visibility !== 'hidden' && mainBtn.style.display !== 'none') {
+                            const mainContent = document.getElementById('trade-btn__content')?.textContent?.trim() || '';
+                            if (!mainContent) {
+                                mainBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                                if (typeof mainBtn.onclick === 'function') mainBtn.onclick();
+                                mainBtn.click();
+                                mainBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                            }
+                        }
+                    }
+
                     const cp = document.querySelector('.copy-code, #copy-code');
-                    const c = document.querySelector('#trade-btn-clf__content, #trade-btn__content, #traffic-button-no__content, #trade-d-btn__content');
-                    const b = document.querySelector('#trade-btn-clf, #trade-btn, #traffic-button-no, #trade-d-btn');
-                    const btnCodes = Array.from(document.querySelectorAll('[id*="trade-btn"][data-code], [id*="traffic-button"][data-code], .trade-btn[data-code]')).map(el => el.dataset.code);
+                    let c = null;
+                    if (mainBtn && document.getElementById('trade-btn__content')?.textContent?.trim()) {
+                        c = document.getElementById('trade-btn__content');
+                    } else if (document.getElementById('trade-btn-clf__content')?.textContent?.trim()) {
+                        c = document.getElementById('trade-btn-clf__content');
+                    } else {
+                        c = document.querySelector('#trade-btn__content, #trade-btn-clf__content, #traffic-button-no__content, #trade-d-btn__content');
+                    }
+                    const b = (mainBtn && mainBtn.style.visibility !== 'hidden') ? mainBtn : (dBtn || document.querySelector('#trade-btn-clf, #trade-btn, #traffic-button-no, #trade-d-btn'));
+                    const btnCodes = Array.from(document.querySelectorAll('[id*="trade-btn"][data-code], [id*="trade-d-btn"][data-code], [id*="traffic-button"][data-code], .trade-btn[data-code], [data-code]')).map(el => el.dataset.code || el.getAttribute('data-code'));
                     return {
                         content: (cp && cp.innerText) || (c && c.innerText) || (b && b.innerText) || "",
                         btn: (b && b.innerText) || "",
@@ -1118,6 +1165,26 @@ def run(target_url: str = None, headless: bool = True):
                         log(f"  [Countdown] {s}s elapsed | Content: '{c_val}'")
 
                 # Check if content has transformed into code after countdown
+                if c_val == '0' and s == 64:
+                    try:
+                        with open(os.path.join(ROOT_DIR, "page2_dump.html"), "w", encoding="utf-8") as f_dump:
+                            f_dump.write(page2.content())
+                        log("[*] Dumped page2 content to page2_dump.html")
+                    except Exception as ed:
+                        log(f"[*] Dump error: {ed}")
+
+                if c_val == '0' or (c_val.isdigit() and int(c_val) == 0):
+                    try:
+                        page2.evaluate("""() => {
+                            const b = document.querySelector('#trade-btn-clf, #trade-btn, #traffic-button-no, #trade-d-btn, .copy-code, #copy-code, [id*="trade-btn"]');
+                            if (b) {
+                                b.click();
+                                b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                            }
+                        }""")
+                    except Exception:
+                        pass
+
                 if c_val and not c_val.isdigit() and 4 <= len(c_val) <= 30 and "\n" not in c_val and (s >= 50 or c_val == '0'):
                     cleaned = re.sub(r'^(?:Code|M[ãa]|M[ãa]\s*x[áa]c\s*nh[ậa]n|M[ãa]\s*KM)[\s\:\-]+', '', c_val, flags=re.IGNORECASE).strip()
                     if cleaned and not any(w in cleaned.lower() for w in ["giây", "chờ", "vui lòng", "robot", "lấy mã", "xác minh", "bảo mật", "kết quả", "tiếp tục", "phiên"]):
@@ -1137,16 +1204,59 @@ def run(target_url: str = None, headless: bool = True):
                             log(f"💎 EXTRACTED CODE FROM BUTTON DATA-CODE: {extracted_code}")
                             log(f"==========================================\n")
                             break
+                    if not extracted_code:
+                        discovered = page2.evaluate("""() => {
+                            for (const el of document.querySelectorAll('[data-code]')) {
+                                if (el.dataset.code && el.dataset.code.length >= 4) return el.dataset.code;
+                            }
+                            for (const el of document.querySelectorAll('#copy-code, .copy-code, #code, .code, [id*="code"], [class*="code"]')) {
+                                const t = (el.innerText || el.value || '').trim();
+                                if (/^[A-Za-z0-9]{4,20}$/.test(t) && !/^(code|giay|giây|wait)$/i.test(t)) return t;
+                            }
+                            const b = document.querySelector('#trade-btn-clf, #trade-btn, #traffic-button-no, #trade-d-btn');
+                            if (b) {
+                                const bt = (b.innerText || '').trim();
+                                const m = bt.match(/[A-Za-z0-9]{5,20}/);
+                                if (m && !/^(giay|giây|button|wait)/i.test(m[0])) return m[0];
+                            }
+                            return '';
+                        }""")
+                        if discovered and re.match(r'^[A-Za-z0-9]{4,20}$', str(discovered).strip()):
+                            extracted_code = str(discovered).strip()
+                            log(f"\n==========================================")
+                            log(f"💎 EXTRACTED CODE FROM ZERO-COUNTDOWN EVAL: {extracted_code}")
+                            log(f"==========================================\n")
+                            break
 
             if not extracted_code:
-                # Strictly check if trade-btn has final data-code attribute
+                # Strictly check if trade-btn or trade-d-btn has final data-code attribute
                 try:
-                    final_code = page2.evaluate("() => document.getElementById('trade-btn-clf')?.getAttribute('data-code') || document.getElementById('trade-btn')?.getAttribute('data-code') || document.getElementById('trade-btn-clf__content')?.textContent || ''").strip()
+                    final_code = page2.evaluate("() => document.getElementById('trade-d-btn')?.getAttribute('data-code') || document.getElementById('trade-btn-clf')?.getAttribute('data-code') || document.getElementById('trade-btn')?.getAttribute('data-code') || document.getElementById('trade-d-btn__content')?.textContent || document.getElementById('trade-btn-clf__content')?.textContent || ''").strip()
                     if final_code and not final_code.isdigit() and len(final_code) >= 5 and not any(w in final_code.lower() for w in ["f5", "lại", "trang", "code", "wait", "giây"]):
                         extracted_code = final_code
                         log(f"💎 EXTRACTED CODE FROM FINAL ELEMENT: {extracted_code}")
                 except Exception:
                     pass
+
+            if not extracted_code:
+                # Check frames/iframes for copy code or text
+                for f in page2.frames:
+                    try:
+                        f_code = f.evaluate("""() => {
+                            for (const el of document.querySelectorAll('[data-code]')) {
+                                if (el.dataset.code && el.dataset.code.length >= 4) return el.dataset.code;
+                            }
+                            const bodyText = document.body ? document.body.innerText.trim() : '';
+                            const m = bodyText.match(/^[A-Za-z0-9]{4,20}$/);
+                            if (m && !/^(giay|giây|code|wait|button)$/i.test(m[0])) return m[0];
+                            return '';
+                        }""")
+                        if f_code and re.match(r'^[A-Za-z0-9]{4,20}$', str(f_code).strip()) and not any(w in str(f_code).lower() for w in ["giay", "giây", "code", "wait", "button"]):
+                            extracted_code = str(f_code).strip()
+                            log(f"💎 EXTRACTED CODE FROM SPONSOR FRAME: {extracted_code}")
+                            break
+                    except Exception:
+                        pass
 
             try: page2.close()
             except Exception: pass

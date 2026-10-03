@@ -284,12 +284,20 @@ function ask(question) {
 }
 
 function showResultCard(finalUrl, durationSec) {
+    if (finalUrl) {
+        copyToClipboard(finalUrl);
+        try {
+            fs.writeFileSync(DEST_FILE, finalUrl.trim() + "\n", "utf-8");
+        } catch (e) {}
+    }
     console.log(`\n  ${c.neonCyan}╔══════════════════════════════════════════════════════════════════════════════╗${c.reset}`);
     console.log(`  ${c.neonCyan}║${c.reset}  ${c.bgGreen} 🏆 BYPASS THÀNH CÔNG RỰC RỠ! ${c.reset}  ${c.dim}${c.softGray}Thời gian: ${durationSec}s${c.reset}                                 ${c.neonCyan}║${c.reset}`);
     console.log(`  ${c.neonCyan}╠══════════════════════════════════════════════════════════════════════════════╣${c.reset}`);
     console.log(`  ${c.neonCyan}║${c.reset}  ${c.bold}${c.pureWhite}Link đích:${c.reset} ${c.bold}${c.neonCyan}${finalUrl}${c.reset}`);
+    console.log(`  ${c.neonCyan}║${c.reset}  ${c.mintGreen}✔ Đã tự động sao chép vào Clipboard & ghi vào destination_url.txt${c.reset}             ${c.neonCyan}║${c.reset}`);
     console.log(`  ${c.neonCyan}╚══════════════════════════════════════════════════════════════════════════════╝${c.reset}\n`);
 }
+
 
 let currentHeadless = true;
 
