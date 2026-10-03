@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xác minh — MFGm2tAlcSn | TrafficVN</title>
+    <meta name="description" content="Trang xác minh lượt truy cập cho liên kết rút gọn (mã: MFGm2tAlcSn). Không lập chỉ mục tìm kiếm.">
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="canonical" href="https://trafficvn.com/get/MFGm2tAlcSn">
+        <link rel="icon" type="image/x-icon" href="https://trafficvn.com/uploads/favicon_1775883779_f6ae1f6e.png">
+    <link rel="shortcut icon" href="https://trafficvn.com/uploads/favicon_1775883779_f6ae1f6e.png">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
+        <link rel="preconnect" href="https://challenges.cloudflare.com" />
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
+            <link rel="preload" href="https://trafficvn.com/secury/tobruxaz.js?v=1789065628" as="script">
+        <style>
+        /* ── DESIGN TOKENS ─────────────────────────────────────────────── */
+        :root{
+            --green:#2f9e44;--green-bg:#ebfbee;--green-bd:#b2f2bb;--green-dk:#1e7e34;
+            --red:#e03131;--red-bg:#fff5f5;--red-bd:#ffc9c9;
+            --orange:#e8590c;--orange-bg:#fff4e6;--orange-bd:#ffd8a8;
+            --blue:#1971c2;--blue-bg:#e7f5ff;--blue-bd:#a5d8ff;
+            --purple:#7048e8;--purple-bg:#f3f0ff;--purple-bd:#d0bfff;
+            --yellow:#f08c00;--yellow-bg:#fff9db;--yellow-bd:#ffec99;
+            --notice-bg:#fffcf0;--notice-bd:#ffe9a8;
+            --border:#dee2e6;--surface:#f8f9fa;--text:#212529;--muted:#868e96;
+        }
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        *,input,textarea,select{font-family:'Be Vietnam Pro',sans-serif}
+        *{-webkit-user-select:none;-moz-user-select:none;user-select:none}
+        input,textarea,select{-webkit-user-select:text;user-select:text}
+        body{background:#f1f3f5;color:var(--text);min-height:100vh;font-size:13px;line-height:1.5}
+
+        /* ── PAGE LOADING ──────────────────────────────────────────────── */
+        #page-loading-overlay{position:fixed;inset:0;background:#fff;z-index:8888;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;transition:opacity .3s ease,visibility .3s ease}
+        #page-loading-overlay.fade-out{opacity:0;visibility:hidden}
+        /* v9: overlay loading KHÔNG còn tự hiện ngay khi tải trang nữa —
+           chờ người dùng bấm nút ở #precheck-overlay trước (xem JS
+           startPrecheck()). Ẩn bằng display:none (không dùng opacity/
+           visibility như .fade-out vì cần ẩn NGAY, không cần hiệu ứng). */
+        #page-loading-overlay.pre-hidden{display:none}
+        .loading-spinner{width:36px;height:36px;border:3px solid var(--green-bg);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .loading-text{font-size:12px;font-weight:500;color:var(--green)}
+        /* ── LOADING CARD (spinner + elapsed time + friendly hint) ──────── */
+        .loading-card{display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center;max-width:250px;padding:0 12px}
+        .loading-title{font-size:13px;font-weight:700;color:var(--text);margin-top:2px}
+        .loading-sub{font-size:11.5px;color:var(--muted);line-height:1.55}
+        .loading-elapsed{display:inline-flex;align-items:center;gap:5px;background:var(--green-bg);color:var(--green-dk);border:0.5px solid var(--green-bd);border-radius:99px;padding:4px 12px;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:1px}
+        .loading-elapsed i{font-size:12px}
+        .loading-elapsed span{min-width:1.6em;display:inline-block;text-align:left}
+
+        /* ── OVERLAY BACKDROP ──────────────────────────────────────────── */
+        .ov-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);z-index:9000;display:none;align-items:center;justify-content:center;padding:12px}
+        .ov-backdrop.active{display:flex}
+
+        /* ── POPUP CARD (shared shell) ─────────────────────────────────── */
+        .pop-card{background:#fff;border-radius:14px;width:100%;max-width:380px;border:0.5px solid var(--border);overflow:hidden;animation:popIn .22s cubic-bezier(.34,1.3,.64,1)}
+        @keyframes popIn{from{opacity:0;transform:scale(.95) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}
+        .pop-ct{height:3px}
+        .pop-hdr{display:flex;align-items:center;gap:10px;padding:13px 15px 12px;border-bottom:0.5px solid var(--border)}
+        .pop-iw{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+        .pop-iw i{font-size:17px}
+        .pop-iw-red   {background:#FCEBEB;color:#A32D2D}
+        .pop-iw-orange{background:#FAEEDA;color:#854F0B}
+        .pop-iw-purple{background:#EEEDFE;color:#534AB7}
+        .pop-iw-blue  {background:#E6F1FB;color:#185FA5}
+        .pop-iw-green {background:#EAF3DE;color:#3B6D11}
+        .pop-iw-gray  {background:#F1EFE8;color:#5F5E5A}
+        .pop-title{font-size:13px;font-weight:700;color:var(--text)}
+        .pop-sub{font-size:11px;color:var(--muted);margin-top:1px}
+        .pop-body{padding:13px 15px}
+        .pop-footer{padding:0 15px 13px}
+        .pop-foot-note{display:flex;align-items:center;justify-content:center;gap:5px;font-size:10px;color:#adb5bd;border-top:0.5px solid var(--border);padding:8px 15px 10px}
+        .pop-foot-note i{font-size:12px}
+
+        /* ── BADGE ─────────────────────────────────────────────────────── */
+        .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:600}
+        .badge-red   {background:#FCEBEB;color:#501313;border:0.5px solid #E24B4A}
+        .badge-orange{background:#FAEEDA;color:#633806;border:0.5px solid #EF9F27}
+        .badge-purple{background:#EEEDFE;color:#26215C;border:0.5px solid #7F77DD}
+        .badge-green {background:#EAF3DE;color:#173404;border:0.5px solid #639922}
+        .badge-gray  {background:#F1EFE8;color:#2C2C2A;border:0.5px solid #888780}
+        .badge-blue  {background:#E6F1FB;color:#042C53;border:0.5px solid #378ADD}
+
+        /* ── INFO ROW ──────────────────────────────────────────────────── */
+        .info-row{display:flex;align-items:center;gap:8px;background:var(--surface);border:0.5px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:10px}
+        .info-row i{font-size:15px;color:var(--muted);flex-shrink:0}
+        .info-val{font-size:12px;font-weight:700;font-family:monospace;color:var(--text)}
+        .info-meta{font-size:11px;color:var(--muted);margin-top:1px}
+
+        /* ── ALERT STRIP ───────────────────────────────────────────────── */
+        .alert-strip{display:flex;align-items:flex-start;gap:8px;border-radius:8px;padding:9px 10px;margin-bottom:10px;font-size:12px;line-height:1.55;border-left:2px solid}
+        .alert-strip i{font-size:14px;flex-shrink:0;margin-top:1px}
+        .as-orange{background:#FAEEDA;border-color:#EF9F27;color:#633806}
+        .as-red   {background:#FCEBEB;border-color:#E24B4A;color:#501313}
+        .as-purple{background:#EEEDFE;border-color:#7F77DD;color:#26215C}
+        .as-blue  {background:#E6F1FB;border-color:#378ADD;color:#042C53}
+        .as-green {background:var(--green-bg);border-color:var(--green);color:#163a1e}
+
+        /* v9: nút "Kiểm tra ngay" — spinner nhỏ + đổi label khi đang chờ
+           loadFpVipScript() bắt đầu tải xong phần script (KHÁC với overlay
+           loading toàn trang, cái này chỉ là phản hồi tức thời ngay khi
+           bấm để người dùng biết nút đã ăn, tránh bấm lại nhiều lần). */
+        .precheck-btn-spin{width:13px;height:13px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+        #precheck-btn:disabled{opacity:.75;cursor:default}
+
+        /* ── STEPS ─────────────────────────────────────────────────────── */
+        .steps-lbl{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px}
+        .steps-lbl.green {color:#3B6D11}
+        .steps-lbl.purple{color:#534AB7}
+        .step-list{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+        .step-item{display:flex;align-items:flex-start;gap:7px;font-size:12px;color:var(--text);line-height:1.5}
+        .step-num{width:17px;height:17px;border-radius:5px;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+        .sn-green {background:#EAF3DE;color:#3B6D11}
+        .sn-purple{background:#EEEDFE;color:#534AB7}
+        .sn-red   {background:#FCEBEB;color:#A32D2D}
+
+        /* ── BUTTONS ───────────────────────────────────────────────────── */
+        .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:0.5px solid var(--border);background:#fff;color:var(--text);transition:background .12s;font-family:'Be Vietnam Pro',sans-serif}
+        .btn-block{width:100%}
+        .btn-primary{background:var(--green);color:#fff;border-color:var(--green-dk)}
+        .btn-primary:hover{background:var(--green-dk)}
+        .btn-danger{background:#E24B4A;color:#fff;border-color:#A32D2D}
+        .btn-danger:hover{background:#A32D2D}
+        .btn-secondary{background:var(--surface);color:var(--text);border-color:var(--border)}
+        .btn-secondary:hover{background:#e9ecef}
+        .btn-purple{background:var(--purple);color:#fff;border-color:#5c3bc5}
+        .btn-purple:hover{background:#5c3bc5}
+        .btn:disabled{opacity:.45;cursor:not-allowed}
+        .two-btn{display:flex;gap:8px}
+        .two-btn .btn{flex:1}
+
+        /* ── HARD BLOCK OVERLAY ────────────────────────────────────────── */
+        #banned-overlay   {z-index:99999}
+        #hard-block-overlay{z-index:99998}
+        .hb-vio-list{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+        .hb-vio-item{display:flex;align-items:flex-start;gap:8px;background:var(--red-bg);border:0.5px solid var(--red-bd);border-radius:8px;padding:9px 10px}
+        .hb-vio-icon{width:26px;height:26px;border-radius:6px;background:#ffc9c9;color:var(--red);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0}
+        .hb-vio-title{font-size:12px;font-weight:700;color:#7b1e1e}
+        .hb-vio-desc{font-size:11px;color:#9b2226;line-height:1.4;margin-top:1px}
+
+        /* ── ERROR DETAIL MODAL ────────────────────────────────────────── */
+        #err-detail-modal{z-index:9997}
+        .err-code-badge{display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:0.5px solid var(--border);border-radius:6px;padding:3px 8px;font-size:11px;font-weight:700;font-family:monospace;color:#495057;margin-bottom:10px}
+        .err-server-box{background:var(--red-bg);border:0.5px solid var(--red-bd);border-radius:8px;padding:10px 11px;margin-bottom:10px}
+        .err-server-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--red);display:flex;align-items:center;gap:4px;margin-bottom:4px}
+        .err-server-txt{font-size:12px;color:#7b1e1e;font-weight:600;line-height:1.5}
+        .err-reason-box{background:var(--surface);border:0.5px solid var(--border);border-radius:8px;padding:10px 11px;margin-bottom:10px}
+        .err-reason-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:4px}
+        .err-reason-txt{font-size:12px;color:var(--text);line-height:1.55}
+        .err-api-box{background:#eef2ff;border:0.5px solid #c7d2fe;border-radius:8px;padding:10px 11px;margin-bottom:10px}
+        .err-api-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#4338ca;display:flex;align-items:center;gap:4px;margin-bottom:4px}
+        .err-api-url{font-size:11px;color:#312e81;font-weight:700;font-family:monospace;word-break:break-all;margin-bottom:6px}
+        .err-api-resp-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#4338ca;margin-bottom:4px}
+        .err-api-resp{font-size:11px;color:#1e1b4b;font-family:monospace;line-height:1.5;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow-y:auto;background:#fff;border:0.5px solid #c7d2fe;border-radius:6px;padding:6px 8px}
+        .err-retry-timer{display:flex;align-items:center;justify-content:center;gap:6px;background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:8px;padding:8px;margin-bottom:10px;font-size:12px;font-weight:700;color:#633806}
+        .pop-foot-btns{display:flex;gap:8px;padding:0 15px 13px}
+
+        /* ── DEVICE MISMATCH MODAL ─────────────────────────────────────── */
+        #device-mismatch-modal{z-index:9996}
+        .device-compare{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+        .device-card{flex:1;border-radius:9px;padding:11px 8px;text-align:center;border:0.5px solid var(--border);background:var(--surface)}
+        .device-card .dc-icon{font-size:22px;display:block;margin-bottom:3px}
+        .device-card .dc-lbl{font-size:10px;font-weight:700;text-transform:uppercase;color:var(--muted)}
+        .device-card .dc-name{font-size:12px;font-weight:700;color:var(--text)}
+        .device-arrow{width:24px;height:24px;border-radius:50%;background:var(--surface);border:0.5px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+
+        /* ── NO CAMPAIGN MODAL ─────────────────────────────────────────── */
+        #no-campaign-modal{z-index:9995}
+        .nc-topbar{height:3px;transform-origin:left;transition:transform .9s linear}
+        .nc-ring-wrap{position:relative;display:inline-flex;align-items:center;justify-content:center;width:60px;height:60px;margin:0 auto 8px}
+        .nc-ring-wrap svg{position:absolute;top:0;left:0}
+        .nc-ring-face{width:44px;height:44px;border-radius:50%;background:var(--surface);border:0.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:18px;z-index:1}
+        .nc-count-num{font-size:26px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;line-height:1;margin-bottom:2px;text-align:center}
+        .nc-count-label{font-size:11px;color:var(--muted);text-align:center}
+        .nc-center{text-align:center;margin-bottom:11px}
+        .nc-pill{display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:0.5px solid var(--border);border-radius:99px;padding:3px 10px;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:7px}
+        .nc-pill-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:nc-pulse 1.2s ease-in-out infinite;flex-shrink:0}
+        @keyframes nc-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.4)}}
+        .nc-title{font-size:14px;font-weight:800;color:var(--text);margin-bottom:3px}
+        .nc-desc{font-size:12px;color:var(--muted);line-height:1.55}
+        .nc-dest{display:flex;align-items:center;gap:8px;background:var(--surface);border:0.5px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:10px}
+        .nc-dest-icon{width:26px;height:26px;border-radius:6px;background:var(--blue-bg);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+        .nc-dest-lbl{font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+        .nc-dest-url{font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:monospace}
+        .nc-reset-box{background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:8px;padding:10px;text-align:center;margin-bottom:10px}
+        .nc-reset-lbl{font-size:11px;font-weight:600;color:#854F0B;margin-bottom:2px}
+        .nc-reset-time{font-size:20px;font-weight:800;color:#854F0B;font-variant-numeric:tabular-nums}
+        .nc-info{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);border-top:0.5px solid var(--border);padding:8px 15px;margin-top:4px}
+        .nc-footer{display:flex;gap:8px;padding:0 15px 13px}
+        .nc-btn-cancel{flex:1;height:34px;background:transparent;border:0.5px solid var(--border);border-radius:8px;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;transition:all .12s;font-family:'Be Vietnam Pro',sans-serif}
+        .nc-btn-cancel:hover{background:var(--surface);color:var(--text)}
+        .nc-btn-cancel:disabled{opacity:.38;cursor:not-allowed}
+        .nc-btn-go{flex:2;height:34px;background:var(--green);border:none;border-radius:8px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all .12s;font-family:'Be Vietnam Pro',sans-serif}
+        .nc-btn-go:hover{background:var(--green-dk)}
+
+        /* ── REPORT MODAL ──────────────────────────────────────────────── */
+        #report-modal{z-index:9994}
+        .form-label{font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;display:block}
+        .form-select,.form-textarea{width:100%;background:var(--surface);border:0.5px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;outline:none;transition:border-color .15s;-webkit-user-select:text;user-select:text;font-family:'Be Vietnam Pro',sans-serif;color:var(--text)}
+        .form-select:focus,.form-textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(47,158,68,.1)}
+        .form-textarea{resize:none}
+        .char-count{font-size:10px;color:var(--muted);text-align:right;margin-top:2px}
+        .modal-body-fields{display:flex;flex-direction:column;gap:11px;padding:13px 15px}
+        .modal-foot{display:flex;gap:8px;padding:0 15px 13px}
+
+        /* ── MAIN PAGE ─────────────────────────────────────────────────── */
+        .page-wrap{max-width:660px;margin:0 auto;padding:20px 14px calc(60px + var(--verify-bar-h))}
+
+        /* ── SESSION PILL ──────────────────────────────────────────────── */
+        .session-pill{display:flex;align-items:center;gap:9px;background:#fff;border:0.5px solid var(--border);border-radius:12px;padding:9px 14px;margin-bottom:14px}
+        .sp-icon{width:30px;height:30px;border-radius:7px;background:var(--green-bg);color:var(--green);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+        .sp-label{font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+        .sp-time{font-size:17px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;line-height:1;margin-top:1px}
+        .sp-bar-wrap{flex:1;background:#e9ecef;border-radius:99px;height:3px;overflow:hidden}
+        .sp-bar{height:100%;background:var(--green);border-radius:99px;transition:width 1s linear,background 1s}
+        .sp-badge{flex-shrink:0;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;background:var(--green-bg);color:var(--green)}
+        .session-pill.warn .sp-icon{background:var(--orange-bg);color:var(--orange)}
+        .session-pill.warn .sp-bar{background:var(--orange)}
+        .session-pill.warn .sp-badge{background:var(--orange-bg);color:var(--orange)}
+        .session-pill.urgent .sp-icon{background:var(--red-bg);color:var(--red)}
+        .session-pill.urgent .sp-bar{background:var(--red)}
+        .session-pill.urgent .sp-badge{background:var(--red-bg);color:var(--red)}
+
+        /* ── TASK CARD ─────────────────────────────────────────────────── */
+        .card{background:#fff;border:0.5px solid var(--border);border-radius:14px;overflow:hidden}
+        .card-header{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:0.5px solid var(--border);background:var(--surface)}
+        .card-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;display:flex;align-items:center;gap:5px}
+        .card-actions{display:flex;gap:6px}
+        .card-body{padding:15px}
+        .act-btn{display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border-radius:7px;font-size:11px;font-weight:600;border:0.5px solid var(--border);background:#fff;color:var(--muted);cursor:pointer;transition:all .12s}
+        .act-btn:hover{background:var(--surface);color:var(--text)}
+        .act-btn:disabled{opacity:.4;cursor:not-allowed}
+        .act-btn.danger{color:var(--red);border-color:var(--red-bd)}
+        .act-btn.danger:hover{background:var(--red-bg)}
+
+        /* ── NOTICE STRIP ──────────────────────────────────────────────── */
+        .notice-strip{background:var(--notice-bg);border-left:2px solid var(--notice-bd);border-radius:8px;padding:10px 12px;margin-bottom:15px}
+        .notice-strip .ns-title{font-size:11px;font-weight:700;color:#5c3d00;display:flex;align-items:center;gap:5px;margin-bottom:5px}
+        .notice-strip ul{list-style:none;padding:0}
+        .notice-strip ul li{font-size:11px;color:#5c3d00;padding:2px 0;display:flex;align-items:flex-start;gap:5px;line-height:1.45}
+        .notice-strip ul li i{margin-top:2px;flex-shrink:0;font-size:12px}
+
+        /* ── NOTICE STANDALONE (tách riêng, không dính vào timeline step) ─── */
+        .notice-standalone{
+            background:var(--notice-bg);
+            border:1px solid var(--notice-bd);
+            border-radius:10px;
+            padding:12px 14px;
+            margin-top:16px;
+        }
+        .notice-standalone .ns-title{
+            font-size:11px;
+            font-weight:700;
+            color:#5c3d00;
+            display:flex;
+            align-items:center;
+            gap:5px;
+            margin-bottom:7px;
+        }
+        .notice-standalone ul{list-style:none;padding:0;margin:0}
+        .notice-standalone ul li{
+            font-size:11px;
+            color:#5c3d00;
+            padding:3px 0;
+            display:flex;
+            align-items:flex-start;
+            gap:6px;
+            line-height:1.55;
+        }
+        .notice-standalone ul li i{margin-top:2px;flex-shrink:0;font-size:13px}
+
+        /* ── STEPS (instructions) ──────────────────────────────────────── */
+        .steps{display:flex;flex-direction:column;gap:0}
+        /*
+         * FIX: .step trước đây không set align-items → mặc định "stretch",
+         * khiến .step-left (chứa .step-line với flex:1) bị kéo cao bằng
+         * đúng chiều cao của .step-content. Ở step cuối (ô nhập mã +
+         * Turnstile + nút submit — nội dung rất cao), đường kẻ dọc bị kéo
+         * dài xuống và đè lên các phần tử bên dưới.
+         * → Đặt align-items:flex-start để .step-left chỉ cao bằng nội
+         *   dung thật của nó, không phụ thuộc chiều cao .step-content.
+         *   Đây là fix gốc rễ, độc lập với việc có dùng class
+         *   .step--final hay không.
+         */
+        .step{display:flex;align-items:flex-start;gap:12px;padding-bottom:15px;position:relative}
+        .step:last-child{padding-bottom:0}
+        .step-left{flex-shrink:0;display:flex;flex-direction:column;align-items:center}
+        .step-num2{width:26px;height:26px;border-radius:7px;background:var(--green-bg);color:var(--green);font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+        .step-line{width:2px;flex:1;background:var(--border);margin-top:5px;min-height:18px;border-radius:1px}
+        .step:last-child .step-line{display:none}
+        /* Bước cuối cùng (codeStep) giờ không còn render div.step-line trong
+           DOM nữa (xem JS bên dưới), nên các rule .step--final .step-line
+           chỉ còn là lớp phòng thủ bổ sung — không phải cơ chế chính. */
+        .step--final .step-line{display:none!important}
+        .step--final{padding-bottom:0}
+        .step-content{flex:1;min-width:0;padding-top:3px}
+        .step-label{font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px;line-height:1.5}
+        .step-note{font-size:11px;color:var(--muted);margin-top:5px;display:flex;align-items:center;gap:4px}
+
+        /* ── GOOGLE BAR / URL BOX ──────────────────────────────────────── */
+        .sw-label{font-size:10px;font-weight:700;color:var(--muted);margin-bottom:5px;display:flex;align-items:center;gap:4px}
+        .g-bar{display:flex;align-items:center;gap:8px;background:#fff;border:0.5px solid #dfe1e5;border-radius:9px;padding:8px 11px;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+        .g-bar i{color:#9aa0a6;font-size:14px}
+        .g-bar .g-text{font-size:13px;color:#202124;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .url-box{display:flex;align-items:center;gap:8px;background:var(--surface);border:0.5px solid var(--border);border-radius:8px;padding:8px 10px}
+        .url-text{flex:1;font-size:11px;font-family:monospace;color:var(--text);word-break:break-all;-webkit-user-select:text;user-select:text}
+        .copy-btn{flex-shrink:0;display:flex;align-items:center;gap:4px;padding:5px 10px;border-radius:7px;font-size:11px;font-weight:700;background:var(--green);color:#fff;border:none;cursor:pointer;transition:background .12s;white-space:nowrap;font-family:'Be Vietnam Pro',sans-serif}
+        .copy-btn:hover{background:var(--green-dk)}
+        .copy-btn.copied{background:#0ca678}
+
+        /* ── FAKE BUTTON (logo) ────────────────────────────────────────── */
+        .fake-btn{display:inline-flex;align-items:center;justify-content:center;width:72px;height:62px;border-radius:12px;border:none;background:transparent;box-shadow:0 3px 12px rgba(0,0,0,.1);overflow:hidden;vertical-align:middle;pointer-events:none;flex-shrink:0}
+        .fake-btn__logo{width:72px;height:62px;object-fit:cover;border-radius:12px}
+        .fake-btn__logo-fallback{width:72px;height:62px;display:flex;align-items:center;justify-content:center;background:#fff0f0;border-radius:12px;font-size:22px;color:#c62828}
+
+        /* ── IMAGE PREVIEW ─────────────────────────────────────────────── */
+        .img-preview{margin-top:8px;border-radius:9px;overflow:hidden;border:0.5px solid var(--border)}
+        .img-preview img{width:100%;display:block;object-fit:cover}
+        .img-caption{font-size:10px;color:var(--muted);margin-top:4px;display:flex;align-items:center;gap:3px;font-style:italic}
+
+        /* ── VERIFY BAR TITLE (dòng tiêu đề nhỏ phía trên ô nhập mã, bên
+           trong thanh ghim cố định .verify-bar) ── */
+        .verify-bar-title{font-size:10px;font-weight:600;color:var(--text);text-align:center;line-height:1.35;margin-bottom:0}
+
+        /* ── CODE INPUT / TURNSTILE / SUBMIT (đã giảm 2 bậc kích thước) ── */
+        .code-input-wrap{margin-top:5px;display:flex;flex-direction:column;align-items:center;gap:3px}
+        .code-input{width:100%;max-width:260px;height:36px;border:1.5px solid var(--border);border-radius:8px;background:#fff;outline:none;text-align:center;font-size:14px;font-weight:800;font-family:monospace;letter-spacing:.2em;color:var(--text);transition:all .15s;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+        .code-input::placeholder{font-weight:700;letter-spacing:.26em;color:#d9d6cd;font-size:13px}
+        .code-input:focus{border-color:var(--green);background:#fff;box-shadow:0 0 0 4px rgba(47,158,68,.12)}
+        .code-error{margin-top:3px;font-size:9.5px;color:var(--red);display:flex;align-items:center;gap:4px}
+        /* Turnstile: dùng size 'flexible' (JS) để widget trải theo chiều
+           ngang của khung thay vì cao lên theo chiều dọc như size 'compact'
+           trước đây — .turnstile-wrap chỉ cần full width, không giới hạn
+           chiều cao để widget tự co giãn gọn theo bề ngang. */
+        .turnstile-wrap{margin-top:5px;display:flex;justify-content:center;width:100%;max-width:100%;box-sizing:border-box;overflow:visible}
+        .turnstile-wrap iframe{max-width:100%;width:100%!important;height:auto!important}
+        .turnstile-loading{display:flex;align-items:center;justify-content:center;gap:5px;font-size:9.5px;color:var(--muted);padding:3px 0;width:100%;text-align:center}
+        .mini-spin{width:11px;height:11px;border:2px solid #dee2e6;border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite}
+        .turnstile-hint{font-size:9px;color:var(--muted);margin-top:3px;display:flex;align-items:center;justify-content:center;text-align:center;gap:3px}
+        .turnstile-disabled-hint{display:flex;align-items:center;gap:5px;font-size:9.5px;color:#adb5bd;padding:3px 7px;background:var(--surface);border-radius:6px;border:0.5px dashed var(--border);margin-top:5px}
+        .turnstile-error-box{display:flex;align-items:flex-start;gap:6px;font-size:11px;color:var(--red);background:var(--red-bg);border:0.5px solid var(--red-bd);border-radius:8px;padding:8px 10px}
+        .turnstile-error-box a{color:var(--red);font-weight:700;text-decoration:underline;cursor:pointer}
+        .turnstile-error-detail{font-size:9.5px;color:#a94442;opacity:.8;font-family:monospace;margin-top:3px;display:block;word-break:break-word}
+        .submit-btn{display:flex;align-items:center;justify-content:center;gap:5px;width:100%;max-width:240px;height:32px;margin-top:6px;background:linear-gradient(135deg,#51cf66 0%,#2f9e44 100%);color:#fff;font-size:11.5px;font-weight:700;border:none;border-radius:8px;cursor:pointer;transition:all .15s;box-shadow:0 3px 10px rgba(47,158,68,.25);font-family:'Be Vietnam Pro',sans-serif}
+        .submit-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 5px 16px rgba(47,158,68,.35)}
+        .submit-btn:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+
+        /* ── RETRY BANNER ──────────────────────────────────────────────── */
+        .retry-banner{display:none;background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:9px;padding:10px 12px;margin-bottom:13px;align-items:center;gap:8px}
+        .retry-banner.show{display:flex}
+        .retry-banner .rb-icon{font-size:17px;color:#854F0B;flex-shrink:0}
+        .retry-banner .rb-title{font-size:12px;font-weight:700;color:#633806}
+        .retry-banner .rb-desc{font-size:11px;color:#633806;margin-top:1px}
+        .retry-banner .rb-btn{flex-shrink:0;background:#EF9F27;color:#fff;border:none;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;cursor:pointer;transition:background .12s;font-family:'Be Vietnam Pro',sans-serif}
+        .retry-banner .rb-btn:hover{background:#BA7517}
+
+        /* ── VERIFY BAR (mục nhập mã + xác thực, cố định cuối màn hình) ──
+           Thay cho nút icon bàn phím nổi trước đây (phải bấm mới cuộn tới
+           ô nhập mã) — giờ ô nhập mã + Turnstile + nút xác nhận LUÔN hiện
+           sẵn, ghim cố định ở cuối màn hình, không cần cuộn/bấm gì thêm.
+           --verify-bar-h được JS đồng bộ bằng ResizeObserver (chiều cao
+           đổi khi Turnstile load xong / hiện lỗi mã...) để .page-wrap
+           luôn chừa đủ khoảng trống bên dưới, không bị thanh này che mất
+           nội dung cuối trang. */
+        :root{--verify-bar-h:0px}
+        .verify-bar{position:fixed;left:0;right:0;bottom:0;z-index:900;background:#fff;border-top:1px solid var(--border);box-shadow:0 -6px 18px rgba(0,0,0,.09);padding:7px 12px calc(7px + env(safe-area-inset-bottom));transition:padding .2s ease}
+        .verify-bar-inner{max-width:632px;margin:0 auto;max-height:640px;opacity:1;overflow:hidden;transition:max-height .25s ease,opacity .2s ease}
+
+        /* ── VERIFY BAR TOGGLE (mũi tên lên/xuống để thu gọn/mở rộng khung
+           nhập mã, ghim nổi lên trên mép thanh verify-bar) ── */
+        .verify-bar-toggle{position:absolute;top:-19px;left:50%;transform:translateX(-50%);width:42px;height:20px;border-radius:10px 10px 0 0;background:#ffe3e3;border:1px solid #ffb3b3;border-bottom:none;color:#e8362e;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 -2px 6px rgba(0,0,0,.06);transition:background .15s,color .15s}
+        .verify-bar-toggle:hover{background:#ffd0d0;color:#c92a2a}
+        .verify-bar-toggle i{font-size:17px}
+        .verify-bar.collapsed{padding-top:4px}
+        .verify-bar.collapsed .verify-bar-inner{max-height:0;opacity:0}
+
+        /* ── TOAST ─────────────────────────────────────────────────────── */
+        #toast-stack{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:99999;display:flex;flex-direction:column;gap:6px;width:calc(100% - 24px);max-width:320px;pointer-events:none}
+        .toast{pointer-events:all;display:flex;align-items:center;gap:8px;padding:10px 11px;border-radius:10px;background:#fff;border:0.5px solid var(--border);box-shadow:0 3px 14px rgba(0,0,0,.09);animation:toast-in .2s cubic-bezier(.34,1.4,.64,1) both;position:relative;overflow:hidden}
+        .toast.hiding{animation:toast-out .16s ease-in forwards}
+        @keyframes toast-in{from{opacity:0;transform:translateY(-8px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+        @keyframes toast-out{from{opacity:1;max-height:70px;padding:10px 11px}to{opacity:0;max-height:0;padding:0}}
+        .toast-icon{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+        .toast-body{flex:1;min-width:0}
+        .toast-title{font-size:12px;font-weight:700}
+        .toast-desc{font-size:11px;color:var(--muted);margin-top:1px}
+        .toast-action{flex-shrink:0;font-size:11px;font-weight:700;color:var(--blue);background:none;border:none;cursor:pointer;white-space:nowrap}
+        .toast-close{width:18px;height:18px;border-radius:5px;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;opacity:.35;color:var(--text)}
+        .toast-close:hover{opacity:1;background:var(--surface)}
+        .toast-bar{position:absolute;bottom:0;left:0;right:0;height:2px}
+        .toast-bar-inner{height:100%;width:100%;transform-origin:left;animation:bar-shrink linear forwards}
+        @keyframes bar-shrink{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+        .toast-success .toast-icon{background:var(--green-bg);color:var(--green)}
+        .toast-success .toast-title{color:#1e7e34}
+        .toast-success .toast-bar-inner{background:var(--green)}
+        .toast-error .toast-icon{background:var(--red-bg);color:var(--red)}
+        .toast-error .toast-title{color:var(--red)}
+        .toast-error .toast-bar-inner{background:var(--red)}
+        .toast-warning .toast-icon{background:var(--orange-bg);color:var(--orange)}
+        .toast-warning .toast-title{color:var(--orange)}
+        .toast-warning .toast-bar-inner{background:var(--orange)}
+        .toast-info .toast-icon{background:var(--blue-bg);color:var(--blue)}
+        .toast-info .toast-title{color:var(--blue)}
+        .toast-info .toast-bar-inner{background:var(--blue)}
+
+        .hidden{display:none!important}
+        @media(max-width:480px){
+            .page-wrap{padding:13px 10px calc(48px + var(--verify-bar-h))}
+            .verify-bar{padding:10px 10px calc(10px + env(safe-area-inset-bottom))}
+            .fake-btn{width:58px;height:52px;border-radius:10px}
+            .fake-btn__logo,.fake-btn__logo-fallback{width:58px;height:52px;border-radius:10px}
+            .pop-card{border-radius:12px}
+        }
+    </style>
+</head>
+<body>
+<div id="toast-stack"></div>
+
+<!-- ══ PRE-CHECK OVERLAY (v9) ══════════════════════════════════════
+     Hiện NGAY khi tải trang, THAY cho việc tự chạy fingerprint/loading
+     luôn. Người dùng phải bấm nút mới bắt đầu tải script + chạy xác
+     thực — xem startPrecheck() ở phần JS BOOT bên dưới. -->
+<div id="precheck-overlay" class="ov-backdrop active">
+    <div class="pop-card" style="max-width:340px">
+        <div class="pop-ct" style="background:var(--green)"></div>
+        <div class="pop-hdr">
+            <div class="pop-iw pop-iw-green"><i class="ti ti-shield-check"></i></div>
+            <div>
+                <div class="pop-title">Xác minh thiết bị</div>
+                <div class="pop-sub">Chỉ mất vài giây</div>
+            </div>
+        </div>
+        <div class="pop-body">
+            <div class="alert-strip as-green">
+                <i class="ti ti-info-circle"></i>
+                <div>Nhấn nút bên dưới để hệ thống kiểm tra nhanh trình duyệt trước khi tiếp tục.</div>
+            </div>
+        </div>
+        <div class="pop-footer">
+            <button class="btn btn-primary btn-block" id="precheck-btn">
+                <i class="ti ti-player-play" id="precheck-btn-icon"></i>
+                <span id="precheck-btn-label">Kiểm tra ngay</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<div id="page-loading-overlay" class="pre-hidden">
+    <div class="loading-card">
+        <div class="loading-spinner"></div>
+        <div class="loading-title" id="loading-title-text">Đang tải…</div>
+        <div class="loading-sub">Vui lòng chờ một chút trước khi bắt đầu nhé</div>
+        <div class="loading-elapsed"><i class="ti ti-clock"></i><span id="loading-elapsed-time">0s</span></div>
+    </div>
+</div>
+
+<!-- ══ BANNED OVERLAY ════════════════════════════════════════════ -->
+<div id="banned-overlay" class="ov-backdrop">
+    <div class="pop-card" style="max-width:360px">
+        <div class="pop-ct" style="background:#7F77DD"></div>
+        <div class="pop-hdr">
+            <div class="pop-iw pop-iw-purple"><i class="ti ti-ban"></i></div>
+            <div>
+                <div class="pop-title">Tài khoản bị khóa</div>
+                <div class="pop-sub">Quản trị viên đã hạn chế truy cập</div>
+            </div>
+            <span class="badge badge-purple" style="flex-shrink:0;margin-left:auto"><i class="ti ti-lock" style="font-size:11px"></i>Banned</span>
+        </div>
+        <div class="pop-body">
+            <div class="alert-strip as-purple">
+                <i class="ti ti-alert-circle"></i>
+                <div>Tài khoản vi phạm điều khoản hoặc bị khóa thủ công. Mọi hoạt động đã bị tạm dừng.</div>
+            </div>
+            <div class="steps-lbl purple"><i class="ti ti-list-check" style="font-size:12px"></i> Các bước tiếp theo</div>
+            <div class="step-list">
+                <div class="step-item"><div class="step-num sn-purple">1</div><span>Kiểm tra lại — không dùng VPN, bot, proxy giả lưu lượng.</span></div>
+                <div class="step-item"><div class="step-num sn-purple">2</div><span>Liên hệ quản trị viên qua kênh hỗ trợ chính thức để mở khóa.</span></div>
+                <div class="step-item"><div class="step-num sn-purple">3</div><span>Cung cấp tên tài khoản, email và mô tả vấn đề.</span></div>
+            </div>
+        </div>
+        <div class="pop-foot-note"><i class="ti ti-shield-lock" style="color:#7F77DD"></i> ACC_BANNED_403 · Liên hệ admin để mở khóa</div>
+    </div>
+</div>
+
+<!-- ══ HARD BLOCK OVERLAY ════════════════════════════════════════ -->
+<div id="hard-block-overlay" class="ov-backdrop">
+    <div class="pop-card">
+        <div class="pop-ct" style="background:#E24B4A"></div>
+        <div class="pop-hdr">
+            <div class="pop-iw pop-iw-red"><i class="ti ti-shield-off"></i></div>
+            <div>
+                <div class="pop-title">Truy cập bị từ chối</div>
+                <div class="pop-sub">Môi trường không đáp ứng yêu cầu bảo mật</div>
+            </div>
+        </div>
+        <div class="pop-body">
+            <div class="hb-vio-list" id="hb-vio-list"></div>
+            <div class="alert-strip as-orange"><i class="ti ti-info-circle"></i><div>Khắc phục các vấn đề trên rồi tải lại trang.</div></div>
+        </div>
+        <div class="pop-footer">
+            <button class="btn btn-danger btn-block" id="hb-reload-btn"><i class="ti ti-refresh"></i> Tải lại trang ngay</button>
+        </div>
+    </div>
+</div>
+
+<!-- ══ ERROR DETAIL MODAL ════════════════════════════════════════ -->
+<div id="err-detail-modal" class="ov-backdrop">
+    <div class="pop-card">
+        <div class="pop-ct" id="errTopBar" style="background:#E24B4A"></div>
+        <div class="pop-hdr">
+            <div class="pop-iw pop-iw-red" id="errIconWrap"><i class="ti ti-alert-triangle" id="errIcon"></i></div>
+            <div>
+                <div class="pop-title" id="errTitle">Lỗi hệ thống</div>
+                <div class="pop-sub" id="errSubtitle">Đã xảy ra sự cố</div>
+            </div>
+        </div>
+        <div class="pop-body">
+            <div class="err-code-badge" id="errCodeBadge"><i class="ti ti-hash" style="font-size:12px"></i><span id="errCodeText">ERR_UNKNOWN</span></div>
+            <div class="err-server-box hidden" id="errServerMsgBox">
+                <div class="err-server-lbl"><i class="ti ti-server" style="font-size:12px"></i> Thông báo từ máy chủ</div>
+                <div class="err-server-txt" id="errServerMsgText"></div>
+            </div>
+            <div class="err-reason-box" id="errReasonBox">
+                <div class="err-reason-lbl">Nguyên nhân</div>
+                <div class="err-reason-txt" id="errReason">Không xác định được nguyên nhân.</div>
+            </div>
+            <div class="err-api-box hidden" id="errApiBox">
+                <div class="err-api-lbl"><i class="ti ti-api" style="font-size:12px"></i> Gọi tới API</div>
+                <div class="err-api-url" id="errApiUrl"></div>
+                <div class="err-api-resp-lbl">Response</div>
+                <pre class="err-api-resp" id="errApiResponse"></pre>
+            </div>
+            <div id="errFixBox">
+                <div class="steps-lbl green"><i class="ti ti-tool" style="font-size:12px"></i> Cách khắc phục</div>
+                <div class="step-list" id="errFixSteps"></div>
+            </div>
+            <div class="err-retry-timer hidden" id="errRetryTimer">
+                <i class="ti ti-clock" style="font-size:14px"></i>
+                <span>Tự động thử lại sau <strong id="errRetryCount">5</strong>s</span>
+            </div>
+        </div>
+        <div class="pop-foot-btns">
+            <button class="btn btn-secondary" style="flex:1" id="errBtnClose" onclick="if(!event.isTrusted)return;closeErrModal()"><i class="ti ti-x"></i> Đóng</button>
+            <button class="btn btn-primary"   style="flex:1" id="errBtnAction"><i class="ti ti-refresh"></i> Thử lại</button>
+        </div>
+    </div>
+</div>
+
+<!-- ══ DEVICE MISMATCH MODAL ═════════════════════════════════════ -->
+<div id="device-mismatch-modal" class="ov-backdrop">
+    <div class="pop-card" style="max-width:340px">
+        <div class="pop-ct" style="background:#378ADD"></div>
+        <div class="pop-hdr">
+            <div class="pop-iw pop-iw-blue"><i class="ti ti-devices"></i></div>
+            <div>
+                <div class="pop-title">Thiết bị không phù hợp</div>
+                <div class="pop-sub">Chiến dịch không hỗ trợ thiết bị này</div>
+            </div>
+        </div>
+        <div class="pop-body">
+            <div class="device-compare">
+                <div class="device-card"><span class="dc-icon" id="dm-current-icon">📱</span><div class="dc-lbl">Đang dùng</div><div class="dc-name" id="dm-current-name">Điện thoại</div></div>
+                <div class="device-arrow"><i class="ti ti-arrow-right" style="font-size:12px;color:var(--muted)"></i></div>
+                <div class="device-card" style="border-color:#378ADD"><span class="dc-icon" id="dm-required-icon">🖥️</span><div class="dc-lbl">Yêu cầu</div><div class="dc-name" id="dm-required-name" style="color:#185FA5">Máy tính</div></div>
+            </div>
+            <p id="dm-hint-text" style="font-size:12px;color:#374151;line-height:1.6;background:var(--surface);border-radius:8px;padding:9px 11px;border:0.5px solid var(--border)"></p>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:7px;padding:0 15px 13px">
+            <button id="dm-reload-btn" class="btn btn-primary btn-block"><i class="ti ti-refresh"></i> Tải lại trang</button>
+            <button id="dm-back-btn" class="btn btn-secondary btn-block"><i class="ti ti-arrow-left"></i> Quay lại</button>
+        </div>
+    </div>
+</div>
+
+<!-- ══ NO CAMPAIGN MODAL ═════════════════════════════════════════ -->
+<div id="no-campaign-modal" class="ov-backdrop">
+    <div class="pop-card" id="ncCard" style="max-width:360px">
+        <div class="nc-topbar" id="ncTopBar"></div>
+        <div style="padding:14px 15px 11px;text-align:center;border-bottom:0.5px solid var(--border)">
+            <div class="nc-ring-wrap">
+                <svg width="60" height="60" viewBox="0 0 60 60" style="transform:rotate(-90deg)">
+                    <circle cx="30" cy="30" r="24" fill="none" stroke="#e9ecef" stroke-width="3"/>
+                    <circle class="nc-ring-arc" id="ncRingArc" cx="30" cy="30" r="24" fill="none" stroke="#51cf66" stroke-width="3" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="0"/>
+                </svg>
+                <div class="nc-ring-face" id="ncIconFace"></div>
+            </div>
+            <div class="nc-count-num" id="ncCountNum">3</div>
+            <div class="nc-count-label" id="ncCountLabel">giây nữa sẽ chuyển hướng</div>
+        </div>
+        <div style="padding:11px 15px 0">
+            <div class="nc-center">
+                <div class="nc-pill" id="ncPill"><div class="nc-pill-dot" id="ncPillDot"></div><span id="ncPillText">Đang chuẩn bị chuyển hướng</span></div>
+                <div class="nc-title" id="ncTitle">Đang chuyển hướng…</div>
+                <div class="nc-desc" id="ncDesc"></div>
+                <div id="quota-detail" style="display:none; margin-top: 10px; font-size:12px; color:#495057; background:#f8f9fa; padding:8px 10px; border-radius:6px; border:0.5px solid #dee2e6;"></div>
+            </div>
+            <div class="nc-dest hidden" id="ncDestBox">
+                <div class="nc-dest-icon"><i class="ti ti-world" style="font-size:14px;color:var(--blue)"></i></div>
+                <div style="flex:1;min-width:0"><div class="nc-dest-lbl">Chuyển tới</div><div class="nc-dest-url" id="ncDestUrl"></div></div>
+            </div>
+            <div class="nc-reset-box hidden" id="ncResetBox"><div class="nc-reset-lbl">Lượt mới reset sau</div><div class="nc-reset-time" id="ncResetTime">--:--:--</div></div>
+            <div id="quota-detail" style="display:none;"></div>
+        </div>
+        <div class="nc-info" id="ncInfoLine"><i class="ti ti-info-circle" style="font-size:13px"></i><span id="ncInfoText">Nhấn <strong>Huỷ</strong> để ở lại.</span></div>
+        <div class="nc-footer">
+            <button class="nc-btn-cancel" id="ncBtnCancel" onclick="if(!event.isTrusted)return;ncCancel()">Huỷ</button>
+            <button class="nc-btn-go" id="ncBtnGo"><i class="ti ti-arrow-right-circle" id="ncBtnGoIcon" style="font-size:15px"></i><span id="ncBtnGoText">Chuyển hướng ngay</span></button>
+        </div>
+    </div>
+</div>
+
+<!-- ══ REPORT MODAL ══════════════════════════════════════════════ -->
+<div id="report-modal" class="ov-backdrop">
+    <div class="pop-card" style="max-width:360px">
+        <div class="pop-ct" style="background:#EF9F27"></div>
+        <div class="pop-hdr">
+            <div class="pop-iw pop-iw-orange"><i class="ti ti-flag"></i></div>
+            <div style="flex:1">
+                <div class="pop-title">Báo lỗi chiến dịch</div>
+                <div class="pop-sub">Mô tả vấn đề bạn gặp phải</div>
+            </div>
+            <button onclick="if(!event.isTrusted)return;closeReportModal()" style="width:26px;height:26px;border-radius:7px;border:0.5px solid var(--border);background:var(--surface);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;color:var(--muted)"><i class="ti ti-x"></i></button>
+        </div>
+        <div class="modal-body-fields">
+            <div>
+                <label class="form-label">Loại lỗi <span style="color:var(--red)">*</span></label>
+                <select id="report-error-type" class="form-select">
+                    <option value="">-- Chọn loại lỗi --</option>
+                    <option value="web_not_found">Web không tìm thấy / 404</option>
+                    <option value="web_no_button">Không thấy nút lấy mã</option>
+                    <option value="code_invalid">Mã trả về không hợp lệ</option>
+                    <option value="web_slow">Web load quá chậm / không mở được</option>
+                    <option value="keyword_wrong">Từ khóa không ra kết quả đúng</option>
+                    <option value="other">Lỗi khác</option>
+                </select>
+                <div id="report-type-error" class="hidden" style="font-size:11px;color:var(--red);margin-top:3px;display:flex;align-items:center;gap:3px"><i class="ti ti-alert-circle" style="font-size:12px"></i> Vui lòng chọn loại lỗi</div>
+            </div>
+            <div>
+                <label class="form-label">Mô tả thêm <span style="font-weight:400;color:var(--muted)">(không bắt buộc)</span></label>
+                <textarea id="report-error-note" class="form-textarea" rows="3" maxlength="500" placeholder="Mô tả chi tiết lỗi bạn gặp phải…"></textarea>
+                <div class="char-count"><span id="report-note-count">0</span>/500</div>
+            </div>
+            <div id="report-turnstile-section">
+                                <div id="turnstile-report-wrap" class="turnstile-wrap">
+                    <div class="turnstile-loading" id="turnstile-report-loading"><div class="mini-spin"></div><span>Đang tải xác minh…</span></div>
+                </div>
+                <div class="turnstile-hint"><i class="ti ti-shield-check" style="font-size:12px"></i> Xác minh Cloudflare để gửi báo lỗi</div>
+                            </div>
+        </div>
+        <div class="modal-foot">
+            <button onclick="if(!event.isTrusted)return;closeReportModal()" class="btn btn-secondary" style="flex:1"><i class="ti ti-x"></i> Huỷ</button>
+            <button id="btn-report-submit" onclick="if(!event.isTrusted)return;submitReport()" class="btn btn-danger" style="flex:1"><i class="ti ti-send" style="font-size:13px"></i> Gửi báo lỗi</button>
+        </div>
+    </div>
+</div>
+
+<!-- ══ MAIN PAGE ══════════════════════════════════════════════════ -->
+<div class="page-wrap">
+    <div id="fp-retry-banner" class="retry-banner">
+        <i class="ti ti-alert-triangle rb-icon"></i>
+        <div style="flex:1">
+            <div class="rb-title" id="fp-banner-title">Xác thực thất bại</div>
+            <div class="rb-desc" id="fp-banner-desc">Nhấn thử lại</div>
+        </div>
+        <button class="rb-btn" onclick="if(!event.isTrusted)return;retryFingerprint()">Thử lại</button>
+    </div>
+
+    <div id="session-countdown" class="hidden">
+        <div class="session-pill" id="session-pill">
+            <div class="sp-icon"><i class="ti ti-clock" id="sp-icon-i" style="font-size:15px"></i></div>
+            <div>
+                <div class="sp-label">Phiên làm việc</div>
+                <div id="countdown-display" class="sp-time">--:--</div>
+            </div>
+            <div class="sp-bar-wrap"><div class="sp-bar" id="session-bar" style="width:100%"></div></div>
+            <div class="sp-badge" id="sp-badge">Hoạt động</div>
+        </div>
+        <div style="height:12px"></div>
+    </div>
+
+    <div id="task-area" class="hidden">
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title"><i class="ti ti-list-check" style="font-size:13px"></i> Hướng dẫn thực hiện</div>
+                <div class="card-actions">
+                    <button id="btn-change-camp" class="act-btn" onclick="if(!event.isTrusted)return;changeCamp()"><i class="ti ti-refresh"></i> Đổi camp</button>
+                    <button id="btn-report-error" class="act-btn danger" onclick="if(!event.isTrusted)return;reportError()"><i class="ti ti-flag"></i> Báo lỗi</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="notice-strip">
+                    <div class="ns-title"><i class="ti ti-alert-triangle" style="font-size:13px"></i> Lưu ý quan trọng</div>
+                    <ul>
+                        <li><i class="ti ti-circle-check" style="color:var(--green)"></i> Làm theo <strong>đúng hướng dẫn</strong> để không bị sai mã.</li>
+                        <li><i class="ti ti-brand-chrome" style="color:#4285f4"></i> Dùng trình duyệt <strong>Chrome</strong> để tránh lỗi.</li>
+                        <li><i class="ti ti-circle-x" style="color:var(--red)"></i> <strong>Không</strong> click vào quảng cáo <em>Được tài trợ</em>.</li>
+                        <li><i class="ti ti-circle-x" style="color:var(--red)"></i> <strong>Không</strong> dùng trình duyệt <em>Ẩn danh / Incognito</em>.</li>
+                        <li><i class="ti ti-circle-x" style="color:var(--red)"></i> <strong>Không</strong> dùng <em>Proxy / VPN / 1.1.1.1</em> khi vượt link.</li>
+                        <li><i class="ti ti-refresh" style="color:var(--blue)"></i> Nếu không tìm thấy website, bấm nút <strong>Đổi camp</strong> để chuyển chiến dịch.</li>
+                        <li><i class="ti ti-circle-x" style="color:var(--red)"></i> <strong>Nghiêm cấm</strong> tìm kiếm theo domain (tên miền) — sẽ không lấy được mã.</li>
+                    </ul>
+                </div>
+                <div id="instructions-container" class="steps"></div>
+                <div id="instructions-notice"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══ VERIFY BAR — mục nhập mã + xác thực, ghim cố định cuối màn hình
+     (thay cho nút icon bàn phím nổi trước đây). Nội dung bên trong
+     (#verify-bar-inner) do JS render bằng codeStep(), xem renderInstructions(). -->
+<div id="verify-bar" class="verify-bar hidden">
+    <button type="button" id="verify-bar-toggle" class="verify-bar-toggle" onclick="if(!event.isTrusted)return;toggleVerifyBar()" aria-label="Thu gọn / Mở rộng khung nhập mã">
+        <i class="ti ti-chevron-down" id="verify-bar-toggle-icon"></i>
+    </button>
+    <div class="verify-bar-inner" id="verify-bar-inner"></div>
+</div>
+
+<footer style="text-align:center;padding:16px 0 36px;opacity:.25">
+    <p style="font-size:10px;color:#6b7280">© 2025 Security Verification System</p>
+</footer>
+
+<script>
+// Bootstrap cleartext: CHỈ chứa giá trị đổi theo từng request (short_code,
+// user_id, endpoint đã ký nonce, trạng thái ban...) — không phải bí mật gì
+// (chính các giá trị này vốn cũng phải đi qua network response tới client
+// dù obfuscate hay không). Toàn bộ LOGIC xử lý nằm ở file ngoài đã
+// obfuscate bên dưới (assets/redirect.obf.js), không có ở đây.
+window.__RDX_CFG__ = {"userIsBanned":false,"siteFavicon":"https:\/\/trafficvn.com\/uploads\/favicon_1775883779_f6ae1f6e.png","siteLogo":"https:\/\/trafficvn.com\/uploads\/logo_1775908474_aeec3093.png","shortCode":"MFGm2tAlcSn","userId":220,"fpVipScriptUrl":"https:\/\/trafficvn.com\/secury\/tobruxaz.js?v=1789065628","cfTurnstileSitekey":"0x4AAAAAAC8IgJb6jHfRtO05","turnstileEnabled":true,"ep":{"gc":"Z2V0X2NhbXAucGhw","gl":"Z2V0X2xpbmsucGhw","cc":"Y2hhbmdlX2NhbXAucGhw","ck":"Y2hlY2sucGhw","re":"cmVwb3J0X2Vycm9yLnBocA=="},"apiToken":"3ELepkTw5pm0ZQ4uJ-TccYw2i1AFkPeixyIIUYzXauFFhSFSHr2x7TiJ88l19T7hPmHoRdfDt_Jy6qbaZVgDDUk83Lc5_dQVwXfAanyQzDpdKuKI8L2VIEf8wtm1LSIXCG_mmzKVoSqcNm6vNJgCjSXAWJK1okcGMxvOxA"};
+</script>
+<script src="assets/redirect.obf.js?v=1789065633"></script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a39fd4c7cfb0ddc2',t:'MTc4OTIyNTc0NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v31edd6df95cf4e85bb4c19e7a9bdbcba1788362987495" integrity="sha512-iIg7k2xntmwu6/uSb5tpc/hySgZc4eoL31yB29W6tJFo2akwjPWcEqnCEdJvGexCL0KEQwVYv5BlowfhVz26hg==" data-cf-beacon='{"version":"2024.11.0","token":"5c680131a5ca48889d463d77e31cae2a","r":1,"spa":2}' crossorigin="anonymous"></script>
+</body>
+</html>

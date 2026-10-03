@@ -1,0 +1,50 @@
+<style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :host { all: initial; display: block; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(16px) scale(0.95); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+        .popup {
+          background: #fff; border: 1px solid #e8e8e8; border-radius: 16px;
+          box-shadow: 0 4px 6px rgba(0,0,0,.04), 0 16px 40px rgba(0,0,0,.12);
+          padding: 18px 16px 16px; min-width: 210px; max-width: min(280px, calc(100vw - 40px));
+          width: max-content; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          animation: slideUp .3s cubic-bezier(0.34,1.56,0.64,1) both;
+          overflow-wrap: anywhere; word-break: break-word;
+        }
+        .cd-label { font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #aaa; margin-bottom: 10px; }
+        .random-badge { display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .06em; background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; border-radius: 20px; padding: 2px 8px; margin-bottom: 8px; }
+        .square-wrap { position: relative; width: 62px; height: 62px; margin: 0 auto 12px; }
+        .square-progress { position: absolute; inset: 0; border: 3px solid #10b981; border-radius: 13px; background: conic-gradient(#10b981 0% 0%, #e5e7eb 0% 100%); transition: background .45s linear, border-color .4s; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+        .square-progress.warn { border-color: #f59e0b; } .square-progress.urgent { border-color: #ef4444; }
+        .square-inner { position: absolute; inset: 3px; background: #fff; border-radius: 10px; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 1px 4px rgba(0,0,0,.05), 0 1px 6px rgba(0,0,0,.06); z-index: 2; }
+        .ring-num { font-size: 26px; font-weight: 900; color: #1a1a1a; letter-spacing: -.03em; line-height: 1; }
+        .ring-num.warn { color: #d97706; } .ring-num.urgent { color: #dc2626; }
+        .scroll-hint { font-size: 10px; font-weight: 600; color: #1f2937; margin-bottom: 10px; line-height: 1.5; }
+        .scroll-hint.paused { color: #f59e0b; animation: blink 1.5s ease-in-out infinite; }
+        .prog-track { height: 3px; background: #f3f3f3; border-radius: 99px; overflow: hidden; }
+        .prog-fill { height: 100%; background: #10b981; border-radius: 99px; transition: width .4s ease, background .4s; }
+        .prog-fill.warn { background: #f59e0b; } .prog-fill.urgent { background: #ef4444; }
+        .code-label { font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #22a06b; margin-bottom: 10px; }
+        .code-box { padding: 12px 10px; background: #edfaf4; border: 2px dashed #4ade80; border-radius: 14px; font-size: 20px; font-weight: 900; letter-spacing: 4px; color: #166534; font-family: 'SF Mono','Fira Mono','Courier New',monospace; margin-bottom: 12px; word-break: break-all; }
+        .copy-btn { width: 100%; padding: 10px 0; background: #16a34a; color: #fff; border: none; border-radius: 12px; font-size: 12px; font-weight: 700; cursor: pointer; transition: all .2s; box-shadow: 0 3px 8px rgba(22,163,74,.3); }
+        .copy-btn:hover { background: #15803d; transform: translateY(-1px); } .copy-btn.done { background: #166534; }
+        .loading-box { font-size: 11px; color: #888; padding: 16px 0; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .loading-box .spinner { width: 14px; height: 14px; border: 2px solid #e5e7eb; border-top-color: #10b981; border-radius: 50%; animation: spin .7s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .msg-box { font-size: 11px; line-height: 1.6; text-align: left; padding: 10px 12px; border-radius: 12px; background: #fafafa; border: 1px solid #eee; color: #555; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
+        .ref-block-box { font-size: 11px; line-height: 1.6; text-align: left; padding: 12px 12px 10px; border-radius: 12px; background: #fff8f0; border: 1px solid #fed7aa; color: #92400e; overflow: hidden; }
+        .ref-block-title { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #ea580c; margin-bottom: 6px; }
+        .ref-block-msg { font-size: 11px; font-weight: 500; color: #7c2d12; line-height: 1.55; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
+        .ref-block-close { margin-top: 10px; width: 100%; padding: 7px 0; background: #ea580c; color: #fff; border: none; border-radius: 10px; font-size: 11px; font-weight: 700; cursor: pointer; }
+        .ref-block-close:hover { background: #c2410c; }
+        .vio-block-box { font-size: 11px; line-height: 1.6; text-align: left; padding: 12px 12px 10px; border-radius: 12px; background: #fff5f5; border: 1px solid #fecaca; overflow: hidden; }
+        .vio-block-title { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #dc2626; margin-bottom: 8px; }
+        .vio-block-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; max-width: 100%; }
+        .vio-block-item { font-size: 11px; font-weight: 600; color: #7f1d1d; padding: 6px 8px; background: #fff0f0; border-radius: 8px; border: 1px solid #fecaca; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+        .vio-block-desc { font-size: 10px; color: #991b1b; margin-top: 2px; font-weight: 400; white-space: pre-line; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
+        .err-box { font-size: 11px; line-height: 1.6; text-align: left; padding: 12px 12px 10px; border-radius: 12px; background: #fff5f5; border: 1px solid #fecaca; color: #991b1b; overflow: hidden; }
+        .err-box .err-title { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #dc2626; margin-bottom: 6px; }
+        .err-box .err-msg { font-size: 11px; font-weight: 500; color: #7f1d1d; line-height: 1.55; overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
+        .err-box .err-retry { margin-top: 10px; width: 100%; padding: 7px 0; background: #dc2626; color: #fff; border: none; border-radius: 10px; font-size: 11px; font-weight: 700; cursor: pointer; }
+        .err-box .err-retry:hover { background: #b91c1c; }
+      </style><div class="popup"></div>

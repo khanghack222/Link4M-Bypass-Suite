@@ -1,0 +1,26 @@
+<style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :host { all: initial; display: block; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        .wrap { display: flex; justify-content: center; align-items: center; margin: 8px 0; }
+        .btn {
+          display: inline-flex !important; align-items: center !important; justify-content: center !important;
+          width: 90px !important; height: 80px !important;
+          border: 1px solid #e0e0e0 !important; background: #fff !important;
+          border-radius: 16px !important; cursor: pointer !important; padding: 0 !important;
+          overflow: hidden !important; box-shadow: 0 2px 10px rgba(0,0,0,.1) !important;
+          transition: transform .18s !important; position: relative;
+        }
+        .btn:hover { transform: translateY(-3px) !important; }
+        .btn::before {
+          content: ''; position: absolute; inset: 0;
+          background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+          background-size: 200% 100%; animation: shimmer 1.4s infinite;
+          border-radius: 16px; z-index: 0;
+        }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .btn img {
+          width: 100% !important; height: 100% !important; object-fit: cover !important;
+          position: relative; z-index: 1; opacity: 0; transition: opacity .3s ease;
+        }
+        .btn img.loaded { opacity: 1; }
+      </style><div class="wrap"><button type="button" class="btn" aria-label="Nhấn để nhận mã"><img alt="" src="https://trafficvn.com/uploads/logo_1775881215_9a6524dc.png" class="loaded"></button></div>

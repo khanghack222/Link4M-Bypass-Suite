@@ -1,11 +1,11 @@
 {
   "version": "2.0.0-adaptive",
   "stats": {
-    "total_runs": 25,
-    "total_success": 11,
-    "total_heals": 10,
+    "total_runs": 42,
+    "total_success": 15,
+    "total_heals": 24,
     "time_saved_sec": 0.0,
-    "last_updated": 1790860579,
+    "last_updated": 1791026761,
     "last_synced": 1790597057,
     "verified_domains_count": 40
   },
@@ -578,17 +578,17 @@
       "domain": "wheystore.vn",
       "traffic_key": null,
       "success_count": 0,
-      "fail_count": 1,
+      "fail_count": 2,
       "last_fail_reason": "code_not_found",
-      "last_fail": 1790853878
+      "last_fail": 1791026761
     },
     "wheyshop.vn": {
       "domain": "wheyshop.vn",
       "traffic_key": null,
       "success_count": 0,
-      "fail_count": 1,
+      "fail_count": 2,
       "last_fail_reason": "code_not_found",
-      "last_fail": 1790853973
+      "last_fail": 1791026679
     },
     "live.7mvn9.com": {
       "domain": "live.7mvn9.com",
@@ -597,6 +597,104 @@
       "fail_count": 1,
       "last_fail_reason": "code_not_found",
       "last_fail": 1790856182
+    },
+    "dichvuhuthamcau.vn": {
+      "domain": "dichvuhuthamcau.vn",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790939179
+    },
+    "dichvu24h.net": {
+      "domain": "dichvu24h.net",
+      "traffic_key": "IBJDY8Ox",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "api": 1
+      },
+      "best_time_sec": 79.37,
+      "last_code": "El8Df3",
+      "last_success": 1790939258
+    },
+    "tylekeonhacaitv.com": {
+      "domain": "tylekeonhacaitv.com",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790991783
+    },
+    "tylekeo.ai": {
+      "domain": "tylekeo.ai",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790991904
+    },
+    "bongdanet.online": {
+      "domain": "bongdanet.online",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 2,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1791024845
+    },
+    "idareto.co": {
+      "domain": "idareto.co",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790992250
+    },
+    "secgroup.vn": {
+      "domain": "secgroup.vn",
+      "traffic_key": "fC6by7",
+      "success_count": 1,
+      "fail_count": 0,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1790996715,
+      "last_code": "keQfg1",
+      "last_success": 1790997052,
+      "best_time_sec": 92.66,
+      "winning_strategies": {
+        "dom": 1
+      }
+    },
+    "lopy.com.vn": {
+      "domain": "lopy.com.vn",
+      "traffic_key": "qc2025",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "best_time_sec": 73.42,
+      "last_code": "GG88MM88GG88",
+      "last_success": 1790997214
+    },
+    "tructiepkeonhacai.tv": {
+      "domain": "tructiepkeonhacai.tv",
+      "traffic_key": "o0JHLh",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "best_time_sec": 91.59,
+      "last_code": "AvHiSx",
+      "last_success": 1791017299
+    },
+    "keonhacai.pizza": {
+      "domain": "keonhacai.pizza",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1791024964
     }
   },
   "dns_cache": {
@@ -1309,6 +1407,96 @@
       "duration": 47.39,
       "heals": 0,
       "timestamp": 1790860579
+    },
+    {
+      "session_id": "sess_1790989624840",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 423.4,
+      "heals": 0,
+      "timestamp": 1790990048
+    },
+    {
+      "session_id": "sess_1790990689672",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 204.54,
+      "heals": 0,
+      "timestamp": 1790990894
+    },
+    {
+      "session_id": "sess_1791014484783",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 0.02,
+      "heals": 0,
+      "timestamp": 1791014484
+    },
+    {
+      "session_id": "sess_1791014490062",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 0.02,
+      "heals": 0,
+      "timestamp": 1791014490
+    },
+    {
+      "session_id": "sess_1791014731835",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 0.01,
+      "heals": 0,
+      "timestamp": 1791014731
+    },
+    {
+      "session_id": "sess_1791017440060",
+      "platform": "BBMKTS",
+      "sponsor": null,
+      "success": true,
+      "duration": 30.02,
+      "heals": 0,
+      "timestamp": 1791017470
+    },
+    {
+      "session_id": "sess_1791017480463",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 145.04,
+      "heals": 0,
+      "timestamp": 1791017625
+    },
+    {
+      "session_id": "sess_1791018410261",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 143.64,
+      "heals": 0,
+      "timestamp": 1791018553
+    },
+    {
+      "session_id": "sess_1791018696484",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 148.79,
+      "heals": 0,
+      "timestamp": 1791018845
+    },
+    {
+      "session_id": "sess_1791019398779",
+      "platform": "GTRAFFIC",
+      "sponsor": null,
+      "success": false,
+      "duration": 135.86,
+      "heals": 0,
+      "timestamp": 1791019534
     }
   ],
   "blacklist": [

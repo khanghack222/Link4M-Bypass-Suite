@@ -1,7 +1,6 @@
-180.93.2.169:3131:kalebhenley8253:ntg0nzg3ndq4
+# --- RESIDENTIAL AUTHENTICATED PROXIES ---
 31.59.20.176:6754:jorpojes:8ilov6i8fipk
 45.38.107.97:6014:jorpojes:8ilov6i8fipk
-198.105.121.200:6462:jorpojes:8ilov6i8fipk
 64.137.96.74:6641:jorpojes:8ilov6i8fipk
 198.23.243.226:6361:jorpojes:8ilov6i8fipk
 38.154.185.97:6370:jorpojes:8ilov6i8fipk
@@ -11,7 +10,6 @@
 31.58.9.4:6077:jorpojes:8ilov6i8fipk
 31.59.20.176:6754:itbtbezd:ivf8j2amd59s
 45.38.107.97:6014:itbtbezd:ivf8j2amd59s
-198.105.121.200:6462:itbtbezd:ivf8j2amd59s
 64.137.96.74:6641:itbtbezd:ivf8j2amd59s
 198.23.243.226:6361:itbtbezd:ivf8j2amd59s
 38.154.185.97:6370:itbtbezd:ivf8j2amd59s
@@ -21,7 +19,6 @@
 31.58.9.4:6077:itbtbezd:ivf8j2amd59s
 31.59.20.176:6754:lnhvhnvt:6ds0kvf3guiv
 45.38.107.97:6014:lnhvhnvt:6ds0kvf3guiv
-198.105.121.200:6462:lnhvhnvt:6ds0kvf3guiv
 64.137.96.74:6641:lnhvhnvt:6ds0kvf3guiv
 198.23.243.226:6361:lnhvhnvt:6ds0kvf3guiv
 38.154.185.97:6370:lnhvhnvt:6ds0kvf3guiv
@@ -29,13 +26,37 @@
 142.111.67.146:5611:lnhvhnvt:6ds0kvf3guiv
 191.96.254.138:6185:lnhvhnvt:6ds0kvf3guiv
 31.58.9.4:6077:lnhvhnvt:6ds0kvf3guiv
-31.59.20.176:6754:jtwzndeb:3k3j6s7c46f1
-45.38.107.97:6014:jtwzndeb:3k3j6s7c46f1
-198.105.121.200:6462:jtwzndeb:3k3j6s7c46f1
-64.137.96.74:6641:jtwzndeb:3k3j6s7c46f1
-198.23.243.226:6361:jtwzndeb:3k3j6s7c46f1
-38.154.185.97:6370:jtwzndeb:3k3j6s7c46f1
-84.247.60.125:6095:jtwzndeb:3k3j6s7c46f1
-142.111.67.146:5611:jtwzndeb:3k3j6s7c46f1
-191.96.254.138:6185:jtwzndeb:3k3j6s7c46f1
-31.58.9.4:6077:jtwzndeb:3k3j6s7c46f1
+# --- VIP HIGH-SPEED PROXY POOL (UPDATED: 2026-10-01 18:36:09) ---
+# --- VIP HIGH-SPEED PROXY POOL (UPDATED: 2026-10-01 18:38:32) ---
+
+# --- VIP HIGH-SPEED PROXY POOL (UPDATED: 2026-10-01 18:56:56) ---
+54.117.6.131:5651
+http://173.245.49.55:80
+http://185.162.228.102:80
+http://45.131.4.67:80
+http://141.101.122.141:80
+http://159.112.235.23:80
+http://141.101.114.244:80
+http://23.227.38.242:80
+http://45.131.7.101:80
+http://172.64.86.128:80
+http://159.112.235.72:80
+http://173.245.49.190:80
+http://45.12.31.188:80
+http://103.21.244.96:80
+http://45.12.30.44:80
+http://45.131.4.118:80
+http://103.21.244.49:80
+socks5://160.187.0.89:1080
+socks5://42.114.2.201:20001
+http://173.245.49.157:80
+http://173.245.49.130:80
+103.27.177.186:808
+198.199.86.11:80
+http://141.193.213.76:80
+socks5://42.114.62.33:20001
+http://185.17.2.127:3128
+socks5://128.199.202.122:1080
+45.195.105.20:8080
+socks5://47.238.126.208:1080
+http://103.21.244.14:80
