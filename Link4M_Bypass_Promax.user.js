@@ -15,6 +15,9 @@
 // @grant        GM_openInTab
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @connect      2captcha.com
+// @connect      *
 // @run-at       document_start
 // ==/UserScript==
 
@@ -333,32 +336,126 @@
 
         const capBox = document.querySelector('.g-recaptcha, #recaptcha-2, #recaptcha, .cf-turnstile');
         if (capBox && !token) {
-            document.getElementById('l4m-alert').classList.add('show');
-            document.getElementById('l4m-st').innerText = 'Chờ bạn giải Captcha';
-            log('Cần giải Captcha!', '#fb923c');
-            capBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-            const pollCap = setInterval(() => {
-                let tk = '';
-                document.querySelectorAll('[name="g-recaptcha-response"], [name="cf-turnstile-response"]').forEach(el => {
-                    if (el.value && el.value.length > 20) tk = el.value;
-                });
-                if (tk && tk.length > 20) {
-                    clearInterval(pollCap);
-                    document.getElementById('l4m-alert').classList.remove('show');
-                    log('Đã giải Captcha xong! Đang submit...', '#4ade80');
-                    doSubmit();
-                }
-            }, 500);
+            solveCaptchaAuto(() => {
+                doSubmit();
+            });
         } else {
             doSubmit();
         }
+    }
+
+    function solveCaptchaAuto(onSolved) {
+        const key = GM_getValue('L4M_2CAPTCHA_KEY', 'c77b0e8cbdf802ecf529296bf5bef91c');
+        let sitekey = '6LcQsTQgAAAAADNQ_pCfukfvS0i9lk4oJTVSs5bZ';
+        const el = document.querySelector('.g-recaptcha[data-sitekey], [data-sitekey]');
+        if (el && el.getAttribute('data-sitekey')) sitekey = el.getAttribute('data-sitekey');
+
+        log('Đang gửi 2Captcha Cloud giải reCAPTCHA v2...', '#00f0ff');
+        document.getElementById('l4m-st').innerText = 'Đang giải Captcha tự động...';
+
+        const inUrl = `https://2captcha.com/in.php?key=${key}&method=userrecaptcha&googlekey=${sitekey}&pageurl=${encodeURIComponent(window.location.href)}&json=1`;
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: inUrl,
+            timeout: 15000,
+            onload: function(res) {
+                try {
+                    const data = JSON.parse(res.responseText);
+                    if (data.status === 1) {
+                        const taskId = data.request;
+                        log(`2Captcha Task #${taskId} tạo thành công. Đang chờ giải...`, '#00f0ff');
+                        let attempts = 0;
+                        const pollInterval = setInterval(() => {
+                            attempts++;
+                            if (attempts > 30) {
+                                clearInterval(pollInterval);
+                                log('2Captcha hết thời gian chờ, chuyển sang thủ công.', '#fb923c');
+                                fallbackManualCaptcha();
+                                return;
+                            }
+                            GM_xmlhttpRequest({
+                                method: 'GET',
+                                url: `https://2captcha.com/res.php?key=${key}&action=get&id=${taskId}&json=1`,
+                                timeout: 10000,
+                                onload: function(pollRes) {
+                                    try {
+                                        const pData = JSON.parse(pollRes.responseText);
+                                        if (pData.status === 1) {
+                                            clearInterval(pollInterval);
+                                            const token = pData.request;
+                                            log('2Captcha giải thành công! Đang inject token...', '#4ade80');
+                                            document.querySelectorAll('[name="g-recaptcha-response"], #g-recaptcha-response').forEach(e => {
+                                                e.value = token;
+                                            });
+                                            try {
+                                                if (window.___grecaptcha_cfg && window.___grecaptcha_cfg.clients) {
+                                                    for (const cid in window.___grecaptcha_cfg.clients) {
+                                                        const cl = window.___grecaptcha_cfg.clients[cid];
+                                                        for (const k in cl) {
+                                                            if (cl[k] && typeof cl[k].callback === 'function') {
+                                                                cl[k].callback(token);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } catch (e) {}
+                                            onSolved(token);
+                                        } else if (pData.request !== 'CAPCHA_NOT_READY') {
+                                            clearInterval(pollInterval);
+                                            log(`2Captcha phản hồi lỗi: ${pData.request}`, '#ef4444');
+                                            fallbackManualCaptcha();
+                                        }
+                                    } catch (e) {}
+                                }
+                            });
+                        }, 4000);
+                    } else {
+                        log(`2Captcha từ chối tạo task: ${data.request}`, '#fb923c');
+                        fallbackManualCaptcha();
+                    }
+                } catch (e) {
+                    fallbackManualCaptcha();
+                }
+            },
+            onerror: function() {
+                log('Lỗi kết nối 2Captcha API, chuyển sang thủ công.', '#fb923c');
+                fallbackManualCaptcha();
+            }
+        });
+    }
+
+    function fallbackManualCaptcha() {
+        const capBox = document.querySelector('.g-recaptcha, #recaptcha-2, #recaptcha, .cf-turnstile');
+        document.getElementById('l4m-alert').classList.add('show');
+        document.getElementById('l4m-st').innerText = 'Chờ bạn giải Captcha';
+        log('Vui lòng tích giải Captcha!', '#fb923c');
+        if (capBox) capBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        const pollCap = setInterval(() => {
+            let tk = '';
+            document.querySelectorAll('[name="g-recaptcha-response"], [name="cf-turnstile-response"]').forEach(el => {
+                if (el.value && el.value.length > 20) tk = el.value;
+            });
+            if (tk && tk.length > 20) {
+                clearInterval(pollCap);
+                document.getElementById('l4m-alert').classList.remove('show');
+                log('Đã giải Captcha xong! Đang submit...', '#4ade80');
+                doSubmit();
+            }
+        }, 500);
     }
 
     function doSubmit() {
         if (submitted) return;
         submitted = true;
         document.getElementById('l4m-st').innerText = 'Đang mở link đích...';
+
+        const codeVal = GM_getValue('L4M_CODE', '');
+        let validToken = '';
+        document.querySelectorAll('[name="g-recaptcha-response"]').forEach(el => {
+            if (el.value && el.value.length > 20) validToken = el.value;
+        });
 
         const f2 = document.querySelector('#main-form-2');
         if (f2) {
@@ -374,6 +471,28 @@
             const b = f1.querySelector('button[type="submit"], input[type="submit"], #btn-main, .btn, .get-link');
             if (b) b.click();
         }
+
+        // Direct API dispatch fallback
+        try {
+            const forms = [f2, f1].filter(Boolean);
+            forms.forEach(f => {
+                const formData = new FormData(f);
+                if (codeVal) formData.set('password', codeVal);
+                if (validToken) formData.set('g-recaptcha-response', validToken);
+                const params = new URLSearchParams(formData).toString();
+                const endpoint = (window.api_domain || 'https://s1.link4m.app') + '/links/get-link-info';
+                fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+                    body: params
+                }).then(r => r.json()).then(res => {
+                    if (res && res.url && !res.url.includes('link4m')) {
+                        window.destination_url = res.url;
+                        window.location.href = res.url;
+                    }
+                }).catch(() => {});
+            });
+        } catch (e) {}
 
         let c = 0;
         const destT = setInterval(() => {
