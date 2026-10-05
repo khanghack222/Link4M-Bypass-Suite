@@ -9,7 +9,20 @@ import urllib.parse
 import json
 from typing import Optional, Dict, Any
 
-DEFAULT_2CAPTCHA_KEY = "a03a99c76ce81813ce26d3bdb68c6e8f"
+# Active key pool with known balance
+KEY_POOL = [
+    "c77b0e8cbdf802ecf529296bf5bef91c",  # Active verified balance ~ 0.02674 USD
+    "a03a99c76ce81813ce26d3bdb68c6e8f"   # Backup
+]
+DEFAULT_2CAPTCHA_KEY = KEY_POOL[0]
+
+def get_best_key() -> str:
+    """Finds the first key in the pool with a positive balance."""
+    for key in KEY_POOL:
+        bal = get_balance(key)
+        if bal > 0.002:  # Enough for at least one reCAPTCHA solve
+            return key
+    return DEFAULT_2CAPTCHA_KEY
 
 def get_balance(api_key: str = DEFAULT_2CAPTCHA_KEY) -> float:
     try:
