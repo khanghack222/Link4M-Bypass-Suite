@@ -21,7 +21,5 @@ release_native/
 data/temp/
 *.tmp
 stealth_payload.js
-stealth_final.js
-obfuscated_core.js
 upload_test.py
 dumped_advertise.json
