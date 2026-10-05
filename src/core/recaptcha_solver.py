@@ -629,9 +629,20 @@ Respond ONLY with a valid JSON:
                 self._sync_tokens(page, passx_token)
                 elapsed = round((time.perf_counter() - t0) * 1000, 2)
                 print(f"[+] [PassXAPI] Injected valid reCAPTCHA token into page inputs in {elapsed}ms (len={len(passx_token)})", flush=True)
-                return {"success": True, "token": passx_token, "type": "passxapi_cloud", "time_ms": elapsed}
         except Exception as e_passx:
             print(f"[!] PassXAPI note: {e_passx}", flush=True)
+
+        # Priority 0.5: 2captcha API Fallback
+        try:
+            from twocaptcha_client import solve_recaptcha_2captcha
+            two_token = solve_recaptcha_2captcha(site_key=sitekey, target_url=page.url, max_wait=30.0)
+            if two_token:
+                self._sync_tokens(page, two_token)
+                elapsed = round((time.perf_counter() - t0) * 1000, 2)
+                print(f"[+] [2Captcha] Injected token into page inputs in {elapsed}ms (len={len(two_token)})", flush=True)
+                return {"success": True, "token": two_token, "type": "2captcha_cloud", "time_ms": elapsed}
+        except Exception as e_two:
+            print(f"[!] 2captcha fallback note: {e_two}", flush=True)
 
         # Build strict target CSS without selector bleeding
         if container_selector:
