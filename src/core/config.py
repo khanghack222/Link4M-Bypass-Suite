@@ -127,19 +127,154 @@ def get_clipboard() -> str:
         pass
     return ""
 
+INOOJS_EXT_PATH = os.environ.get("INOOJS_EXT_PATH", r"C:\Users\XUAN\Documents\iNooJS\iNooJS")
+
+def get_browser_launch_args(extra_args: list = None) -> list:
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-infobars",
+        "--disable-dev-shm-usage",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--window-size=1280,720",
+        "--enable-features=DnsOverHttps",
+        "--dns-over-https-templates=https://dns.google/dns-query"
+    ]
+    if os.path.exists(INOOJS_EXT_PATH):
+        args.extend([
+            f"--disable-extensions-except={INOOJS_EXT_PATH}",
+            f"--load-extension={INOOJS_EXT_PATH}"
+        ])
+    if extra_args:
+        args.extend(extra_args)
+    return args
+
 def get_clipboard_text() -> str:
     """Reads text directly from Windows Clipboard."""
     return get_clipboard()
+
 STEALTH_INIT_SCRIPT = """
-    // 1. Quota & Webdriver & Incognito bypass
-    window.detectIncognito = async function() {
-        return { isPrivate: false, browserName: 'Chrome' };
+    // 1. Full Bypass Ẩn Danh (Anti-Incognito & Quota Hook by iNoo)
+    try {
+        const _IDBFactory = window.IDBFactory;
+        if (_IDBFactory && _IDBFactory.prototype) {
+            const _open = _IDBFactory.prototype.open;
+            _IDBFactory.prototype.open = function (name, version) {
+                const req = _open.apply(this, arguments);
+                const _addEventListener = req.addEventListener.bind(req);
+                Object.defineProperty(req, 'onupgradeneeded', {
+                    set(handler) {
+                        _addEventListener('upgradeneeded', function (event) {
+                            const db = event.target.result;
+                            const _createObjectStore = db.createObjectStore.bind(db);
+                            db.createObjectStore = function (...args) {
+                                const store = _createObjectStore(...args);
+                                const _put = store.put.bind(store);
+                                store.put = function (value, ...rest) {
+                                    try { return _put(value, ...rest); } catch (_) {
+                                        return _put(new Uint8Array([1]).buffer, ...rest);
+                                    }
+                                };
+                                return store;
+                            };
+                            handler(event);
+                        });
+                    },
+                    get() { return null; }
+                });
+                return req;
+            };
+        }
+    } catch (_) {}
+
+    try {
+        if (navigator.webkitTemporaryStorage) {
+            navigator.webkitTemporaryStorage.queryUsageAndQuota = function (success, error) {
+                const fakeQuota = (performance?.memory?.jsHeapSizeLimit ?? 1073741824) * 4;
+                const fakeUsage = 1024 * 1024;
+                if (typeof success === 'function') success(fakeUsage, fakeQuota);
+            };
+        }
+    } catch (_) {}
+
+    try {
+        if (window.webkitRequestFileSystem) {
+            window.webkitRequestFileSystem = function (type, size, successCb, errorCb) {
+                if (successCb) successCb({ root: {} });
+            };
+        }
+    } catch (_) {}
+
+    try {
+        if (window.openDatabase) {
+            const _origOpen = window.openDatabase.bind(window);
+            window.openDatabase = function (name, ver, desc, size, cb) {
+                try { return _origOpen(name, ver, desc, size, cb); }
+                catch (_) {
+                    return { transaction: () => {}, readTransaction: () => {} };
+                }
+            };
+        }
+    } catch (_) {}
+
+    const _patchDetectIncognito = () => {
+        if (typeof window.detectIncognito === 'function') {
+            const _orig = window.detectIncognito;
+            window.detectIncognito = function () {
+                return Promise.resolve({ isPrivate: false, browserName: _orig.browserName ?? 'Chrome' });
+            };
+        }
     };
-    if (window.navigator && window.navigator.webkitTemporaryStorage) {
-        window.navigator.webkitTemporaryStorage.queryUsageAndQuota = function(success, error) {
-            if (typeof success === 'function') success(0, 100 * 1024 * 1024 * 1024);
-        };
-    }
+    _patchDetectIncognito();
+    document.addEventListener('DOMContentLoaded', _patchDetectIncognito);
+    window.addEventListener('load', _patchDetectIncognito);
+
+    // 2. Bypass Check Bot PCS (CPU Fingerprint auto-resolver by iNoo)
+    try {
+        function fakeCPUData(count = 6) {
+            const base = 140 + Math.random() * 20;
+            return Array.from({ length: count }, () => +(base + (Math.random() * 4 - 2)).toFixed(2)).join(', ');
+        }
+        function runCpuBypass() {
+            let token = null;
+            for (const s of document.querySelectorAll("script")) {
+                const m = s.src?.match(/token=([a-f0-9]+)/);
+                if (m) { token = m[1]; break; }
+            }
+            if (!token) return;
+            fetch(`/nv_vantay/cpu_save_md.php?token=${token}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ cpu: fakeCPUData() })
+            }).catch(() => {});
+        }
+        if (document.getElementById("cpu_btn")) {
+            runCpuBypass();
+        } else {
+            const obs = new MutationObserver(() => {
+                if (!document.getElementById("cpu_btn")) return;
+                obs.disconnect();
+                runCpuBypass();
+            });
+            document.addEventListener('DOMContentLoaded', () => {
+                if (document.body) obs.observe(document.body, { childList: true, subtree: true });
+            });
+        }
+    } catch (_) {}
+
+    // 3. AudioContext & MediaDevices Mock (Enables Google reCAPTCHA Audio challenge)
+    try {
+        if (!navigator.mediaDevices) navigator.mediaDevices = {};
+        navigator.mediaDevices.enumerateDevices = async () => [
+            { kind: 'audiooutput', deviceId: 'default', label: 'Speakers (Realtek High Definition Audio)', groupId: 'audio-group-1' },
+            { kind: 'audioinput', deviceId: 'default', label: 'Microphone (Realtek High Definition Audio)', groupId: 'audio-group-1' }
+        ];
+    } catch (_) {}
+
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     window.mouse_scroll = true;
     window.traffic_click = true;

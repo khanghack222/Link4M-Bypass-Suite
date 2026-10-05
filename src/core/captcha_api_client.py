@@ -154,8 +154,40 @@ def solve_audio_recaptcha(audio_url: Optional[str] = None, audio_bytes: Optional
 
 def resolve_domain_ocr(image_url: Optional[str] = None, image_bytes: Optional[bytes] = None) -> List[str]:
     """
-    Extract sponsor domain / hints from image via RapidOCR De-obfuscation API (<50ms).
+    Extract sponsor domain / hints from image via WebAI-to-API or RapidOCR De-obfuscation API (<50ms).
     """
+    # Priority 0: WebAI-to-API Gemini Vision
+    try:
+        try:
+            from webai_client import is_webai_available, ocr_image_webai
+        except ImportError:
+            from src.core.webai_client import is_webai_available, ocr_image_webai
+
+        if is_webai_available():
+            b = image_bytes
+            if not b and image_url:
+                try:
+                    r = _SESSION.get(image_url, timeout=3.0)
+                    if r.status_code == 200:
+                        b = r.content
+                except Exception:
+                    pass
+            if b:
+                txt = ocr_image_webai(b, prompt="Extract all website domains or URLs mentioned in this image. Return as a space-separated list.")
+                if txt:
+                    domains = []
+                    for tok in txt.split():
+                        tok = tok.strip("()[]{}<>,;:'\"")
+                        m = re.search(r'(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', tok)
+                        if m:
+                            d = m.group(1).lower()
+                            if d not in domains:
+                                domains.append(d)
+                    if domains:
+                        return domains
+    except Exception:
+        pass
+
     url = get_base_url()
     payload = {}
     if image_url:
@@ -176,8 +208,22 @@ def resolve_domain_ocr(image_url: Optional[str] = None, image_bytes: Optional[by
 
 def solve_turnstile_cloud(url: str, sitekey: str, timeout_seconds: int = 30) -> Optional[str]:
     """
-    Solve Cloudflare Turnstile token via Microservice API.
+    Solve Cloudflare Turnstile token via Ocilar API or Microservice API.
     """
+    # Priority 0: Ocilar API (Fast, Remote, 1000 Free Credits)
+    try:
+        try:
+            from ocilar_client import is_ocilar_configured, solve_turnstile_ocilar
+        except ImportError:
+            from src.core.ocilar_client import is_ocilar_configured, solve_turnstile_ocilar
+
+        if is_ocilar_configured():
+            token = solve_turnstile_ocilar(page_url=url, sitekey=sitekey, timeout=float(min(timeout_seconds, 15)))
+            if token:
+                return token
+    except Exception:
+        pass
+
     base_url = get_base_url()
     payload = {
         "url": url,

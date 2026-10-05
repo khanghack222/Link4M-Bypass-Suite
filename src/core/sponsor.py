@@ -18,6 +18,17 @@ except ImportError:
     from src.core.domain_utils import unmask_domain_candidates, VALID_TLDS, TLD_REGEX
     from src.core.math_utils import VN_MATH_NUMS
 
+try:
+    from webai_client import is_webai_available, ocr_image_webai, resolve_quest_images_webai, solve_math_captcha_webai
+except ImportError:
+    try:
+        from src.core.webai_client import is_webai_available, ocr_image_webai, resolve_quest_images_webai, solve_math_captcha_webai
+    except ImportError:
+        is_webai_available = lambda: False
+        ocr_image_webai = lambda *a, **k: ""
+        resolve_quest_images_webai = lambda *a, **k: {}
+        solve_math_captcha_webai = lambda *a, **k: None
+
 _OCR_INSTANCE = None
 _DDDD_INSTANCE = None
 
@@ -43,9 +54,17 @@ def get_ocr():
     return _OCR_INSTANCE if _OCR_INSTANCE is not False else None
 
 def _ocr_cloud_api(img_bytes: bytes) -> str:
-    """Gửi ảnh lên Cloud OCR API với timeout ngắn để tăng tốc tối đa."""
+    """Gửi ảnh lên WebAI-to-API Gemini Vision hoặc Cloud OCR API."""
     if not img_bytes or len(img_bytes) < 100:
         return ""
+    # Priority 0: WebAI-to-API Gemini Vision (Zero-cost, High Precision)
+    try:
+        if is_webai_available():
+            txt = ocr_image_webai(img_bytes)
+            if txt:
+                return txt
+    except Exception:
+        pass
     try:
         b64_img = "data:image/png;base64," + base64.b64encode(img_bytes).decode('utf-8')
         payload = {
@@ -384,6 +403,8 @@ def extract_quest_instructions(all_texts: list) -> dict:
         for i, token in enumerate(tokens):
             clean_tok = re.sub(rf'^{STEP_RE}\s*\d*\s*', '', token, flags=re.IGNORECASE)
             clean_tok = re.sub(r'^(?:bam|click|vao|tim|website|websiter|trangweb|web|site)+', '', clean_tok, flags=re.IGNORECASE).strip('./- ')
+            # Clean glued Vietnamese suffix after TLD (e.g. .comotrang1 -> .com)
+            clean_tok = re.sub(r'\.(com|net|org|vn|win|asia|io|site|club|bet)(?:[oơ]trang\d*|trang\d*|bai\d*|o\d+).*$', r'.\1', clean_tok, flags=re.IGNORECASE)
             if '.' in clean_tok or any(c in clean_tok for c in ['*', '★']):
                 if not any(k in clean_tok.lower() for k in ['google', 'link4m']):
                     domain_hint = clean_tok.lower()
@@ -479,14 +500,13 @@ _GEMINI_VISION_CACHE = {}
 
 def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
     """
-    Tải trực tiếp ảnh nhiệm vụ và gửi cho Gemini Flash-Lite Multimodal Vision:
+    Tải trực tiếp ảnh nhiệm vụ và gửi cho Gemini Multimodal Vision (WebAI-to-API hoặc Google API):
     AI trực tiếp 'nhìn' hình ảnh hướng dẫn, bóc tách chính xác từ khóa Google và domain đích (kể cả bị che sao ***).
     """
     global GEMINI_API_KEY
     if not image_bytes_list:
         return {}
-    if not GEMINI_API_KEY:
-        return {}
+
     # Check cache by MD5 hash of image bytes to save tokens
     import hashlib
     hasher = hashlib.md5(usedforsecurity=False)
@@ -496,6 +516,20 @@ def analyze_quest_images_gemini_vision(image_bytes_list: list) -> dict:
     if cache_key in _GEMINI_VISION_CACHE:
         log("[*] 👁️ [Gemini Cache] Tái sử dụng kết quả Vision đã phân tích (0 tokens)...")
         return _GEMINI_VISION_CACHE[cache_key]
+
+    # Priority 0: Local WebAI-to-API Vision (0 Token Cost, Free Gemini WebAPI)
+    try:
+        if is_webai_available():
+            webai_res = resolve_quest_images_webai(image_bytes_list)
+            if webai_res and (webai_res.get("keyword") or webai_res.get("domain_hint") or webai_res.get("target_domains")):
+                _GEMINI_VISION_CACHE[cache_key] = webai_res
+                log(f"[+] 👁️ [WebAI-to-API Vision] Nhìn ảnh & trích xuất nhiệm vụ thành công: {webai_res}")
+                return webai_res
+    except Exception as e:
+        log(f"[!] WebAI Vision note: {e}")
+
+    if not GEMINI_API_KEY:
+        return {}
 
 
     models_to_try = ["gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
@@ -632,6 +666,17 @@ def solve_math_captcha_gemini(img_b64: str, answers: list):
     except Exception:
         pass
 
+    # Priority 2.5: WebAI-to-API Vision Math Solver (100% Free Gemini Vision)
+    try:
+        if is_webai_available():
+            img_bytes_math = base64.b64decode(img_b64)
+            webai_math_ans = solve_math_captcha_webai(img_bytes_math, answers)
+            if webai_math_ans is not None:
+                log(f"[+] 🧮 [WebAI-to-API Vision] Giai toan Captcha tu anh: {webai_math_ans}")
+                return webai_math_ans
+    except Exception:
+        pass
+
     # Priority 3: Fallback Gemini Flash-Lite nếu có API Key hợp lệ
     try:
         from ai_captcha_helper import solve_math_captcha_ai
@@ -680,19 +725,18 @@ def fallback_ai_search(query: str, domain_hint: str = "", use_gemini: bool = Fal
             r = requests.get(url, impersonate="chrome124", timeout=5)
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, "html.parser")
-                for a in soup.select("a.result__url"):
+                for a in soup.select("a.result__url, .result__snippet, .result__title a"):
                     txt = a.get_text().strip()
-                    d = txt.split('/')[0].replace('www.', '').lower().strip()
-                    if '.' in d and not any(b in d for b in blacklist):
-                        if d not in results:
-                            results.append(d)
-            if results:
-                break
+                    for tok in txt.replace('/', ' ').replace(':', ' ').split():
+                        d = tok.replace('www.', '').lower().strip('./- ')
+                        if '.' in d and any(d.endswith('.' + tld) for tld in ['com', 'net', 'co', 'vn', 'org', 'top', 'vip', 'me', 'club', 'asia', 'online', 'xyz', 'app', 'live', 'bet', 'io']):
+                            if d not in results and not any(b in d for b in blacklist):
+                                results.append(d)
         except Exception:
             pass
 
     if clean_stem:
-        results.sort(key=lambda d: 1000 if clean_stem in d else 0, reverse=True)
+        results.sort(key=lambda d: 1000 if d.startswith(clean_stem) else (500 if clean_stem in d else 0), reverse=True)
     return results
 
 def search_google_ai_for_sponsor(context, quest_info: dict) -> list:
@@ -888,11 +932,8 @@ def detect_sponsor_domain(page_link, campaign_payload=None):
                     pass
 
         temp_chk = extract_quest_instructions(cloud_texts)
-        dh_chk = temp_chk.get("domain_hint", "").replace("www.", "").strip("./- ").lower()
-        is_dh_live = bool(dh_chk and '.' in dh_chk and not any(c in dh_chk for c in ['*', '★', ' ']) and resolve_ip_google(dh_chk))
-        
-        # Nếu chưa trích xuất được domain hint, hoặc domain hint chưa có dấu * và chưa live DNS, dùng MiMo Multimodal Vision
-        if not is_dh_live:
+        # Chỉ gọi MiMo OCR nếu RapidOCR cục bộ hoàn toàn không trích xuất được từ khóa hoặc domain hint
+        if not (temp_chk.get("keyword") or temp_chk.get("domain_hint")):
             try:
                 try:
                     from mimo_opencode_client import ocr_image_mimo
@@ -914,8 +955,21 @@ def detect_sponsor_domain(page_link, campaign_payload=None):
 
         full_ocr_corpus = all_texts + cloud_texts
         quest_info = extract_quest_instructions(full_ocr_corpus)
+
+        # Priority 1.2: Kích hoạt WebAI-to-API Gemini Vision AI phân tích ảnh nếu OCR cục bộ chưa rõ
+        if not (quest_info.get("keyword") or quest_info.get("domain_hint")):
+            log("[*] Kích hoạt WebAI-to-API Gemini Vision AI bóc tách trực tiếp ảnh nhiệm vụ...")
+            ai_vision_res = analyze_quest_images_gemini_vision(valid_imgs)
+            if ai_vision_res:
+                if ai_vision_res.get("keyword") and not quest_info.get("keyword"):
+                    quest_info["keyword"] = ai_vision_res["keyword"]
+                if ai_vision_res.get("domain_hint") and not quest_info.get("domain_hint"):
+                    quest_info["domain_hint"] = ai_vision_res["domain_hint"]
+                if ai_vision_res.get("page_hint"):
+                    quest_info["page_hint"] = ai_vision_res["page_hint"]
     else:
         full_ocr_corpus = all_texts
+        quest_info = extract_quest_instructions(full_ocr_corpus)
 
     if quest_info.get("domain_hint") and '.' in quest_info["domain_hint"]:
         dh = quest_info["domain_hint"].replace("www.", "").strip("./- ").lower()
@@ -1028,10 +1082,10 @@ def detect_sponsor_domain(page_link, campaign_payload=None):
     log(f"[*] Trích xuất {len(candidates)} tên miền ứng viên (sau khi ưu tiên Google Search & Brain): {candidates}")
 
     log(f"[*] Đang kiểm tra kết nối & DNS live probe cho các ứng viên...")
-    # Probe live domain: Ưu tiên quét toàn bộ ứng viên khớp stem nhiệm vụ trước
+    # Probe live domain: Ưu tiên quét tối đa 10 ứng viên hàng đầu (siêu tốc < 1.2s)
     stem_cands = [c for c in candidates if clean_stem and len(clean_stem) >= 3 and clean_stem in c.lower()]
     other_cands = [c for c in candidates if c not in stem_cands]
-    probed_cands = (stem_cands + other_cands)[:35]
+    probed_cands = (stem_cands + other_cands)[:10]
 
     vision_live_urls = []
     stem_live_urls = []
@@ -1040,7 +1094,7 @@ def detect_sponsor_domain(page_link, campaign_payload=None):
 
     if not probed_cands:
         return []
-    with ThreadPoolExecutor(max_workers=min(max(len(probed_cands), 1), 12)) as ex:
+    with ThreadPoolExecutor(max_workers=min(max(len(probed_cands), 1), 8)) as ex:
         probe_results = list(ex.map(lambda c: (c, probe_domain_live(c)), probed_cands))
 
     for c, (live_url, has_sc) in probe_results:
@@ -1062,17 +1116,19 @@ def detect_sponsor_domain(page_link, campaign_payload=None):
                 if live_url not in other_live_urls:
                     other_live_urls.append(live_url)
     final_live = []
-    # Ưu tiên tuyệt đối domain có script traffic button, sau đó đến vision/stem
-    strict_live = [u for u in (script_urls + vision_live_urls + stem_live_urls) if u]
-    for u in strict_live:
-        if u not in final_live:
-            final_live.append(u)
-
-    # Nếu chưa có domain nào có script, chỉ thêm tối đa 2 domain khác để thử, tránh lang thang các web rác
-    if not final_live:
-        for u in other_live_urls[:2]:
+    # Nếu đã phát hiện domain có script traffic thì chốt ngay lập tức, bỏ qua mọi domain khác
+    if script_urls:
+        final_live = script_urls
+    else:
+        strict_live = [u for u in (vision_live_urls + stem_live_urls) if u]
+        for u in strict_live:
             if u not in final_live:
                 final_live.append(u)
+
+        if not final_live:
+            for u in other_live_urls[:2]:
+                if u not in final_live:
+                    final_live.append(u)
 
     if final_live:
         log(f"[+] Verified live sponsor website candidates (priority sorted): {final_live}")
@@ -1755,8 +1811,8 @@ def _solve_single_sponsor_impl(context, page, sponsor_url: str, t_single_start: 
         btn = find_mission_button(timeout_sec=7.0 if has_landing_traffic else 4.5)
         # Step 2 article fallback retry if button not found on initial article
         if (not btn or btn.count() == 0) and step == 2 and article_candidates:
-            log(f"[*] Step 2: Nút chưa thấy trên bài viết đầu, đang thử các bài viết nội bộ khác...")
-            for fallback_art in (article_candidates or []):
+            log(f"[*] Step 2: Nút chưa thấy trên bài viết đầu, đang thử tối đa 3 bài viết nội bộ khác...")
+            for fallback_art in (article_candidates or [])[:3]:
                 if fallback_art not in visited:
                     visited.add(fallback_art)
                     art_url = f"{fallback_art}#ss-{traffic_key}" if traffic_key else fallback_art
@@ -2031,28 +2087,83 @@ def _solve_single_sponsor_impl(context, page, sponsor_url: str, t_single_start: 
                     else:
                         # Step 2: Chờ nhận mã từ API hoặc DOM
                         log(f"[*] Step 2 countdown finished! Waiting for mission code from API/DOM...")
-                        time.sleep(2.0)
+                        # Click ngay lập tức vào nút lấy mã khi countdown kết thúc
+                        try:
+                            page.evaluate(f"""() => {{
+                                const el = document.getElementById('{traffic_key}') || document.querySelector('[id*="{traffic_key}"]');
+                                if (el) {{
+                                    el.dataset.loading = 'false';
+                                    delete el.dataset.loaded;
+                                    el.dataset.time = '0';
+                                    el.dataset.click = 'true';
+                                    if (typeof el.click === 'function') el.click();
+                                }}
+                                document.querySelectorAll('#{traffic_key}, [id*="{traffic_key}"], .whatoncode, [class*="whatoncode"], button, a').forEach(btn => {{
+                                    const txt = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+                                    if (txt.includes('lấy mã') || txt.includes('lay ma') || txt.includes('get code') || txt.includes('xem mã') || txt.includes('hoàn tất')) {{
+                                        btn.click();
+                                    }}
+                                }});
+                                if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
+                                else if (typeof checkButtonClick === 'function') checkButtonClick();
+                            }}""")
+                        except Exception:
+                            pass
+                        time.sleep(1.0)
                         for wait_i in range(50):
                             if code_found or campaign_dead:
                                 break
-                            if wait_i in (4, 12, 20, 28, 36):
+                            if wait_i in (2, 6, 12, 20, 28, 36):
                                 try:
                                     page.mouse.wheel(0, 100 if wait_i % 8 == 0 else -100)
                                     page.evaluate(f"""() => {{
-                                        const el = document.getElementById('{traffic_key}');
+                                        const el = document.getElementById('{traffic_key}') || document.querySelector('[id*="{traffic_key}"]');
                                         if (el) {{
                                             el.dataset.loading = 'false';
                                             delete el.dataset.loaded;
                                             el.dataset.time = '0';
                                             el.dataset.click = 'true';
-                                            if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
-                                            else if (typeof checkButtonClick === 'function') checkButtonClick();
+                                            if (typeof el.click === 'function') el.click();
                                         }}
-                                        const c = document.querySelector('.whatoncode, .whatoncode-wrapper, [class*="whatoncode"], .whatoncode button, [id=\'{traffic_key}\'] button, [id=\'{traffic_key}\'] div, .completed, #traffic-button, #traffic-button-no, .traffic-button-no');
-                                        if (c && (!c.innerText || !c.innerText.includes('Mã KM'))) c.click();
+                                        document.querySelectorAll('#{traffic_key}, [id*="{traffic_key}"], .whatoncode, [class*="whatoncode"], button, a').forEach(btn => {{
+                                            const txt = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+                                            if (txt.includes('lấy mã') || txt.includes('lay ma') || txt.includes('get code') || txt.includes('xem mã') || txt.includes('hoàn tất')) {{
+                                                btn.click();
+                                            }}
+                                        }});
+                                        if (typeof window.__checkButtonClick === 'function') window.__checkButtonClick();
+                                        else if (typeof checkButtonClick === 'function') checkButtonClick();
                                     }}""")
                                 except Exception:
                                     pass
+
+                            # Quét trực tiếp DOM xem mã đã hiển thị chưa
+                            try:
+                                code_in_dom = page.evaluate(f"""() => {{
+                                    const cands = [
+                                        document.getElementById('{traffic_key}'),
+                                        document.querySelector('[id*="{traffic_key}"]'),
+                                        document.querySelector('#traffic-button, .traffic-button, .traffic-button__content'),
+                                        document.querySelector('.completed, [class*="completed"]'),
+                                        document.querySelector('.whatoncode, [class*="whatoncode"]')
+                                    ];
+                                    for (const el of cands) {{
+                                        if (!el) continue;
+                                        const t = (el.innerText || el.textContent || '').trim();
+                                        const m = t.match(/(?:M[ãa]\\s*KM|M[ãa]\\s*x[áa]c\\s*nh[ậa]n|Code|M[ãa])[\\s\\:\\-]+([A-Za-z0-9_\\-]{{4,25}})/i);
+                                        if (m) return m[1];
+                                        if (/^[A-Za-z0-9_\\-]{{4,25}}$/.test(t) && !/lay|ma|click|link|buoc|cho|wait|giay|second|loading|keo/i.test(t)) return t;
+                                    }}
+                                    return null;
+                                }}""")
+                                if code_in_dom:
+                                    cleaned = clean_code_str(code_in_dom)
+                                    if is_valid_sponsor_code(cleaned):
+                                        code_found = cleaned
+                                        log(f"🎉 EXTRACTED SPONSOR CODE FROM DOM IN STEP 2: {code_found}")
+                                        break
+                            except Exception:
+                                pass
 
                             # Thử trực tiếp gọi endpoint API lấy mã với quest_info từ localStorage nếu sau 5s chưa có mã
                             if wait_i == 8 and not code_found:

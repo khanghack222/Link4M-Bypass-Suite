@@ -104,6 +104,27 @@ def resolve_domain(img_url):
             except Exception:
                 pass
 
+    # Priority 3: WebAI-to-API Gemini Vision if dddd & RapidOCR found nothing
+    if not candidates and data:
+        try:
+            try:
+                from webai_client import is_webai_available, ocr_image_webai
+            except ImportError:
+                from src.core.webai_client import is_webai_available, ocr_image_webai
+
+            if is_webai_available():
+                w_text = ocr_image_webai(data, prompt="Extract all website domains or URLs mentioned in this image. Return as a space-separated list.")
+                for p in (w_text or "").split():
+                    p = p.strip('()[]{}<>,;:\'\"')
+                    m = re.search(r'(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)', p)
+                    if m:
+                        d = m.group(1).lower()
+                        if d not in IGNORE and not any(d.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp'] + list(JUNK_TLD)):
+                            if d not in candidates:
+                                candidates.append(d)
+        except Exception:
+            pass
+
     ranked = [d for d in candidates if d.endswith(GOOD_TLD)] + [d for d in candidates if not d.endswith(GOOD_TLD)]
     verified = []
     if ranked:

@@ -43,13 +43,33 @@ def _call_gemini_vision(parts: list, timeout: float = 7.0) -> Optional[dict]:
 
 def solve_captchano_ai(img_bytes: bytes, options: List[str]) -> Optional[str]:
     """
-    Sử dụng Gemini Vision để giải CaptchaNo trong GTraffic.
+    Sử dụng WebAI-to-API hoặc Gemini Vision để giải CaptchaNo trong GTraffic.
     Phân tích ảnh câu hỏi và chọn chính xác phương án đúng từ danh sách options.
     """
     if not options:
         return None
 
-    # Priority 0: Gemini Multimodal Vision
+    # Priority 0: WebAI-to-API Gemini Vision (Zero-cost)
+    try:
+        try:
+            from webai_client import is_webai_available, ocr_image_webai
+        except ImportError:
+            from src.core.webai_client import is_webai_available, ocr_image_webai
+
+        if is_webai_available() and img_bytes:
+            prompt = (
+                f"Look at this captcha question image. The choices available are: {options}.\n"
+                f"Analyze the question carefully and return ONLY the exact chosen string from the choices list. No other text."
+            )
+            ans = ocr_image_webai(img_bytes, prompt=prompt)
+            for opt in options:
+                if opt.strip().lower() in (ans or "").lower():
+                    print(f"[+] 🧠 [WebAI-to-API Vision] CaptchaNo solved: '{opt}'", flush=True)
+                    return opt
+    except Exception:
+        pass
+
+    # Priority 1: Gemini Multimodal Cloud API
     if GEMINI_API_KEY and img_bytes:
         try:
             b64_img = base64.b64encode(img_bytes).decode("utf-8")
@@ -74,10 +94,28 @@ def solve_captchano_ai(img_bytes: bytes, options: List[str]) -> Optional[str]:
 
 def solve_qcaptcha_grid_ai(tile_bytes_list: List[bytes], question: str, c_type: str = "grid3x3") -> List[int]:
     """
-    Sử dụng Gemini Vision để giải QCaptcha (LayMa.net) cho dạng Grid 3x3 và OddOneOut.
+    Sử dụng WebAI-to-API hoặc Gemini Vision để giải QCaptcha (LayMa.net) cho dạng Grid 3x3 và OddOneOut.
     Trả về danh sách 0-indexed tiles (0 đến 8).
     """
-    if not GEMINI_API_KEY or not tile_bytes_list:
+    if not tile_bytes_list:
+        return []
+
+    # Priority 0: WebAI-to-API Gemini Vision
+    try:
+        try:
+            from webai_client import is_webai_available, solve_qcaptcha_webai
+        except ImportError:
+            from src.core.webai_client import is_webai_available, solve_qcaptcha_webai
+
+        if is_webai_available():
+            indices = solve_qcaptcha_webai(tile_bytes_list, question)
+            if indices:
+                print(f"[+] 🧠 [WebAI-to-API Vision] QCaptcha solved: {indices}", flush=True)
+                return indices
+    except Exception:
+        pass
+
+    if not GEMINI_API_KEY:
         return []
 
     try:
@@ -115,10 +153,25 @@ def solve_qcaptcha_grid_ai(tile_bytes_list: List[bytes], question: str, c_type: 
 
 def solve_math_captcha_ai(img_bytes: bytes, choices: List[int]) -> Optional[int]:
     """
-    Giải bài toán captcha trên các trang tài trợ Ontops / BestTraffic bằng Gemini Vision.
+    Giải bài toán captcha trên các trang tài trợ Ontops / BestTraffic bằng WebAI-to-API hoặc Gemini Vision.
     """
     if not choices or not img_bytes:
         return None
+
+    # Priority 0: WebAI-to-API Gemini Vision
+    try:
+        try:
+            from webai_client import is_webai_available, solve_math_captcha_webai
+        except ImportError:
+            from src.core.webai_client import is_webai_available, solve_math_captcha_webai
+
+        if is_webai_available():
+            ans = solve_math_captcha_webai(img_bytes, choices)
+            if ans is not None:
+                print(f"[+] 🧠 [WebAI-to-API Vision] Math captcha solved: {ans}", flush=True)
+                return ans
+    except Exception:
+        pass
 
     if GEMINI_API_KEY:
         try:

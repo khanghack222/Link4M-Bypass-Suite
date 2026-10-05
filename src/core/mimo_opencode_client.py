@@ -76,12 +76,11 @@ def ensure_opencode_daemon() -> bool:
             opencode_bin = "opencode.cmd" if os.name == "nt" else "opencode"
 
         env = os.environ.copy()
-        # Ép OpenCode daemon đi qua proxy bridge 127.0.0.1:18888 để tự động xoay IP residential
-        bridge_proxy_url = "http://127.0.0.1:18888"
-        env["HTTP_PROXY"] = bridge_proxy_url
-        env["HTTPS_PROXY"] = bridge_proxy_url
-        env["http_proxy"] = bridge_proxy_url
-        env["https_proxy"] = bridge_proxy_url
+        # Clean environment to prevent proxy redirection loops on localhost
+        env.pop("HTTP_PROXY", None)
+        env.pop("HTTPS_PROXY", None)
+        env.pop("http_proxy", None)
+        env.pop("https_proxy", None)
         env["NO_PROXY"] = "localhost,127.0.0.1"
 
         # Chạy sạch không bị vướng plugin nặng (--pure)

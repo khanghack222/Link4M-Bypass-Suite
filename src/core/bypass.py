@@ -13,7 +13,7 @@ except ImportError:
     from playwright.sync_api import sync_playwright
     IS_PATCHRIGHT = False
 
-from config import CHROME_PATH, BASE_DIR, LOG_FILE, DEST_FILE, CODE_FILE, log, copy_to_clipboard, STEALTH_INIT_SCRIPT, save_destination, log_result_card
+from config import CHROME_PATH, BASE_DIR, LOG_FILE, DEST_FILE, CODE_FILE, log, copy_to_clipboard, STEALTH_INIT_SCRIPT, save_destination, log_result_card, INOOJS_EXT_PATH
 from recaptcha_solver import get_solver, get_solver_instance, RecaptchaAudioSolver
 from sponsor import detect_sponsor_domain, solve_sponsor_quest
 try:
@@ -66,29 +66,52 @@ def run(target_url: str = None, headless: bool = True):
             "--dns-over-https-templates=https://dns.google/dns-query",
             f"--host-resolver-rules={brain.get_host_resolver_rules()}"
         ]
+        if not headless and os.path.exists(INOOJS_EXT_PATH):
+            launch_args.extend([
+                f"--disable-extensions-except={INOOJS_EXT_PATH}",
+                f"--load-extension={INOOJS_EXT_PATH}"
+            ])
         if headless:
             launch_args.extend([
-                "--headless=new",
-                "--use-gl=angle",
-                "--use-angle=swiftshader",
                 "--enable-webgl",
                 "--autoplay-policy=no-user-gesture-required",
                 "--mute-audio=false"
             ])
 
-        launch_kwargs = {
-            "headless": headless,
-            "args": launch_args
-        }
-        if CHROME_PATH:
-            launch_kwargs["executable_path"] = CHROME_PATH
+        user_data_dir = os.path.join(BASE_DIR, "data", "temp", "chrome_link4m_profile")
+        try:
+            os.makedirs(user_data_dir, exist_ok=True)
+            lock_f = os.path.join(user_data_dir, "SingletonLock")
+            if os.path.exists(lock_f):
+                os.remove(lock_f)
+        except Exception:
+            pass
 
-        browser = p.chromium.launch(**launch_kwargs)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720},
-            ignore_https_errors=True
-        )
+        browser = None
+        context = None
+        try:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
+                executable_path=CHROME_PATH if CHROME_PATH and os.path.exists(CHROME_PATH) else None,
+                headless=headless,
+                args=launch_args,
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 720},
+                ignore_https_errors=True
+            )
+        except Exception as e_launch:
+            log(f"[*] Persistent launch fallback: {e_launch}")
+            clean_args = [a for a in launch_args if not a.startswith("--load-extension") and not a.startswith("--disable-extensions")]
+            browser = p.chromium.launch(
+                executable_path=CHROME_PATH if CHROME_PATH and os.path.exists(CHROME_PATH) else None,
+                headless=headless,
+                args=clean_args
+            )
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 720},
+                ignore_https_errors=True
+            )
         context.add_init_script(STEALTH_INIT_SCRIPT)
         # Khóa window.jQuery và window.$ không bị yoads_network.js đánh cắp bằng noConflict(true)
         context.add_init_script("""
@@ -113,7 +136,7 @@ def run(target_url: str = None, headless: bool = True):
             });
         """)
 
-        page_link = context.new_page()
+        page_link = context.pages[0] if context.pages else context.new_page()
         final_destination_url = None
 
         allow_intercept_new_tab = False
@@ -248,7 +271,8 @@ def run(target_url: str = None, headless: bool = True):
             sponsor_candidates = detect_sponsor_domain(page_link, campaign_payload=campaign_payload)
             if not sponsor_candidates:
                 log("[!] Could not auto-detect sponsor domain. Halting.")
-                browser.close()
+                if browser: browser.close()
+                else: context.close()
                 return
 
             if isinstance(sponsor_candidates, str):
@@ -259,7 +283,8 @@ def run(target_url: str = None, headless: bool = True):
 
             if not code_found:
                 log("[!] Could not extract mission code. Halting.")
-                browser.close()
+                if browser: browser.close()
+                else: context.close()
                 return
 
             log(f"\n==========================================")
@@ -290,7 +315,7 @@ def run(target_url: str = None, headless: bool = True):
 
             # Giải reCAPTCHA chính xác trên form nhập mã (#main-form hoặc #recaptcha)
             try:
-                recaptcha_target = "#main-form, #recaptcha, #recaptcha-2"
+                recaptcha_target = "#main-form, #main-form-2, #recaptcha, #recaptcha-2"
                 res_solve = get_solver_instance().solve_on_page(page_link, container_selector=recaptcha_target)
                 log(f"[+] Smart solver result: {res_solve}")
                 if not res_solve.get("success"):

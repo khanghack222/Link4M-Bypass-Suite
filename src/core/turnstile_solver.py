@@ -159,7 +159,29 @@ class TurnstileSolver:
         """Solve Turnstile challenge and return token dict."""
         start_time = time.time()
 
-        # Priority 0: Native Node.js Patchright Runner (Instant Sub-10s Verified 100% Bypass)
+        # Priority 0: Ocilar Cloud API (Instant Remote Solving, Sub-3s, Zero Browser Overhead)
+        try:
+            try:
+                from ocilar_client import is_ocilar_configured, solve_turnstile_ocilar
+            except ImportError:
+                from src.core.ocilar_client import is_ocilar_configured, solve_turnstile_ocilar
+
+            if is_ocilar_configured():
+                oci_token = solve_turnstile_ocilar(url, sitekey, timeout=25.0)
+                if oci_token:
+                    elapsed = round(time.time() - start_time, 2)
+                    logger.success(f"Turnstile solved via Ocilar Cloud API in {elapsed}s! Token: {oci_token[:35]}...")
+                    return {
+                        "turnstile_value": oci_token,
+                        "elapsed_time_seconds": elapsed,
+                        "status": "success",
+                        "engine": "ocilar_cloud_api"
+                    }
+        except Exception as e:
+            if self.debug:
+                logger.debug(f"Ocilar Cloud API note: {e}")
+
+        # Priority 1: Native Node.js Patchright Runner (Instant Sub-10s Verified 100% Bypass)
         js_solver = os.path.join(os.path.dirname(__file__), "turnstile_solver.js")
         if os.path.exists(js_solver):
             try:

@@ -18,6 +18,10 @@ tmp/
 *.dist/
 *.onefile-build/
 release_native/
-trafficvn_profile/
-test_profile/
-gtraffic_profile/
+data/temp/
+*.tmp
+stealth_payload.js
+stealth_final.js
+obfuscated_core.js
+upload_test.py
+dumped_advertise.json
