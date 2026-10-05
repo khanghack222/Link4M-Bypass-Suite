@@ -375,46 +375,32 @@ def extract_quest_instructions(all_texts: list) -> dict:
     idx_s3 = -1
     for i, l in enumerate(clean_lines):
         if re.search(rf'{STEP_RE}\s*3', l, re.IGNORECASE):
-            if any(c in l for c in ['*', '★']):
-                idx_s3 = i
-                break
-            elif idx_s3 == -1:
-                idx_s3 = i
+            idx_s3 = i
+            break
             
     if idx_s3 != -1:
-        s3_tokens = []
-        l_s3 = re.sub(rf'^{STEP_RE}\s*3\s*[:\.]?\s*', '', clean_lines[idx_s3], flags=re.IGNORECASE)
-        l_s3 = re.sub(r'^(?:b[aá]m|bam|click|v[aà]o|vao|t[iì]m|tim)?\s*(?:website|websiter|trang\s*web|web|site)?[:\.\s]*', '', l_s3, flags=re.IGNORECASE).strip()
-        if l_s3: s3_tokens.append(l_s3)
-        for j in range(idx_s3 + 1, min(idx_s3 + 5, len(clean_lines))):
-            if re.search(rf'{STEP_RE}\s*4', clean_lines[j], re.IGNORECASE):
-                break
-            s3_tokens.append(clean_lines[j])
-            
-        combined_s3 = " ".join(s3_tokens)
-        p_m = re.search(r'(?:[oơ]\s*trang|trang)\s*(\d+)', combined_s3, re.IGNORECASE)
+        s3_raw = " ".join(clean_lines[idx_s3:min(idx_s3 + 5, len(clean_lines))])
+        
+        # 1. Trích xuất trang (page_hint)
+        p_m = re.search(r'(?:[oơ]\s*trang|trang)\s*(\d+)', s3_raw, re.IGNORECASE)
         if p_m:
             page_hint = int(p_m.group(1))
-            combined_s3 = combined_s3[:p_m.start()] + " " + combined_s3[p_m.end():]
             
-        combined_s3 = re.sub(r'\s*\.\s*', '.', combined_s3)
-        TLDS = {'com', 'vn', 'net', 'org', 'win', 'me', 'club', 'top', 'info', 'site', 'vip', 'asia', 'online', 'xyz', 'app', 'live', 'bet', 'io'}
-        tokens = [t.strip('./- ') for t in combined_s3.split() if t.strip('./- ')]
-        for i, token in enumerate(tokens):
-            clean_tok = re.sub(rf'^{STEP_RE}\s*\d*\s*', '', token, flags=re.IGNORECASE)
-            clean_tok = re.sub(r'^(?:bam|click|vao|tim|website|websiter|trangweb|web|site)+', '', clean_tok, flags=re.IGNORECASE).strip('./- ')
-            # Clean glued Vietnamese suffix after TLD (e.g. .comotrang1 -> .com)
-            clean_tok = re.sub(r'\.(com|net|org|vn|win|asia|io|site|club|bet)(?:[oơ]trang\d*|trang\d*|bai\d*|o\d+).*$', r'.\1', clean_tok, flags=re.IGNORECASE)
-            if '.' in clean_tok or any(c in clean_tok for c in ['*', '★']):
-                if not any(k in clean_tok.lower() for k in ['google', 'link4m']):
-                    domain_hint = clean_tok.lower()
-                    break
-            elif clean_tok.lower() in TLDS and i > 0:
-                prev = re.sub(rf'^{STEP_RE}\s*\d*\s*', '', tokens[i-1], flags=re.IGNORECASE)
-                prev = re.sub(r'^(?:bam|click|vao|tim|website|websiter|trangweb|web|site)+', '', prev, flags=re.IGNORECASE).strip('./- ').lower()
-                if len(prev) >= 3 and not any(k in prev for k in ['google', 'link4m']):
-                    domain_hint = f"{prev}.{clean_tok.lower()}"
-                    break
+        # 2. Chuẩn hóa khoảng trắng quanh dấu chấm (vd: "domain .com" -> "domain.com")
+        s3_clean = re.sub(r'\s*\.\s*', '.', s3_raw)
+        
+        # 3. Làm sạch hậu tố dính vào đuôi TLD (vd: ".comtrang 3" -> ".com", ".vnởtrang1" -> ".vn")
+        s3_clean = re.sub(r'\.(com|net|org|vn|info|top|win|xyz|club|live|bet)(?:[oơ]?trang|\d|bai|o).*$', r'.\1', s3_clean, flags=re.IGNORECASE)
+        
+        # 4. Trích xuất domain / mask trực tiếp
+        m_dom = re.search(r'([a-zA-Z0-9\-\*★_]+(?:\.[a-zA-Z0-9\-\*★_]+)+)', s3_clean)
+        if m_dom:
+            raw_d = m_dom.group(1).lower()
+            # Bóc sạch tất cả các tiền tố từ nối (bam, vao, website, tim, click,...)
+            raw_d = re.sub(r'^(?:b[uư][oơ]c\s*\d*[:\.\s]*)', '', raw_d, flags=re.IGNORECASE)
+            raw_d = re.sub(r'^(?:b[aá]m|bam|click|clik|lik|v[aà]o|vao|t[iì]m|tim|ki[eê]m|kiem|truy\s*c[aâ]p|truycap|website|websiter|trang\s*web|trangweb|web|site)+', '', raw_d, flags=re.IGNORECASE).strip('./- ')
+            if '.' in raw_d and not any(k in raw_d for k in ['google', 'link4m']):
+                domain_hint = raw_d
 
     return {
         "keyword": keyword,
@@ -973,11 +959,9 @@ def detect_sponsor_domain(page_link, campaign_payload=None):
 
     if quest_info.get("domain_hint") and '.' in quest_info["domain_hint"]:
         dh = quest_info["domain_hint"].replace("www.", "").strip("./- ").lower()
-        if not any(c in dh for c in ['*', '★', ' ']):
-            ip = resolve_ip_google(dh)
-            if ip:
-                log(f"🎉 EXACT SPONSOR DOMAIN VERIFIED VIA DNS: {dh} ({ip})")
-                return [f"https://{dh}", f"http://{dh}"]
+        if not any(c in dh for c in ['*', '★', ' ']) and len(dh.split('.')[0]) >= 3:
+            log(f"🎉 EXACT SPONSOR DOMAIN EXTRACTED DIRECTLY: {dh}")
+            return [f"https://{dh}", f"http://{dh}"]
 
     if quest_info.get("keyword") or quest_info.get("domain_hint"):
         log(f"[*] 🎯 Cấu trúc nhiệm vụ: Từ khóa='{quest_info['keyword']}', Domain Hint='{quest_info['domain_hint']}', Trang={quest_info['page_hint']}")
