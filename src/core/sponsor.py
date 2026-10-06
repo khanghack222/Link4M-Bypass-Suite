@@ -675,6 +675,79 @@ def solve_math_captcha_gemini(img_b64: str, answers: list):
 
     return answers[0] if answers else None
 
+YDC_API_KEY = os.environ.get("YDC_API_KEY", "ydc-sk-19382ed13c6f76c9-gf9j5ApuxhaRQTnIbXUbIeJnag1N9uTo-aa91aac6")
+_LAST_YDC_CALL = 0.0
+
+def search_sponsor_ydc(query: str, domain_hint: str = "") -> list:
+    """
+    Tìm kiếm qua You.com Search API (YDC API) để bóc tách domain đích chuẩn xác.
+    Rate limit: max 10 RPS.
+    """
+    global _LAST_YDC_CALL
+    if not query and not domain_hint:
+        return []
+
+    results = []
+    blacklist = ['google.', 'youtube.com', 'facebook.com', 'tiktok.com', 'zalo.me', 'instagram.com', 'twitter.com', 'x.com', 'wikipedia.org', 'link4m.']
+
+    clean_stem = domain_hint.replace('www.', '').split('.')[0].replace('*', '').strip() if domain_hint else ""
+    tld_hint = domain_hint.replace('www.', '').split('.', 1)[1].replace('*', '').strip() if domain_hint and '.' in domain_hint else ""
+
+    q = f"{query} {clean_stem}".strip() if clean_stem and len(clean_stem) >= 3 else query
+    if not q:
+        q = domain_hint
+
+    # Throttle to max 10 RPS (min 0.1s interval)
+    now = time.time()
+    if now - _LAST_YDC_CALL < 0.11:
+        time.sleep(0.11 - (now - _LAST_YDC_CALL))
+    _LAST_YDC_CALL = time.time()
+
+    headers = {
+        "X-API-Key": YDC_API_KEY
+    }
+    params = {
+        "query": q,
+        "count": 20
+    }
+
+    try:
+        log(f"[*] 🚀 [YDC Search API] Truy vấn You.com với: '{q}' (hint: '{domain_hint}')...")
+        r = requests.get("https://ydc-index.io/v1/search", headers=headers, params=params, timeout=7)
+        if r.status_code == 200:
+            data = r.json()
+            web_hits = data.get("results", {}).get("web", [])
+            for hit in web_hits:
+                u = hit.get("url", "")
+                if u:
+                    try:
+                        parsed = urllib.parse.urlparse(u)
+                        host = parsed.netloc.lower().replace("www.", "")
+                        if host and '.' in host and not any(b in host for b in blacklist):
+                            if host not in results:
+                                results.append(host)
+                    except Exception:
+                        pass
+            log(f"[+] 🎯 [YDC Search API] Tìm thấy {len(results)} domain: {results[:6]}")
+        else:
+            log(f"[!] [YDC Search API] HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        log(f"[!] [YDC Search API] Lỗi kết nối: {e}")
+
+    # Sắp xếp ưu tiên theo stem và tld match
+    def score_ydc(d):
+        sc = 0
+        if clean_stem and clean_stem in d:
+            sc += 5000
+            if d.startswith(clean_stem):
+                sc += 3000
+        if tld_hint and d.endswith('.' + tld_hint):
+            sc += 1000
+        return sc
+
+    results.sort(key=score_ydc, reverse=True)
+    return results
+
 def fallback_ai_search(query: str, domain_hint: str = "", use_gemini: bool = False) -> list:
     """
     Search siêu tốc kết hợp MiMo Free AI (0 token, miễn phí 100%) và DuckDuckGo/Bing giả lập TLS Chrome 124.
@@ -957,17 +1030,36 @@ def detect_sponsor_domain(page_link, campaign_payload=None):
         full_ocr_corpus = all_texts
         quest_info = extract_quest_instructions(full_ocr_corpus)
 
-    if quest_info.get("domain_hint") and '.' in quest_info["domain_hint"]:
-        dh = quest_info["domain_hint"].replace("www.", "").strip("./- ").lower()
-        if not any(c in dh for c in ['*', '★', ' ']) and len(dh.split('.')[0]) >= 3:
-            log(f"🎉 EXACT SPONSOR DOMAIN EXTRACTED DIRECTLY: {dh}")
-            return [f"https://{dh}", f"http://{dh}"]
-
+    google_candidates = []
+    # Phase 1.4: Ưu tiên tối thượng - You.com Search API (YDC API) để bóc tách domain đích
     if quest_info.get("keyword") or quest_info.get("domain_hint"):
         log(f"[*] 🎯 Cấu trúc nhiệm vụ: Từ khóa='{quest_info['keyword']}', Domain Hint='{quest_info['domain_hint']}', Trang={quest_info['page_hint']}")
+        ydc_cands = search_sponsor_ydc(quest_info.get("keyword", ""), quest_info.get("domain_hint", ""))
+        for yc in ydc_cands:
+            if yc not in google_candidates:
+                google_candidates.append(yc)
+
+        # Nếu YDC tìm thấy domain khớp chính xác stem nhiệm vụ và có script hoặc online -> Chốt luôn không cần đoán mò
+        c_stem = quest_info.get("domain_hint", "").replace("www.", "").split(".")[0].replace("*", "").strip().lower()
+        if c_stem and len(c_stem) >= 3:
+            matched_with_sc = []
+            matched_online = []
+            for yc in ydc_cands:
+                if c_stem in yc.lower():
+                    live_u, has_sc = probe_domain_live(yc)
+                    if live_u:
+                        if has_sc:
+                            matched_with_sc.append(live_u)
+                        else:
+                            matched_online.append(live_u)
+            if matched_with_sc:
+                log(f"🎉 [YDC Search Match (Live Script)] Xác nhận domain tài trợ có script nhiệm vụ: {matched_with_sc}")
+                return matched_with_sc
+            elif matched_online:
+                log(f"🎉 [YDC Search Match] Xác nhận domain tài trợ: {matched_online}")
+                return matched_online
 
     # Phase 1.5: Tận dụng AI Google Search trực tiếp bằng từ khóa nhiệm vụ
-    google_candidates = []
     if ai_vision_res and ai_vision_res.get("target_domains"):
         for td in ai_vision_res["target_domains"]:
             clean_td = td.replace("www.", "").strip("./- ").lower()

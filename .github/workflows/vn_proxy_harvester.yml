@@ -1,0 +1,44 @@
+name: 🇻🇳 24/7 Vietnam Ultra Proxy Harvester (Auto-Update)
+
+on:
+  schedule:
+    # Chạy tự động mỗi 30 phút để luôn có danh sách proxy Việt Nam tươi mới nhất
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Cho phép bấm chạy thủ công ngay lập tức trên GitHub Web UI
+  push:
+    paths:
+      - 'tools/vn_proxy_harvester/**'
+
+permissions:
+  contents: write
+
+jobs:
+  harvest-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install Network Dependencies
+        run: |
+          pip install requests PySocks urllib3
+
+      - name: ⚡ Run Massive 120+ Source Harvester & Deep Checker
+        run: |
+          python tools/vn_proxy_harvester/vn_harvester.py
+
+      - name: 🚀 Commit & Push Live Vietnam Proxies
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add proxies.txt tools/vn_proxy_harvester/data/ tools/vn_proxy_harvester/README.md
+          git commit -m "chore(proxy-vn): auto-update 100% live Vietnam proxies (120+ sources) [skip ci]" || echo "No changes to commit"
+          git push || echo "Push failed or no changes"

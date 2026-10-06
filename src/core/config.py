@@ -49,17 +49,26 @@ def load_proxies():
             line = line.strip().lstrip('\ufeff')
             if not line or line.startswith("#"):
                 continue
-            parts = line.split(":")
+            line = line.split("#")[0].strip()
+            if not line:
+                continue
+
+            proto = "http"
+            addr = line
+            if "://" in line:
+                proto, addr = line.split("://", 1)
+
+            parts = addr.split(":")
             if len(parts) == 4:
                 proxies.append({
-                    "server": f"http://{parts[0]}:{parts[1]}",
+                    "server": f"{proto}://{parts[0]}:{parts[1]}",
                     "username": parts[2],
                     "password": parts[3],
                     "raw": line
                 })
             elif len(parts) == 2:
                 proxies.append({
-                    "server": f"http://{parts[0]}:{parts[1]}",
+                    "server": f"{proto}://{parts[0]}:{parts[1]}",
                     "raw": line
                 })
     return proxies

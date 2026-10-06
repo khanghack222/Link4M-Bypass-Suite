@@ -204,6 +204,14 @@ def run(target_url: str = None, headless: bool = True):
                 except Exception:
                     pass
 
+        def handle_req(req):
+            if "get-link-info" in req.url:
+                try:
+                    log(f"[*] Outgoing request to {req.url}: method={req.method}, headers={req.headers}, post_data={req.post_data[:200]}...")
+                except Exception:
+                    pass
+
+        page_link.on("request", handle_req)
         page_link.on("response", handle_resp)
 
         solver = None
@@ -326,74 +334,79 @@ def run(target_url: str = None, headless: bool = True):
                 log(f"[!] AI solver note: {e}")
 
             time.sleep(0.3)
+            solve_tok = (res_solve or {}).get("token") or ""
             if not final_destination_url:
-                page_link.evaluate("""(code) => {
+                page_link.evaluate("""({ code, directToken }) => {
                     document.querySelectorAll('.modal-backdrop, #ad_banner, [id*="google_ads"], [class*="overlay"]').forEach(el => el.remove());
                     
-                    let validToken = '';
-                    document.querySelectorAll('[name="g-recaptcha-response"]').forEach(el => {
-                        if (el.value && el.value.length > 20) validToken = el.value;
+                    let validToken = directToken || '';
+                    if (!validToken) {
+                        document.querySelectorAll('[name="g-recaptcha-response"]').forEach(el => {
+                            if (el.value && el.value.length > 20) validToken = el.value;
+                        });
+                    }
+
+                    // 1. Điền code vào tất cả input password
+                    document.querySelectorAll("input[name='password'], input.password, #password, #password-2, [placeholder*='Nhập mã']").forEach(inp => {
+                        inp.value = code;
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
                     });
+
+                    // 2. Điền token vào tất cả textarea g-recaptcha-response
                     if (validToken) {
                         document.querySelectorAll('[name="g-recaptcha-response"], #g-recaptcha-response, #g-recaptcha-response-1, #g-recaptcha-response-2').forEach(el => {
                             el.value = validToken;
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
                         });
                         try {
-                            if (window.grecaptcha && typeof window.grecaptcha.getResponse === 'function') {
-                                window.grecaptcha.getResponse = () => validToken;
+                            if (window.grecaptcha) {
+                                window.grecaptcha.getResponse = (id) => validToken;
                             }
                         } catch (e) {}
                     }
 
-                    // Ưu tiên submit form chính đang hoạt động (#main-form-2 và #main-form)
-                    const targetForms = Array.from(document.querySelectorAll('#main-form-2, #main-form, form'));
+                    // 3. Chọn DUY NHẤT một form hợp lệ (#main-form hoặc #main-form-2)
+                    const targetForm = document.querySelector('#main-form') || document.querySelector('#main-form-2') || document.querySelector('form');
+                    if (!targetForm) return;
 
-                    targetForms.forEach(f => {
-                        const inp = f.querySelector("input[name='password'], input.password, #password, #password-2, [placeholder*='Nhập mã']");
-                        if (inp) {
-                            inp.value = code;
-                            inp.dispatchEvent(new Event('input', { bubbles: true }));
-                            inp.dispatchEvent(new Event('change', { bubbles: true }));
-                        }
-
-                        if (window.jQuery && typeof checkPassword === 'function') {
-                            window.check_form = jQuery(f);
-                            try { checkPassword(); } catch (e) {}
-                        }
-
-                        // Direct API dispatch fallback
-                        const formData = new FormData(f);
-                        if (validToken) formData.set('g-recaptcha-response', validToken);
-                        formData.set('password', code);
-                        const params = new URLSearchParams(formData).toString();
-                        const endpoint = (window.api_domain || 'https://s1.link4m.app') + '/links/get-link-info';
-                        fetch(endpoint, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
-                            body: params
-                        }).then(r => r.json()).then(res => {
-                            if (res && res.url) {
-                                window.destination_url = res.url;
-                                document.querySelectorAll('.get-link, a[href*="download"]').forEach(a => {
-                                    a.href = res.url;
-                                    a.classList.remove('disabled');
-                                    a.removeAttribute('disabled');
-                                    a.click();
-                                });
-                            }
-                        }).catch(() => {});
-                    });
-
-                    if (typeof checkCaptcha === 'function') {
-                        try { checkCaptcha(); } catch (e) {}
+                    // 4. Chuẩn bị FormData chuẩn xác từ form đã chọn
+                    const formData = new FormData(targetForm);
+                    formData.set('password', code);
+                    if (validToken) {
+                        formData.set('g-recaptcha-response', validToken);
                     }
+                    const params = new URLSearchParams(formData).toString();
+                    const endpoint = (window.api_domain || 'https://s1.link4m.app') + '/links/get-link-info';
 
-                    document.querySelectorAll('#btn-main, #btn-continue, button[type="submit"], input[type="submit"], .btn-primary, .get-link').forEach(btn => {
-                        if (!btn.classList.contains('disabled')) {
-                            btn.click();
+                    // 5. Gửi DUY NHẤT 1 request fetch duy nhất (Single-Use Token Safe)
+                    fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        body: params
+                    }).then(r => r.json()).then(res => {
+                        console.log('[Link4M Single-Dispatch] Result:', res);
+                        if (res && res.url) {
+                            window.destination_url = res.url;
+                            document.querySelectorAll('.get-link, a[href*="download"]').forEach(a => {
+                                a.href = res.url;
+                                a.classList.remove('disabled');
+                                a.removeAttribute('disabled');
+                                a.innerText = 'Click vào đây để tới trang đích';
+                                try { a.click(); } catch (e) {}
+                            });
+                        } else if (res && res.info) {
+                            window.link4m_last_error = res.info;
+                            console.warn('[Link4M Single-Dispatch] Rejected:', res.info);
                         }
+                    }).catch(err => {
+                        console.error('[Link4M Single-Dispatch] Network error:', err);
                     });
-                }""", code_found)
+                }""", {"code": code_found, "directToken": solve_tok})
 
         log("[*] Waiting for destination URL unlock...")
         for _ in range(40):
