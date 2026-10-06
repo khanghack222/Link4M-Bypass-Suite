@@ -15,6 +15,7 @@ permissions:
 jobs:
   harvest-and-publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 2 # Bảo vệ hạn mức tuyệt đối: không bao giờ chạy quá 2 phút
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4

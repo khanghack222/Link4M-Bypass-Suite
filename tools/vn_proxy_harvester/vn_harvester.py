@@ -212,22 +212,38 @@ def verify_proxy_strictly(proxy_entry: str, timeout: float = 1.8) -> dict:
 
 
 def main():
+    t_start = time.perf_counter()
     candidates = collect_all_candidates()
-    print(f"\n[*] Bắt đầu Deep Healthcheck (100 threads) cho {len(candidates)} proxy Việt Nam...", flush=True)
+
+    # Tối ưu hóa GitHub Actions Quota: Ưu tiên nguồn VN và giới hạn quét để hoàn thành dưới 25s
+    candidate_list = list(candidates)
+    # Đưa các proxy từ nguồn chuyên biệt VN lên đầu
+    candidate_list.sort(key=lambda x: (
+        0 if any(vn_s in x for vn_s in ("42.112", "14.225", "103.", "118.71", "210.211", "171.2")) else 1
+    ))
+    
+    # Giới hạn 700 ứng viên tiềm năng nhất mỗi lần chạy để đảm bảo hoàn tất trong 15-20s (không bao giờ vượt 1 phút billing)
+    test_batch = candidate_list[:700]
+    print(f"\n[*] Bắt đầu Fast Deep Healthcheck (120 threads) cho {len(test_batch)} proxy tiềm năng nhất...", flush=True)
 
     verified = []
-    # Test theo lô ưu tiên
-    candidate_list = list(candidates)
-    with ThreadPoolExecutor(max_workers=100) as executor:
-        for res in executor.map(verify_proxy_strictly, candidate_list):
+    TARGET_LIVE_COUNT = 70  # Dừng sớm ngay khi đạt đủ 70 proxy sống tốt nhất
+    with ThreadPoolExecutor(max_workers=120) as executor:
+        futures = [executor.submit(verify_proxy_strictly, p) for p in test_batch]
+        for f in as_completed(futures):
+            res = f.result()
             if res:
                 verified.append(res)
                 if len(verified) % 15 == 0:
                     print(f"   [+] Đã xác minh {len(verified)} proxy sống 100%... ({res['raw']} - {res['latency_ms']}ms)", flush=True)
+                if len(verified) >= TARGET_LIVE_COUNT:
+                    print(f"[!] Đã gom đủ {TARGET_LIVE_COUNT} proxy sống ngon nhất, dừng sớm để bảo toàn Quota GitHub!", flush=True)
+                    break
 
+    elapsed = round(time.perf_counter() - t_start, 1)
     # Sắp xếp theo ping nhanh nhất đến chậm nhất
     verified.sort(key=lambda x: x["latency_ms"])
-    print(f"\n[🏆] XÁC MINH HOÀN TẤT! TỔNG CỘNG: {len(verified)} PROXY VIỆT NAM SỐNG 100%!")
+    print(f"\n[🏆] XÁC MINH HOÀN TẤT TRONG {elapsed}s! TỔNG CỘNG: {len(verified)} PROXY VIỆT NAM SỐNG 100%!")
 
     all_proxies = [v["raw"] for v in verified]
     http_proxies = [v["raw"] for v in verified if v["protocol"] in ("http", "https")]
