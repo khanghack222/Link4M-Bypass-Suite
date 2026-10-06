@@ -1,6 +1,11 @@
 import sys
 import os
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 _py311_site = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python", "Python311", "Lib", "site-packages")
 if os.path.exists(_py311_site) and _py311_site not in sys.path:
     sys.path.insert(0, _py311_site)
@@ -612,14 +617,7 @@ Respond ONLY with a valid JSON:
     def solve_on_page(self, page: Page, timeout_sec: int = 40, container_selector: str = None) -> Dict[str, Any]:
         t0 = time.perf_counter()
 
-        # Priority 0: PassXAPI Cloud Solver with Residential Proxy (Instant Sub-6s token)
-        try:
-            try:
-                from passx_client import solve_recaptcha_passx
-            except ImportError:
-                from src.core.passx_client import solve_recaptcha_passx
-
-            sitekey = page.evaluate("""() => {
+        sitekey = page.evaluate("""() => {
                 // Ưu tiên tìm iframe reCAPTCHA nằm trực tiếp bên trong form chính (#main-form, #main-form-2, #recaptcha, #recaptcha-2)
                 const mainIframe = document.querySelector('#main-form iframe[src*="k="], #main-form-2 iframe[src*="k="], #recaptcha iframe[src*="k="], #recaptcha-2 iframe[src*="k="]');
                 if (mainIframe) {
@@ -639,35 +637,7 @@ Respond ONLY with a valid JSON:
                 return '6LcqrIgsAAAAAPkab9oMW9S4onnzLi8A6RVZpNOy';
             }""") or '6LcqrIgsAAAAAPkab9oMW9S4onnzLi8A6RVZpNOy'
 
-        # Priority 0: 2captcha API Solver (100% Guaranteed Success, 0% CPU Load)
-        try:
-            from twocaptcha_client import solve_recaptcha_2captcha, get_best_key, get_balance
-            best_k = get_best_key()
-            if best_k and get_balance(best_k) > 0.002:
-                two_token = solve_recaptcha_2captcha(site_key=sitekey, target_url=page.url, api_key=best_k, max_wait=65.0)
-                if two_token:
-                    self._sync_tokens(page, two_token)
-                    elapsed = round((time.perf_counter() - t0) * 1000, 2)
-                    print(f"[+] [2Captcha] Injected token into page inputs in {elapsed}ms (len={len(two_token)})", flush=True)
-                    return {"success": True, "token": two_token, "type": "2captcha_cloud", "time_ms": elapsed}
-        except Exception as e_two:
-            print(f"[!] 2captcha solver note: {e_two}", flush=True)
 
-        # Priority 0.5: PassXAPI Cloud Solver Fallback
-        try:
-            try:
-                from passx_client import solve_recaptcha_passx
-            except ImportError:
-                from src.core.passx_client import solve_recaptcha_passx
-
-            passx_token = solve_recaptcha_passx(site_key=sitekey, target_url=page.url, version="v2", max_wait=10.0)
-            if passx_token:
-                self._sync_tokens(page, passx_token)
-                elapsed = round((time.perf_counter() - t0) * 1000, 2)
-                print(f"[+] [PassXAPI] Injected valid reCAPTCHA token into page inputs in {elapsed}ms (len={len(passx_token)})", flush=True)
-                return {"success": True, "token": passx_token, "type": "passx_cloud", "time_ms": elapsed}
-        except Exception as e_passx:
-            print(f"[!] PassXAPI note: {e_passx}", flush=True)
 
         # Build strict target CSS without selector bleeding
         if container_selector:
@@ -814,73 +784,87 @@ Respond ONLY with a valid JSON:
 
                 # --- STEP 1: Ưu tiên TỐI THƯỢNG Audio Challenge (0% CPU, Siêu Tốc ~2s cho máy yếu) ---
                 solved = False
-                audio_btn = active_bframe.locator("#recaptcha-audio-button")
-                if audio_btn.count() > 0:
-                    btn_class = audio_btn.get_attribute("class") or ""
-                    if "rc-button-disabled" not in btn_class and not audio_btn.get_attribute("disabled"):
-                        try:
-                            audio_btn.scroll_into_view_if_needed()
-                            audio_btn.click(force=True, timeout=2000)
-                            print("[+] Bấm ngay nút Audio Challenge để giải siêu tốc...", flush=True)
-                            time.sleep(1.2)
+                try:
+                    # Direct JS click - Thực thi trong 1ms, triệt tiêu hoàn toàn lỗi timeout 30s của Playwright Locator
+                    has_audio_btn = active_bframe.evaluate("""() => {
+                        const btn = document.querySelector('#recaptcha-audio-button');
+                        if (btn && !btn.disabled && !btn.classList.contains('rc-button-disabled')) {
+                            btn.click();
+                            return true;
+                        }
+                        return false;
+                    }""")
+                except Exception:
+                    has_audio_btn = False
 
-                            # Kiểm tra chính xác trạng thái lỗi (chỉ coi là lỗi nếu thẻ thực sự hiển thị có chữ)
-                            is_doscaptcha = False
-                            err_loc = active_bframe.locator(".rc-doscaptcha-header-text")
-                            if err_loc.count() > 0 and err_loc.first.is_visible():
-                                is_doscaptcha = True
-                            
-                            msg_loc = active_bframe.locator(".rc-audiochallenge-error-message")
-                            if msg_loc.count() > 0 and msg_loc.first.is_visible() and (msg_loc.first.inner_text() or "").strip() != "":
-                                is_doscaptcha = True
+                if has_audio_btn:
+                    print("[+] Clicking Audio Challenge button via Direct JS...", flush=True)
+                    time.sleep(1.2)
 
-                            download_link = active_bframe.locator(".rc-audiochallenge-tdownload-link, a:has-text('Download')")
-                            try:
-                                download_link.wait_for(state="visible", timeout=4000)
-                                audio_url = download_link.get_attribute("href")
-                            except Exception:
-                                audio_url = None
+                    # Kiểm tra trạng thái lỗi (DOSCAPTCHA / Rate-limit)
+                    is_doscaptcha = active_bframe.evaluate("""() => {
+                        const h = document.querySelector('.rc-doscaptcha-header-text');
+                        if (h && h.offsetParent !== null && h.innerText.trim() !== '') return true;
+                        const m = document.querySelector('.rc-audiochallenge-error-message');
+                        if (m && m.offsetParent !== null && m.innerText.trim() !== '') return true;
+                        return false;
+                    }""")
 
-                            if audio_url:
-                                print(f"[+] Audio download URL sẵn sàng: {audio_url[:60]}...", flush=True)
-                                ans = self.transcribe_audio_url(audio_url)
-                                if ans:
-                                    print(f"[+] Audio transcribed siêu tốc: '{ans}'", flush=True)
-                                    input_field = active_bframe.locator("#audio-response")
-                                    input_field.fill(ans)
-                                    time.sleep(0.5)
-                                    active_bframe.locator("#recaptcha-verify-button").click()
-                                    time.sleep(2.5)
-                                    if chk.get_attribute("aria-checked") == "true":
-                                        solved = True
-                                        token = page.evaluate("() => { for (const el of document.querySelectorAll('[name=\"g-recaptcha-response\"]')) { if (el.value && el.value.length > 20) return el.value; } return ''; }")
-                                        self._sync_tokens(page, token)
-                                        elapsed = round((time.perf_counter() - t0) * 1000, 2)
-                                        print(f"[+] 🎉 [Audio Challenge Solver] Vượt reCAPTCHA v2 thành công 100% trong {elapsed}ms (0% CPU, 0$ cost)!", flush=True)
-                                        return {"success": True, "token": token, "type": "audio_unblock_free", "time_ms": elapsed}
-                            elif is_doscaptcha:
-                                print("[!] Google reCAPTCHA báo giới hạn tạm thời với nút Audio trên phiên này.", flush=True)
+                    # Lấy link tải audio MP3 trực tiếp qua DOM evaluate
+                    audio_url = None
+                    for _try_audio in range(12):
+                        audio_url = active_bframe.evaluate("""() => {
+                            const a = document.querySelector('.rc-audiochallenge-tdownload-link') ||
+                                      document.querySelector('a.rc-audiochallenge-download-link') ||
+                                      document.querySelector('a[href*="audio.mp3"]');
+                            return (a && a.href) ? a.href : null;
+                        }""")
+                        if audio_url:
+                            break
+                        time.sleep(0.4)
 
-                # --- STEP 2: Nếu Audio bị DOSCAPTCHA, fallback sang 2Captcha Worker ngầm (100% qua, 0% CPU) ---
+                    if audio_url:
+                        print(f"[+] Audio download URL ready: {audio_url[:50]}...", flush=True)
+                        ans = self.transcribe_audio_url(audio_url)
+                        if ans:
+                            print(f"[+] Audio transcribed: '{ans}'", flush=True)
+                            active_bframe.evaluate("""(ans) => {
+                                const input = document.querySelector('#audio-response');
+                                if (input) {
+                                    input.value = ans;
+                                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                                }
+                                const verifyBtn = document.querySelector('#recaptcha-verify-button');
+                                if (verifyBtn) verifyBtn.click();
+                            }""", ans)
+                            time.sleep(2.0)
+                            if chk.get_attribute("aria-checked") == "true":
+                                solved = True
+                                token = page.evaluate("() => { for (const el of document.querySelectorAll('[name=\"g-recaptcha-response\"]')) { if (el.value && el.value.length > 20) return el.value; } return ''; }")
+                                self._sync_tokens(page, token)
+                                elapsed = round((time.perf_counter() - t0) * 1000, 2)
+                                print(f"[+] [Audio Solver] Solved reCAPTCHA v2 in {elapsed}ms (0% CPU, 0$ cost)!", flush=True)
+                                return {"success": True, "token": token, "type": "audio_unblock_free", "time_ms": elapsed}
+                    elif is_doscaptcha:
+                        print("[!] Google reCAPTCHA rate-limit on Audio (DOSCAPTCHA).", flush=True)
+
+                # --- STEP 2: Fallback Cloud API Solver (Tuyệt đối KHÔNG chạy Vision Captcha) ---
                 if not solved and chk.get_attribute("aria-checked") != "true":
-                    print("[*] Audio không khả dụng hoặc bị cờ. Chuyển sang 2Captcha Worker ngầm...", flush=True)
                     try:
-                        from twocaptcha_client import solve_recaptcha_2captcha, get_best_key
-                        two_token = solve_recaptcha_2captcha(site_key=sitekey, target_url=page.url, api_key=get_best_key(), max_wait=65.0)
-                        if two_token:
-                            self._sync_tokens(page, two_token)
-                            elapsed = round((time.perf_counter() - t0) * 1000, 2)
-                            print(f"[+] [2Captcha Fallback] Đã nạp token thành công trong {elapsed}ms (len={len(two_token)})", flush=True)
-                            return {"success": True, "token": two_token, "type": "2captcha_cloud", "time_ms": elapsed}
-                    except Exception as e_2c:
-                        print(f"[!] 2Captcha fallback note: {e_2c}", flush=True)
+                        from twocaptcha_client import solve_recaptcha_2captcha, get_balance
+                        if get_balance() > 0.002:
+                            print("[*] Audio bị chặn, chuyển sang Cloud API Solver...", flush=True)
+                            cloud_token = solve_recaptcha_2captcha(sitekey, page.url)
+                            if cloud_token:
+                                self._sync_tokens(page, cloud_token)
+                                elapsed = round((time.perf_counter() - t0) * 1000, 2)
+                                print(f"[+] [Cloud Solver] Solved reCAPTCHA v2 in {elapsed}ms!", flush=True)
+                                return {"success": True, "token": cloud_token, "type": "cloud_token", "time_ms": elapsed}
+                    except Exception as e_cloud:
+                        print(f"[!] Cloud fallback error: {e_cloud}", flush=True)
 
-                # --- STEP 3: Fallback cuối cùng Visual Challenge (Tối đa 2 round, tuyệt đối không loop vô tận) ---
-                if not solved and chk.get_attribute("aria-checked") != "true":
-                    print("[*] Thử nghiệm Visual Challenge hạn chế (tối đa 2 round)...", flush=True)
-                    solved = self.solve_image_challenge(page, active_bframe, chk, max_rounds=2)
-
-                if solved or chk.get_attribute("aria-checked") == "true":
+                if chk.get_attribute("aria-checked") == "true":
                     token = page.evaluate("() => { for (const el of document.querySelectorAll('[name=\"g-recaptcha-response\"]')) { if (el.value && el.value.length > 20) return el.value; } return ''; }")
                     elapsed = round((time.perf_counter() - t0) * 1000, 2)
                     print(f"[+] reCAPTCHA solved successfully in {elapsed}ms!", flush=True)

@@ -1,15 +1,15 @@
 # 🇻🇳 Vietnam Ultra Proxy Harvester (Live 24/7)
 
-Hệ thống tự động cào từ **100 nguồn proxy sạch đã kiểm định (0 lỗi 404)**, lọc riêng biệt theo dải IP ISP Việt Nam (**VNPT, Viettel, FPT, CMC, Mobifone**) và kiểm tra độ sống 100% bằng **GitHub Actions** chạy liên tục mỗi 30 phút.
+Hệ thống tự động cào từ **120+ nguồn proxy uy tín nhất toàn cầu**, lọc riêng biệt theo dải IP ISP Việt Nam (**VNPT, Viettel, FPT, CMC, Mobifone**) và kiểm tra độ sống 100% bằng **GitHub Actions** chạy liên tục mỗi 30 phút.
 
 ### 📊 Thống Kê Trạng Thái Thời Gian Thực
-- **Lần cập nhật cuối**: `2026-10-06 18:58:23`
-- **Tổng nguồn quét sạch**: `100 Nguồn 200 OK`
-- **Tổng proxy sống 100%**: **`70`**
-- **SOCKS5 VN (Ưu tiên Bypass Captcha)**: `34`
-- **HTTP / HTTPS VN**: `20`
-- **SOCKS4 VN**: `16`
-- **Tốc độ phản hồi trung bình (Ping)**: `243.9 ms`
+- **Lần cập nhật cuối**: `2026-10-06 19:01:21`
+- **Tổng nguồn quét**: `120+ VIP Sources`
+- **Tổng proxy sống 100%**: **`2714`**
+- **SOCKS5 VN (Ưu tiên Bypass Captcha)**: `773`
+- **HTTP / HTTPS VN**: `1137`
+- **SOCKS4 VN**: `804`
+- **Tốc độ phản hồi trung bình (Ping)**: `254.1 ms`
 
 ---
 
