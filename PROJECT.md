@@ -25,6 +25,7 @@
 | 6 | RapidOCR Base64 Decoding | Fast CPU OCR (~50ms) to extract search keyword and sponsor domain | M3 | ORIGINAL_REQUEST §R3 |
 | 7 | Sponsor PIN Extraction & checkPassword | Solve sponsor quest, extract 6-digit PIN, fill form, trigger `checkPassword` for final destination | M3 | ORIGINAL_REQUEST §R3 |
 | 8 | E2E Integration & Verification | Validate end-to-end bypass on `https://link4m.net/go/68pw167Y` with CPU < 10% and solve time < 3s | M4 | ORIGINAL_REQUEST Acceptance Criteria |
+| 9 | Standalone CLI & REST API Delivery | Implement `src/cli.py` (`python -m src.cli --url ...`) and `POST /api/bypass` on `api_server.py` | M5 | ORIGINAL_REQUEST §R3 |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
@@ -33,14 +34,17 @@
 | 2 | M2: Multi-Tier Resilient Solver Engine | Complete Tier 1 (Instant) + Tier 2 (Audio) + Tier 3 (2Captcha) fallback chain with token sync | M1 | COMPLETED |
 | 3 | M3: SEO Traffic & Sponsor PIN Automation | Solidify RapidOCR Base64 decoding, sponsor anti-stall navigation, and `checkPassword` dispatch | None | COMPLETED |
 | 4 | M4: E2E Integration & Performance Verification | End-to-end verification of `https://link4m.net/go/68pw167Y`, metrics benchmarking (CPU < 10%, solve < 3s) | M2, M3 | COMPLETED |
+| 5 | M5: Standalone CLI & REST API Delivery | Delivery of `src/cli.py` and `POST /api/bypass` in `api_server.py` with pure JSON output | None | COMPLETED |
 
 ## Code Layout
+- `src/cli.py`: Standalone CLI interface (`python -m src.cli --url <link4m_url>`) with 100% pure JSON stdout.
+- `api_server.py`: REST API microservice exposing `POST /api/bypass` (`{"destination_url": "...", "time_ms": ...}`).
 - `src/core/recaptcha_solver.py`: 3-Tier reCAPTCHA v2 Solver without Vision AI.
 - `src/core/twocaptcha_client.py`: 2Captcha Cloud API integration.
 - `src/core/sponsor.py`: Sponsor domain extraction, RapidOCR decoding, widget PIN retrieval.
 - `src/core/bypass.py`: Link4M bypass coordinator & `checkPassword` caller.
-- `auto_bypass.py`: CLI runner.
-- `tests/`: Test suite for individual tiers, OCR, and end-to-end flows.
+- `auto_bypass.py`: Interactive CLI runner.
+- `tests/`: Comprehensive 38-test suite (Tiers 1-5) covering all modules and endpoints.
 
 ## Interface Contracts
 ### `recaptcha_solver.py` ↔ `bypass.py`

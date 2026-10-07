@@ -157,4 +157,56 @@ def solve_audio(audio_url):
         headers=HEADERS
     ).json()
     return res.get("digit_text", "")
+
+# Giải Link4M Shortlink Trực Tiếp (Server-Side Autonomous Microservice)
+def bypass_link(shortlink_url: str):
+    res = requests.post(
+        f"{API_URL}/api/bypass",
+        json={"url": shortlink_url, "headless": True},
+        headers=HEADERS
+    ).json()
+    return res.get("destination_url")
 ```
+
+---
+
+### 🚀 6. Standalone CLI & API Delivery (R3)
+
+#### REST API Endpoint
+- **Method**: `POST /api/bypass` (Alias: `POST /api/v1/bypass`)
+- **Mô tả**: Tự động vượt link Link4M / shortlink trên máy chủ mà không cần extension hay tương tác từ người dùng.
+- **Request Body**:
+```json
+{
+  "url": "https://link4m.net/go/example",
+  "headless": true,
+  "timeout": 60,
+  "proxy": null
+}
+```
+- **Response Success (HTTP 200)**:
+```json
+{
+  "destination_url": "https://final-destination.com/download",
+  "time_ms": 1820.5,
+  "status": "success",
+  "url": "https://link4m.net/go/example"
+}
+```
+
+#### CLI Command Line Usage
+```bash
+py -3.11 -m src.cli --url <link4m_url>
+# hoặc
+python -m src.cli --url https://link4m.net/go/example --headless --timeout 60
+```
+- **Output (JSON thuần trên stdout)**:
+```json
+{
+  "destination_url": "https://final-destination.com/download",
+  "status": "success",
+  "time_ms": 1820.5,
+  "url": "https://link4m.net/go/example"
+}
+```
+

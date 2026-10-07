@@ -1,6 +1,13 @@
 import sys, os
 sys.stdout.reconfigure(encoding="utf-8")
 
+_CORE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _CORE_DIR not in sys.path:
+    sys.path.insert(0, _CORE_DIR)
+_ROOT_DIR = os.path.abspath(os.path.join(_CORE_DIR, "..", ".."))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
 from config import ensure_python_runtime
 ensure_python_runtime()
 
@@ -33,7 +40,7 @@ def is_valid_destination(u: str) -> bool:
     ]
     return not any(d in u.lower() for d in AD_DOMAINS)
 
-def run(target_url: str = None, headless: bool = True):
+def run(target_url: str = None, headless: bool = True, timeout: int = None, proxy: str = None):
     if not target_url:
         target_url = sys.argv[1].strip() if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else "https://link4m.net/go/2kCcIqn"
 
@@ -87,6 +94,7 @@ def run(target_url: str = None, headless: bool = True):
         except Exception:
             pass
 
+        proxy_cfg = {"server": proxy} if proxy else None
         browser = None
         context = None
         try:
@@ -95,6 +103,7 @@ def run(target_url: str = None, headless: bool = True):
                 executable_path=CHROME_PATH if CHROME_PATH and os.path.exists(CHROME_PATH) else None,
                 headless=headless,
                 args=launch_args,
+                proxy=proxy_cfg,
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 viewport={"width": 1280, "height": 720},
                 ignore_https_errors=True
@@ -105,7 +114,8 @@ def run(target_url: str = None, headless: bool = True):
             browser = p.chromium.launch(
                 executable_path=CHROME_PATH if CHROME_PATH and os.path.exists(CHROME_PATH) else None,
                 headless=headless,
-                args=clean_args
+                args=clean_args,
+                proxy=proxy_cfg
             )
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -137,6 +147,9 @@ def run(target_url: str = None, headless: bool = True):
         """)
 
         page_link = context.pages[0] if context.pages else context.new_page()
+        if timeout:
+            page_link.set_default_timeout(int(timeout) * 1000)
+            page_link.set_default_navigation_timeout(int(timeout) * 1000)
         final_destination_url = None
 
         allow_intercept_new_tab = False
@@ -476,6 +489,13 @@ def run(target_url: str = None, headless: bool = True):
             browser.close()
         except Exception:
             pass
+
+        if is_valid_destination(final_destination_url):
+            return final_destination_url
+        dest = read_destination()
+        if is_valid_destination(dest):
+            return dest
+        return None
 
 if __name__ == "__main__":
     run()

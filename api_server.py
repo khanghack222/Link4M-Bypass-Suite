@@ -190,6 +190,18 @@ class TurnstileSolveRequest(BaseModel):
     timeout_seconds: Optional[int] = Field(30, alias="timeout_sec")
     worker_url: Optional[str] = None
 
+class BypassRequest(BaseModel):
+    url: str = Field(..., description="Target Link4M or shortlink URL to bypass")
+    headless: Optional[bool] = Field(True, description="Run browser in headless mode")
+    timeout: Optional[int] = Field(60, description="Execution timeout in seconds")
+    proxy: Optional[str] = Field(None, description="Optional HTTP or SOCKS5 proxy")
+
+class BypassResponse(BaseModel):
+    destination_url: str = Field(..., description="Resolved final destination URL")
+    time_ms: float = Field(..., description="Bypass processing time in milliseconds")
+    status: str = Field("success", description="Status result of the bypass")
+    url: Optional[str] = Field(None, description="Original requested URL")
+
 # -----------------------------------------------------------------------------
 # Domain & OCR Fast-Path Helpers
 # -----------------------------------------------------------------------------
@@ -700,6 +712,100 @@ async def turnstile_solve(req: TurnstileSolveRequest):
         "token": token,
         "elapsed_seconds": elapsed,
         "engine": "patchright_playwright"
+    }
+
+# 6. AUTONOMOUS LINK4M / SHORTLINK BYPASS ENDPOINT
+@app.post("/api/bypass", response_model=BypassResponse)
+@app.post("/api/v1/bypass", response_model=BypassResponse)
+async def api_bypass(req: BypassRequest):
+    t0 = time.perf_counter()
+    check_and_gc()
+
+    target_url = req.url.strip() if req.url else ""
+    if not target_url or not (target_url.startswith("http://") or target_url.startswith("https://")):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid target URL: '{req.url}'. Target URL must start with http:// or https://"
+        )
+
+    # 1. Fast path: BBMKTS /go/file/ base64 / URL decode (<1ms)
+    if "/go/file/" in target_url:
+        encoded_part = target_url.split("/go/file/")[-1].split("?")[0].split("#")[0]
+        import base64
+        for dec_fn in [
+            lambda s: base64.b64decode(s + "===").decode("utf-8", errors="ignore"),
+            lambda s: urllib.parse.unquote(s)
+        ]:
+            try:
+                dec = dec_fn(encoded_part)
+                if dec.startswith("http"):
+                    elapsed_ms = (time.perf_counter() - t0) * 1000
+                    return {
+                        "destination_url": dec,
+                        "time_ms": round(elapsed_ms, 2),
+                        "status": "success",
+                        "url": target_url
+                    }
+            except Exception:
+                pass
+
+    # 2. Fast path: Query parameters base64 decode (<1ms)
+    try:
+        parsed = urllib.parse.urlparse(target_url)
+        qparams = urllib.parse.parse_qs(parsed.query)
+        for val_list in qparams.values():
+            for v in val_list:
+                if len(v) > 16:
+                    import base64
+                    try:
+                        dec = base64.b64decode(v + "===").decode("utf-8", errors="ignore")
+                        if dec.startswith("http") and not any(k in dec.lower() for k in ["link4m", "bbmkts", "trafficvn"]):
+                            elapsed_ms = (time.perf_counter() - t0) * 1000
+                            return {
+                                "destination_url": dec,
+                                "time_ms": round(elapsed_ms, 2),
+                                "status": "success",
+                                "url": target_url
+                            }
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # 3. Core Autonomous Bypass Engine
+    def _run_core_bypass():
+        from src.core import bypass
+        from src.core.config import read_destination
+        res = bypass.run(
+            target_url=target_url,
+            headless=True if req.headless is None else req.headless,
+            timeout=req.timeout or 60,
+            proxy=req.proxy
+        )
+        if res and isinstance(res, str) and res.startswith("http"):
+            return res
+        fallback = read_destination()
+        if fallback and fallback.startswith("http"):
+            return fallback
+        return None
+
+    try:
+        destination_url = await asyncio.get_event_loop().run_in_executor(_THREAD_POOL, _run_core_bypass)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Bypass execution error: {exc}")
+
+    if not destination_url:
+        raise HTTPException(
+            status_code=500,
+            detail="Bypass engine completed but could not unlock or extract final destination URL"
+        )
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    return {
+        "destination_url": destination_url,
+        "time_ms": round(elapsed_ms, 2),
+        "status": "success",
+        "url": target_url
     }
 
 if __name__ == "__main__":
