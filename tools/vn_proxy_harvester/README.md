@@ -3,13 +3,13 @@
 Hệ thống tự động cào từ **100 nguồn proxy sạch đã kiểm định (0 lỗi 404)**, lọc riêng biệt theo dải IP ISP Việt Nam (**VNPT, Viettel, FPT, CMC, Mobifone**) và kiểm tra độ sống 100% bằng **GitHub Actions** chạy liên tục mỗi 30 phút.
 
 ### 📊 Thống Kê Trạng Thái Thời Gian Thực
-- **Lần cập nhật cuối**: `2026-10-17 00:04:33`
+- **Lần cập nhật cuối**: `2026-10-17 04:45:41`
 - **Tổng nguồn quét sạch**: `100 Nguồn 200 OK`
-- **Tổng proxy sống 100%**: **`44`**
-- **SOCKS5 VN (Ưu tiên Bypass Captcha)**: `10`
-- **HTTP / HTTPS VN**: `23`
-- **SOCKS4 VN**: `11`
-- **Tốc độ phản hồi trung bình (Ping)**: `348.5 ms`
+- **Tổng proxy sống 100%**: **`55`**
+- **SOCKS5 VN (Ưu tiên Bypass Captcha)**: `13`
+- **HTTP / HTTPS VN**: `25`
+- **SOCKS4 VN**: `17`
+- **Tốc độ phản hồi trung bình (Ping)**: `290.2 ms`
 
 ---
 
