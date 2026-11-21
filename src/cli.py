@@ -97,11 +97,15 @@ def resolve_bypass(target_url: str, headless: bool = True, timeout: int = 60, pr
     if result and isinstance(result, str) and result.startswith("http"):
         return result
 
-    # Check fallback destination file
-    from src.core.config import read_destination
-    fallback = read_destination()
-    if fallback and fallback.startswith("http"):
-        return fallback
+    from src.core.config import DEST_FILE
+    if os.path.exists(DEST_FILE):
+        try:
+            with open(DEST_FILE, "r", encoding="utf-8") as f_dest:
+                fallback = f_dest.read().strip()
+            if fallback and fallback.startswith("http") and not any(k in fallback.lower() for k in ["link4m", "bbmkts"]):
+                return fallback
+        except Exception:
+            pass
 
     raise RuntimeError("Failed to resolve destination URL: engine completed without unlocking destination")
 

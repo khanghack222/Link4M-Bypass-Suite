@@ -1,0 +1,49 @@
+<div style="margin-bottom: 10px;font-size: 18px;" class="text-left">
+	<h4>HƯỚNG DẪN LẤY MÃ - TÌM KIẾM TỪ KHOÁ</h4>
+<p style="color: red; font-style: italic;">(<strong>Lưu ý:</strong> Vui lòng làm theo đúng hướng dẫn để không bị sai MÃ)</p>
+<div style=" border: 1px dashed; display: table; padding: 10px 10px 0; margin-bottom: 20px; border-radius: 5px; background: #f4faff; ">
+	<p style="color: blue; ">Sử dụng <strong style="color: black; ">trình duyệt Chrome</strong> để tránh gặp lỗi</p>
+	<p style="color: blue; ">KHÔNG Click vào quảng cáo  <strong style="color: black; ">Được tài trợ</strong></p>
+	<p style="color: blue; ">KHÔNG dùng trình duyệt  <strong style="color: black; ">Ẩn danh</strong></p>
+</div>
+
+<a href="https://google.com" rel="nofollow noopener noreferrer" target="_blank">
+	<img src="[BASE64_IMAGE]"/></a>
+<br />
+<img src="[BASE64_IMAGE]"/><img src="[BASE64_IMAGE]"/><br />
+<img src="[BASE64_IMAGE]"/>	<p class="text-center" style="padding-bottom:30px;text-align: center;">
+		<img src="https://img.link4m.net/uploads/advertiser/worigin/2026/11/05/1_70.jpg" style="border:1px solid #ccc;">
+	</p>
+<p><strong style="color:#000">Bước 4:</strong> Kéo xuống cuối bài viết, click vào nút <img src="/images/button-lay-ma.png" height="30px"> như hình dưới đây và chờ 60 giây</p>
+	<p class="text-center" style="text-align: center;">
+		<img src="https://img.link4m.net/uploads/advertiser/worigin/2026/10/28/3_1_63.jpg" width="600" >
+	</p>
+	<p><strong style="color:#000">Bước 5:</strong> Sau đó hãy click bất kỳ link trên website và quay lại vị trí đó để lấy mã</p>
+			<p class="text-center" style="text-align: center;">
+			<img src="https://img.link4m.net/uploads/advertiser/worigin/2026/10/28/5_1_64.jpg" width="600" >
+		</p>
+	<p><strong style="color:#000">Bước 6:</strong> Dán mã vào đây để tới trang đích</p>	<div style="margin-bottom: 10px;" class="text-center">
+		<form id="main-form-2" method="post">
+			<div class="form-group">
+				<input type="text" name="password" class="form-control&#x20;input-lg&#x20;password" placeholder="Nh&#x1EAD;p&#x20;m&#xE3;" id="password-2" maxlength="6" value=""><input type="hidden" name="alias" id="alias-2" value="F2EnICG"><input type="hidden" name="campaign_id" id="campaign_id-2" value="6acd9b2c327fd6b5d40db4a2"><input type="hidden" name="display_id" id="display_id-2" value="6af00e6b48101050e208393f"><input type="hidden" name="prefix" id="prefix_code-2" value="45bbc224b68f5a47fa852d6a89914594">			</div>
+			<div class="form-group">
+				<div id="recaptcha-2" class="g-recaptcha" data-sitekey="6LcQsTQgAAAAADNQ_pCfukfvS0i9lk4oJTVSs5bZ" data-callback = "checkPassword"  ></div>
+			</div>
+			<div class="form-group">
+				<!-- <button type="submit" class="btn btn-success">Click vào đây để tiếp tục</button>-->
+				<a class="btn btn-success disabled get-link" target="_blank" rel="noopener noreferrer nofollow">Click vào đây để tiếp tục</a>
+			</div>
+		</form>
+	</div>
+	<div id="report-wrapper" class="text-center">
+		<p>
+			Bạn không lấy được mã?
+		</p>
+		<a class="btn btn-danger" data-toggle="modal" data-target="#modal-report" data-advertise_id = "6af00e6b48101050e208393f">Báo lỗi</a>
+	</div>
+</div>
+<div style="margin-bottom: 10px;font-size: 18px;text-transform: uppercase;" class="text-left">
+	<h4>Video hướng dẫn cách lấy mã</h4>
+	<div class="text-center responsive-youtube">
+		<iframe width="560" height="315" src="https://www.youtube.com/embed/3v4O4mVWkX8" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>	</div>
+</div>

@@ -22,4 +22,9 @@ data/temp/
 *.tmp
 stealth_payload.js
 upload_test.py
+test_user_profile/
+test_user_profile2/
+google_profile/
+test_min_ext/
+.agents/
 dumped_advertise.json

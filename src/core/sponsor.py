@@ -389,8 +389,8 @@ def extract_quest_instructions(all_texts: list) -> dict:
         # 2. Chuẩn hóa khoảng trắng quanh dấu chấm (vd: "domain .com" -> "domain.com")
         s3_clean = re.sub(r'\s*\.\s*', '.', s3_raw)
         
-        # 3. Làm sạch hậu tố dính vào đuôi TLD (vd: ".comtrang 3" -> ".com", ".vnởtrang1" -> ".vn")
-        s3_clean = re.sub(r'\.(com|net|org|vn|info|top|win|xyz|club|live|bet)(?:[oơ]?trang|\d|bai|o).*$', r'.\1', s3_clean, flags=re.IGNORECASE)
+        # 3. Làm sạch hậu tố dính vào đuôi TLD (vd: ".comtrang 3" -> ".com", ".vnởtrang1" -> ".vn", ".io ở trang 1" -> ".io")
+        s3_clean = re.sub(rf'\.({TLD_REGEX})(?:[oơ]?\s*trang|\d|bai|o|[\s\.\-_]).*$', r'.\1', s3_clean, flags=re.IGNORECASE)
         
         # 4. Trích xuất domain / mask trực tiếp
         m_dom = re.search(r'([a-zA-Z0-9\-\*★_]+(?:\.[a-zA-Z0-9\-\*★_]+)+)', s3_clean)
