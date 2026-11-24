@@ -207,7 +207,6 @@ def resolve_quest_images_webai(image_bytes_list: List[bytes]) -> Dict[str, Any]:
     if dh_m:
         res["domain_hint"] = dh_m.group(1)
     return res
-    return {}
 
 
 def solve_math_captcha_webai(img_bytes: bytes, answers: List[Any]) -> Optional[Any]:
@@ -285,7 +284,16 @@ def solve_recaptcha_v2_webai(img_bytes: bytes, instruction: Optional[str] = None
     if isinstance(data, dict):
         tiles = data.get("tiles") or data.get("tiles_to_click") or data.get("indices") or []
         if isinstance(tiles, list) and tiles:
-            return [int(t) for t in tiles if 1 <= int(t) <= total_tiles]
+            valid = []
+            for t in tiles:
+                try:
+                    n = int(t)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= n <= total_tiles:
+                    valid.append(n)
+            if valid:
+                return valid
 
     # Fallback regex: find array [ ... ]
     arr_m = re.search(r'\[(?:\s*\d+\s*,?)*\]', raw_res)
@@ -337,6 +345,15 @@ def solve_qcaptcha_webai(tile_bytes_list: List[bytes], question: str) -> List[in
     if isinstance(data, dict):
         indices = data.get("indices") or data.get("tiles") or []
         if isinstance(indices, list):
-            return [int(i) for i in indices if 0 <= int(i) < len(tile_bytes_list)]
+            valid = []
+            for i in indices:
+                try:
+                    n = int(i)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= n < len(tile_bytes_list):
+                    valid.append(n)
+            if valid:
+                return valid
 
     return []

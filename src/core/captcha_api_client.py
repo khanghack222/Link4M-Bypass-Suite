@@ -5,6 +5,7 @@ Optimized with connection pooling, cached endpoint resolution, and sub-100ms exe
 """
 
 import os
+import re
 import sys
 import time
 import json

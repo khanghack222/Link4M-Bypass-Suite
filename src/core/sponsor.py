@@ -3,6 +3,8 @@ import json
 import re
 import time
 import urllib.request
+import urllib.parse
+import urllib.error
 import ssl
 import base64
 import requests
@@ -1840,6 +1842,7 @@ def _solve_single_sponsor_impl(context, page, sponsor_url: str, t_single_start: 
                 except Exception as py_err:
                     log(f"[!] Fallback python article scraping error: {py_err}")
 
+            cand = None
             for cand in (article_candidates or []):
                 if cand not in visited and not any(cand.endswith(ext) for ext in [".jpg", ".png", ".webp", ".css", ".js", ".svg"]):
                     article = cand

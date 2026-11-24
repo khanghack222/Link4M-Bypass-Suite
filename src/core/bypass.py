@@ -335,6 +335,7 @@ def run(target_url: str = None, headless: bool = True, timeout: int = None, prox
             }""")
 
             # Giải reCAPTCHA chính xác trên form nhập mã (#main-form hoặc #recaptcha)
+            res_solve = {}
             try:
                 recaptcha_target = "#main-form, #main-form-2, #recaptcha, #recaptcha-2"
                 res_solve = get_solver_instance().solve_on_page(page_link, container_selector=recaptcha_target)
