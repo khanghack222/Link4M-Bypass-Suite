@@ -1,0 +1,30 @@
+# /etc/systemd/system/l4m-bypass.service
+# sudo cp deploy/l4m-bypass.service /etc/systemd/system/
+# sudo systemctl daemon-reload && sudo systemctl enable --now l4m-bypass
+[Unit]
+Description=Link4M Bypass Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=koshino
+WorkingDirectory=/home/koshino/Link4M-Bypass-Suite
+Environment=HOST=0.0.0.0
+Environment=PORT=8080
+Environment=WORKERS=1
+Environment=JOB_TIMEOUT=240
+Environment=CACHE_TTL=21600
+Environment=L4M_HEADLESS=0
+# Environment=API_KEY=thay-bang-key-cua-ban
+# Xvfb cho Chrome "có màn hình" trên server không GUI.
+ExecStart=/usr/bin/xvfb-run -a --server-args=-screen 0 1280x1000x24 \
+  /home/koshino/Link4M-Bypass-Suite/.venv/bin/python -m service
+Restart=always
+RestartSec=5
+# Chờ Chrome đóng hẳn khi dừng.
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

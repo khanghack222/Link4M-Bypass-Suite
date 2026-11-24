@@ -1,11 +1,11 @@
 {
   "version": "2.0.0-adaptive",
   "stats": {
-    "total_runs": 58,
-    "total_success": 22,
-    "total_heals": 33,
+    "total_runs": 60,
+    "total_success": 23,
+    "total_heals": 34,
     "time_saved_sec": 0.0,
-    "last_updated": 1794051490,
+    "last_updated": 1795486240,
     "last_synced": 1790597057,
     "verified_domains_count": 40
   },
@@ -799,6 +799,26 @@
       "best_time_sec": 86.51,
       "last_code": "gatmuW",
       "last_success": 1794051490
+    },
+    "m.mq8899.com": {
+      "domain": "m.mq8899.com",
+      "traffic_key": "BzjHD",
+      "success_count": 1,
+      "fail_count": 0,
+      "winning_strategies": {
+        "dom": 1
+      },
+      "best_time_sec": 111.28,
+      "last_code": "KYKsc3",
+      "last_success": 1795485489
+    },
+    "gavang5.uk": {
+      "domain": "gavang5.uk",
+      "traffic_key": null,
+      "success_count": 0,
+      "fail_count": 1,
+      "last_fail_reason": "code_not_found",
+      "last_fail": 1795486240
     }
   },
   "dns_cache": {

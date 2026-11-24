@@ -28,3 +28,19 @@ google_profile/
 test_min_ext/
 .agents/
 dumped_advertise.json
+
+.venv/
+.git/
+dist/
+node_modules/
+
+# Runtime artifacts — không commit
+data/service.db
+data/service.db-shm
+data/service.db-wal
+data/service.pid
+logs/
+destination_url.txt
+extracted_code.txt
+final_result_screen.png
+proxies.txt

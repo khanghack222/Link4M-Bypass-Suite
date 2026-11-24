@@ -16,17 +16,36 @@ DEST_FILE = os.path.join(BASE_DIR, "destination_url.txt")
 CODE_FILE = os.path.join(BASE_DIR, "extracted_code.txt")
 PROXIES_FILE = os.path.join(BASE_DIR, "proxies.txt")
 
+def _has_runtime_deps(py_bin: str) -> bool:
+    """True nếu interpreter [PERSON_NAME]/patchright — tránh re-exec sang Python hệ thống."""
+    for module in ("patchright", "playwright"):
+        try:
+            res = subprocess.run(
+                [py_bin, "-c", f"import {module}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20,
+            )
+            if res.returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return False
+
+
 def get_python_executable() -> str:
     """Finds best available Python runtime across Windows and Linux environments."""
     if os.environ.get("PYTHON_PATH") and os.path.exists(os.environ["PYTHON_PATH"]):
         return os.environ["PYTHON_PATH"]
     candidates = [
+        sys.executable,
+        os.path.join(BASE_DIR, ".venv", "bin", "python"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python", "Python311", "python.exe"),
         r"C:\Python311\python.exe",
         "/usr/bin/python3",
         "/usr/local/bin/python3",
-        sys.executable
     ]
+    for c in candidates:
+        if c and os.path.exists(c) and _has_runtime_deps(c):
+            return c
     for c in candidates:
         if c and os.path.exists(c):
             return c

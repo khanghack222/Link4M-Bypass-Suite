@@ -20,7 +20,7 @@ except ImportError:
     from playwright.sync_api import sync_playwright
     IS_PATCHRIGHT = False
 
-from config import CHROME_PATH, BASE_DIR, LOG_FILE, DEST_FILE, CODE_FILE, log, copy_to_clipboard, STEALTH_INIT_SCRIPT, save_destination, log_result_card, INOOJS_EXT_PATH
+from config import CHROME_PATH, BASE_DIR, LOG_FILE, DEST_FILE, CODE_FILE, log, copy_to_clipboard, STEALTH_INIT_SCRIPT, save_destination, read_destination, log_result_card, INOOJS_EXT_PATH
 from recaptcha_solver import get_solver, get_solver_instance, RecaptchaAudioSolver
 from sponsor import detect_sponsor_domain, solve_sponsor_quest
 try:

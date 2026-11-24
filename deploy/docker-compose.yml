@@ -1,0 +1,26 @@
+# docker compose -f deploy/docker-compose.yml up -d --build
+services:
+  bypass:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: linkbypass:latest
+    container_name: linkbypass
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      WORKERS: "1"          # 1 Chrome; tăng chỉ khi RAM >= 8GB
+      CACHE_TTL: "21600"
+      JOB_TIMEOUT: "240"
+      API_KEY: ""           # đặt key nếu mở ra Internet
+      L4M_HEADLESS: "0"     # chạy qua Xvfb trong image
+    shm_size: "1gb"         # Chrome cần /dev/shm
+    mem_limit: "3g"         # trần RAM cho cả container
+    volumes:
+      - bypass-data:/app/data
+      - bypass-logs:/app/logs
+
+volumes:
+  bypass-data:
+  bypass-logs:

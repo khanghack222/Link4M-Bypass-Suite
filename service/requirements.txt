@@ -1,0 +1,11 @@
+# Deps tối thiểu để service chạy (engine link4m + API).
+# Cài: pip install -r service/requirements.txt
+fastapi>=0.110
+uvicorn>=0.27
+patchright>=1.62.0
+rapidocr_onnxruntime>=1.3.0
+onnxruntime>=1.16.0
+pillow>=10.0.0
+numpy>=1.26
+faster-whisper>=1.0.0
+psutil>=5.9
