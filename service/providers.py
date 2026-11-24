@@ -15,7 +15,8 @@ from typing import Optional
 # host -> cấu hình. Giữ nhẹ, chỉ khai báo cái đang có engine thật.
 PROVIDERS: dict[str, dict] = {
     "link4m": {
-        "hosts": ("link4m.net", "link4m.com", "link4m.co", "link4m.vip", "link4m.pro"),
+        "hosts": ("link4m.net", "link4m.com", "link4m.co", "link4m.org",
+                  "link4m.vip", "link4m.pro", "link4m.me", "link4m.app"),
         "pattern": re.compile(r"/go/([A-Za-z0-9_-]+)"),
         "kind": "browser",
     },
