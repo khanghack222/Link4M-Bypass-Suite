@@ -467,6 +467,47 @@ def widget_status(tab, key: str) -> str:
     return tab.evaluate("(k)=>{const e=document.getElementById(k); return e?(e.innerText||'').trim():'';}", key)
 
 
+def _widget_still_idle(tab, key: str) -> bool:
+    """True nếu widget vẫn chỉ hiện nút mời bấm, chưa sang đếm ngược."""
+    s = widget_status(tab, key)
+    return "LẤY MÃ" in s.upper() and _countdown_secs(s) < 0
+
+
+def click_widget_retry(tab, cdp, key: str, tries: int = 4) -> bool:
+    """Bấm nút LẤY MÃ và xác nhận quest đã chạy.
+
+    Trang sponsor thường chặn click (overlay, lazy-load, cần scroll thật).
+    Bấm lại với 4 chiến lược khác nhau cho tới khi widget sang đếm ngược.
+    """
+    for attempt in range(1, tries + 1):
+        if not press_widget(tab, cdp, key):
+            return False
+        if not _widget_still_idle(tab, key):
+            return True
+        # 2: click thẳng bằng JS vào element/button.
+        if attempt == 2:
+            tab.evaluate(
+                "(k)=>{const e=document.getElementById(k); if(!e) return;"
+                "const b=e.querySelector('button')||e; b.click();}", key)
+        # 3: focus + Enter (một số widget nghe bàn phím).
+        elif attempt == 3:
+            tab.evaluate(
+                "(k)=>{const e=document.getElementById(k); if(!e) return;"
+                "const b=e.querySelector('button')||e; b.focus();}", key)
+            tab.keyboard.press("Enter")
+        # 4: scroll thật rồi bấm lại.
+        elif attempt >= 4:
+            for _ in range(3):
+                tab.mouse.wheel(0, 120)
+                time.sleep(0.4)
+            tab.mouse.wheel(0, -120)
+            time.sleep(0.4)
+        time.sleep(2.0)
+        if not _widget_still_idle(tab, key):
+            return True
+    return False
+
+
 COUNTDOWN_RE = re.compile(r"(\d+)\s*s")
 
 
@@ -521,7 +562,7 @@ def run_quest(tab, cdp, key: str) -> str:
     for _ in range(8):
         tab.mouse.wheel(0, 400)
         time.sleep(0.3)
-    if not press_widget(tab, cdp, key):
+    if not click_widget_retry(tab, cdp, key):
         log("[quest] không thấy nút LẤY MÃ")
         return ""
     log("[quest] đã bấm nút")
@@ -536,7 +577,7 @@ def run_quest(tab, cdp, key: str) -> str:
     for _ in range(8):
         tab.mouse.wheel(0, 400)
         time.sleep(0.3)
-    if not press_widget(tab, cdp, key):
+    if not click_widget_retry(tab, cdp, key):
         return ""
     return wait_status(tab, key, 55)
 
