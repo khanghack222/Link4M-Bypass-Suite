@@ -467,9 +467,26 @@ def widget_status(tab, key: str) -> str:
     return tab.evaluate("(k)=>{const e=document.getElementById(k); return e?(e.innerText||'').trim():'';}", key)
 
 
+COUNTDOWN_RE = re.compile(r"(\d+)\s*s")
+
+
+def _countdown_secs(text: str) -> int:
+    """Số giây còn lại trên widget, -1 nếu không đọc được."""
+    m = COUNTDOWN_RE.search(text or "")
+    return int(m.group(1)) if m else -1
+
+
 def wait_status(tab, key: str, limit: int) -> str:
-    """Giữ bánh xe nhấp nháy — countdown đứng im nếu trang không scroll."""
-    for i in range(limit):
+    """Chờ widget xong đếm ngược rồi trả mã.
+
+    ``limit`` là số vòng (1.1s/vòng) — giữ tương thích cũ. Nhưng nếu widget
+    báo countdown dài hơn (thấy 110s, 119s...), vòng lặp tự nới tới
+    ``limit + countdown + 30`` để không cắt ngang. Trước đây cắt ở 93s
+    khiến mọi sponsor 120s đều trả "KHÔNG LẤY ĐƯỢC".
+    """
+    hard_cap = limit + 200
+    i = 0
+    while i < hard_cap:
         time.sleep(1.1)
         tab.mouse.wheel(0, -70 if i % 2 else 70)
         s = widget_status(tab, key)
@@ -480,8 +497,15 @@ def wait_status(tab, key: str, limit: int) -> str:
             if m:
                 return m.group(1)
             return s.split("Mã KM:")[-1].strip().split()[0]
-        if "link" in s.lower():
+        # Bước 2 đánh dấu bằng link/step mới; "link" trần tránh khớp nhầm.
+        low = s.lower()
+        if "link" in low or "bước 2" in low or "step 2" in low:
             return "__STEP2__"
+        # Nới hạn khi countdown còn dài hơn số vòng còn lại.
+        left = _countdown_secs(s)
+        if left > 0 and i + left + 30 > hard_cap:
+            hard_cap = i + left + 30
+        i += 1
     return ""
 
 

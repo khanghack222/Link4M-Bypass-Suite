@@ -43,7 +43,9 @@ class Config:
 
     # Hàng đợi: chặn spam, tránh treo box.
     MAX_QUEUE = _int("MAX_QUEUE", 300)
-    JOB_TIMEOUT = _int("JOB_TIMEOUT", 240)       # giây cho một lần bypass
+    # 480s: engine cần submit + thử 3 sponsor.
+    # 240s cũ cắt ngang -> job "timeout" dù engine còn chạy.
+    JOB_TIMEOUT = _int("JOB_TIMEOUT", 480)
     MAX_TRIES = _int("MAX_TRIES", 2)
     RETRY_DELAY = _int("RETRY_DELAY", 3)
 
