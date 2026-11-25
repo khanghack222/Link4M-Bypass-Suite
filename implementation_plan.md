@@ -684,3 +684,44 @@ không cần model 77 MB. Worker trả `kind: "asr"` nếu job chạy khi thiế
 `/api/v1/supported`, decode POST/GET `wait=1`, 400/501, auth, jobs 404,
 batch > 50. `cargo clippy --all-targets` sạch sau khi sửa 4 cảnh báo cũ
 (`chunks_exact`, `useless_conversion`, `next_back`, `result_large_err`).
+
+## [Handoff] 2026-11-26 (4) — gate Tier 0–3 chạy đủ trên box này
+
+### Môi trường còn thiếu, đã bổ sung
+
+| Thiếu | Cài | Hệ quả |
+|---|---|---|
+| `speech_recognition` (có trong `requirements.txt` nhưng chưa cài) | `.venv/bin/pip install SpeechRecognition` → 3.17.0 | `test_tier2_audio_direct.py` từ rc=1 → **rc=0** |
+| Playwright chromium/headless-shell | `.venv/bin/playwright install chromium` (v1255, 126 MB) | `test_tier3_hybrid_fallback.py` từ rc=1 → **rc=0** |
+
+Tier 1: rc=0. Tier 2: PASS 100%. Tier 3: PASS 100% (2Captcha token 3.98 s).
+Tier 5: rc=0.
+
+### Tier 4 — fixture `adv.json` đã bị purge
+
+`test_tier4_rapidocr_sponsor.py` cần `adv.json` ở repo root, nhưng fixture này
+đã bị xoá ở commit `d7de58c` ("purge legacy dump files, scratch tests, and dev
+artifacts"). Thử tái tạo từ endpoint thật:
+
+```
+POST https://s1.link4m.app/api/campaign/get-advertise
+  alias=2kCcIqn&codes=
+→ 200 {"success": false, "info": "No Campaign", "code": -1}
+```
+
+Alias demo không còn campaign nên không sinh lại được payload có ảnh nhiệm vụ.
+Test này là golden-fixture (assert OCR thấy đúng "keo nha cai"/"tylenhacai"),
+không phải test hành vi — không sửa test, không bịa fixture. Ghi nhận là gap
+đầu vào, cần một capture `adv.json` mới từ campaign sống.
+
+### Xác nhận lại các mặt
+
+- `service/` (Tier 3): `/health` 200, `/api/v1/supported` trả đủ 6 provider,
+  `GET /api/v1/bypass?url=bbmkts/go/file/<b64>&wait=1` → `status=success`,
+  destination `https://example.com/x`, `elapsed_ms=0.1`, không cần Chrome/Node.
+- `server-rs` smoke: **23 PASS / 0 FAIL**, port 8098.
+- `engine-rs`: 18 test pass, clippy sạch, release build OK, `--check` OK,
+  `--once 2kCcIqn` → `needs_code` sau 9.2 s.
+- Cả bốn face gọi đúng một cửa dispatch: `runner_registry.execute()` trong
+  `auto_bypass.py:125`, `src/cli.py:89`, `src/bypass_api.py:91`,
+  `service/worker.py:32`.

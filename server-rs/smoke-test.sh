@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test cho bypass-server: 19 check, không cần Chrome.
+# Smoke test cho bypass-server: 23 check, không cần Chrome.
 #
 #   BASE=http://127.0.0.1:8080 ./smoke-test.sh
 #   BASE=http://127.0.0.1:8080 API_KEY=secret ./smoke-test.sh
