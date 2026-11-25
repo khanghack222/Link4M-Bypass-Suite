@@ -83,3 +83,13 @@ Trên box bị chặn tải browser của patchright, Chrome hệ thống là đ
   trong cùng thread sẽ ném `Sync API inside the asyncio loop`.
 - Ocilar cloud API (`api.ocilar.com`) là fallback; box nào chặn IP đó thì bỏ
   qua, solver vẫn chạy bằng Node + Chrome local.
+
+## Hai mặt Rust
+
+| Crate | Vai trò | Khác biệt |
+|---|---|---|
+| `server-rs/` | façade HTTP gọi engine Python qua `src.bypass_api` | đủ 6 provider, `smoke-test.sh` 23 check không cần Chrome |
+| `engine-rs/` | engine native Link4M: Chrome CDP + reCAPTCHA audio bằng whisper.cpp | chỉ `link4m`; fast path, trả `needs_code` khi thiếu mã |
+
+`server-rs` và `engine-rs` dùng chung envelope JSON với `service/app.py`; client
+đổi backend mà không phải sửa parser.
