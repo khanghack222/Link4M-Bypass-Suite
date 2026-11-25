@@ -49,7 +49,7 @@ Exit code: `0` thành công, `1` bypass thất bại, `2` thiếu tham số.
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `L4M_ENGINE` | `bypass` | `cdp` → dùng `link4m_engine.py` qua Chrome CDP; `bypass` → Playwright engine cũ |
+| `L4M_ENGINE` | `cdp` | `cdp` (hoặc bất kỳ giá trị khác) → `link4m_engine.py` qua Chrome CDP; `legacy` → Playwright engine cũ `bypass.py` |
 | `L4M_REPO` | thư mục gốc tính từ `__file__` | ghi đè root khi chạy service từ ngoài repo |
 | `BYPASS_RUN_ID` | rỗng | tách kết quả giữa các lần chạy song song: `destination_url-<id>.txt`, `last_run-<id>.json` |
 | `BYPASS_API_JSON` | `0` | `1` → luôn in `__BYPASS_JSON__` |

@@ -72,8 +72,9 @@ def list_payload() -> dict:
 def run_once(url: str, engine: Optional[str] = None, headless: bool = True,
              timeout: int = DEFAULT_TIMEOUT) -> BypassResult:
     resolved = runner_registry.normalize_key(engine) if engine else runner_registry.classify(url)
+    # Same default as runners.Link4MRunner: CDP unless L4M_ENGINE=legacy.
     use_cdp = (resolved == "LINK4M"
-               and os.environ.get("L4M_ENGINE", "").strip().lower() == "cdp")
+               and os.environ.get("L4M_ENGINE", "cdp").strip().lower() != "legacy")
     if use_cdp:
         try:
             from link4m_engine import ensure_chrome  # noqa: WPS433
