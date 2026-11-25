@@ -40,26 +40,96 @@ def log(*a):
 
 
 # ------------------------------------------------------------------ frame/DOM
+def _on_screen(pg, frame) -> bool:
+    """True khi iframe của bframe thật sự nằm trong viewport.
+
+    reCAPTCHA tạo bframe cho **mọi** widget trên trang, kể cả widget bị ẩn
+    (iframe đặt ở `top:-9999px`). Chọn nhầm frame ẩn thì lưới không có tile,
+    không chụp được ảnh, và engine chờ index vô ích.
+    """
+    try:
+        box = frame.frame_element().bounding_box()
+    except Exception:
+        return False
+    if not box or box.get("width", 0) < 40 or box.get("height", 0) < 40:
+        return False
+    viewport = pg.viewport_size or {"width": 1280, "height": 800}
+    top, bottom = box.get("y", 0), box.get("y", 0) + box.get("height", 0)
+    return bottom > 0 and top < viewport.get("height", 800)
+
+
 def find_challenge(pg):
-    """Trả frame bframe đang hiện thử thách (lưới ảnh hoặc ô audio)."""
+    """Frame bframe đang hiện thử thách thật (lưới ảnh hoặc ô audio).
+
+    Ưu tiên frame nằm trên màn hình và đã có tile; frame ẩn chỉ được trả về khi
+    không còn ứng viên nào khác — và khi đó engine coi như không có thử thách.
+    """
+    ranked = []
     for f in pg.frames:
-        if "bframe" not in f.url:
+        if "bframe" not in (f.url or ""):
             continue
         try:
-            if f.locator("#rc-imageselect-target, #rc-audiochallenge-response-field").count():
-                return f
+            has_grid = f.locator("#rc-imageselect-target").count()
+            has_audio = f.locator("#rc-audiochallenge-response-field").count()
+        except Exception:
+            continue
+        if not (has_grid or has_audio):
+            continue
+        tiles = 0
+        try:
+            tiles = f.locator("div.rc-imageselect-tile").count()
         except Exception:
             pass
-    return None
+        score = 0
+        if _on_screen(pg, f):
+            score += 2
+        if has_audio:
+            score += 2
+        if tiles:
+            score += 1
+        ranked.append((score, f))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    score, frame = ranked[0]
+    return frame if score > 0 else None
 
 
 def token_now(pg) -> str:
+    """Token của widget đang hiển thị; widget ẩn (nếu có) không được tính.
+
+    Trang link4m gắn hai widget reCAPTCHA. Lấy token dài nhất trong mọi
+    textarea sẽ trả token của widget kia, và form submit sẽ fail dù đã giải
+    đúng.
+    """
     try:
-        vals = pg.evaluate("Array.from(document.querySelectorAll("
-                           "'textarea[name=g-recaptcha-response]')).map(t=>t.value)")
+        entries = pg.evaluate("""() => Array.from(
+            document.querySelectorAll('textarea[name=g-recaptcha-response]')
+        ).map(t => {
+            const host = t.closest('.g-recaptcha, [data-sitekey]');
+            let visible = true;
+            if (host) {
+                const r = host.getBoundingClientRect();
+                visible = r.width > 0 && r.height > 0 &&
+                          r.bottom > 0 && r.top < (window.innerHeight || 800);
+            }
+            return {v: t.value || '', visible: visible};
+        })""")
     except Exception:
         return ""
-    return max(vals, key=len) if vals else ""
+    if not entries:
+        return ""
+    visible = [e["v"] for e in entries if e.get("visible") and e.get("v")]
+    if visible:
+        return max(visible, key=len)
+    if any(e.get("visible") for e in entries):
+        # Có widget hiển thị nhưng chưa có token: đang chờ chính widget đó, không
+        # được lấy token của widget ẩn khác trên cùng trang.
+        return ""
+    # Không widget nào nằm trong viewport (reCAPTCHA vô hình, badge ẩn): giữ
+    # hành vi cũ — textarea dài nhất — thay vì trả rỗng và treo vòng chờ.
+    everything = [e["v"] for e in entries if e.get("v")]
+    return max(everything, key=len) if everything else ""
 
 
 def audio_ready(ch) -> bool:

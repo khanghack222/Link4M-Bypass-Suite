@@ -89,9 +89,28 @@ def run_once(url: str, engine: Optional[str] = None, headless: bool = True,
                 metadata={"timeout": timeout, "headless": headless},
                 stage="pre_flight",
             )
-    res = runner_registry.execute(url, engine=engine, headless=headless)
+    res = _execute_with_headless(url, engine, headless)
     res.metadata.setdefault("timeout", timeout)
     return res
+
+
+def _execute_with_headless(url: str, engine: Optional[str], headless: bool) -> BypassResult:
+    """Xuất `L4M_HEADLESS` cho engine rồi khôi phục biến cũ.
+
+    `headless` là tham số của façade, nhưng engine đọc cờ này từ môi trường
+    (`link4m_engine` dùng nó để bật `--headless=new` và để biết có người ngồi
+    trước màn hình hay không). Trước đây tham số bị bỏ qua hoàn toàn, nên job
+    "headless" vẫn chạy Chrome có cửa sổ và vẫn chờ index lưới ảnh thủ công.
+    """
+    previous = os.environ.get("L4M_HEADLESS")
+    os.environ["L4M_HEADLESS"] = "1" if headless else "0"
+    try:
+        return runner_registry.execute(url, engine=engine, headless=headless)
+    finally:
+        if previous is None:
+            os.environ.pop("L4M_HEADLESS", None)
+        else:
+            os.environ["L4M_HEADLESS"] = previous
 
 
 def emit_result(res: BypassResult, as_json: bool) -> int:

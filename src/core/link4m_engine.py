@@ -512,12 +512,28 @@ def solve_grid(pg, rounds: int = 4) -> str:
         rows, cols = grid_geometry(ch)
         n = rows * cols if rows and cols else 16
         log(f"[grid] vòng {rd + 1}: {rows}x{cols} | yêu cầu: {prompt[:110]}")
+        tiles = 0
+        try:
+            tiles = ch.locator("div.rc-imageselect-tile").count()
+        except Exception:
+            pass
+        if not tiles:
+            # Frame ẩn (widget thứ hai trên trang) hoặc lưới chưa render: không
+            # có ảnh để đọc, chờ index 5 phút chỉ treo job.
+            log("[grid] frame không có tile -> bỏ (không chờ index)")
+            return ""
+        shot_at = time.time()
+        shot_ok = False
         for _ in range(6):
             try:
                 ch.locator("#rc-imageselect-target").first.screenshot(path=GRID_PNG, timeout=15000)
+                shot_ok = os.path.exists(GRID_PNG) and os.path.getmtime(GRID_PNG) >= shot_at - 1
                 break
             except Exception:
                 time.sleep(2)
+        if not shot_ok:
+            log("[grid] không chụp được ảnh lưới -> bỏ (không chờ index)")
+            return ""
         try:
             with open(GRID_PROMPT, "w") as f:
                 f.write(f"{prompt}\n{rows}x{cols}\n{GRID_PNG}\n")
