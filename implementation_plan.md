@@ -591,3 +591,53 @@ Kết luận: phần quest/sponsor + submit vẫn là chỗ hỏng, không phả
 trang. Đây là lý do engine native chỉ chạy fast path và trả `needs_code`; muốn
 native chạy trọn link mới cần port quest (chọn sponsor → OCR ảnh hướng dẫn →
 lấy mã → countdown) sang Rust.
+
+## [Handoff] 2026-11-26 (2) — GTraffic pre-flight 4 s → 3 s, đo lại
+
+Đo `resolve_sponsor_domain()` trên box này, 2026-11-26, bằng cách bọc
+`urllib.request.urlopen` để lấy thời gian từng candidate:
+
+| Candidate | Kiểu | Thời gian |
+|---|---|---|
+| `kitu360.com` | sống | 0.98 s |
+| `ericly.net` | sống | 0.64 s |
+| `thoitiethomnay.org` | sống | 0.48 s |
+| `timvanphong.com.vn` | sống | 0.28 s |
+| `bongda686.in.net` | chết (DNS) | 0.011 s |
+| `hitclub.cards` | chết (DNS) | 0.011 s |
+| `example.com` | sống, không phải sponsor | 0.13 s |
+
+Kết luận: candidate sống trả trong **≤ 1.0 s**; host chết fail gần như tức thì.
+Timeout chỉ cắt được trường hợp TCP mở mà không trả lời. Hạ ceiling xuống
+**3.0 s** (`_PREFLIGHT_TIMEOUT`) vẫn còn 3x headroom, tiết kiệm 1 s cho mỗi
+candidate bị treo. Đã áp và đo lại: `kitu360.com` 0.76 s, `timvanphong.com.vn`
+0.59 s, `ericly.net` 0.51 s — không hồi quy.
+
+Ghi chú: 14 s của một lượt miss (`bongda686.in.net`) **không** nằm ở pre-flight
+fetch mà ở `fallback_ai_search` → `resolve_domain_gemini_ai` →
+`ask_mimo_free`: daemon MiMo poll ~28 × 0.5 s rồi mới fallback. Nếu muốn cắt
+thật thì cắt ở đó (cho phép tắt MiMo khi pre-flight, hoặc hạ `max_wait`), không
+phải ở timeout fetch. Chưa đổi vì ngoài phạm vi mục addendum (a).
+
+### Ghi chú các file Python đã có sẵn trong working tree
+
+Sáu file sửa ngoài phiên (`bbmkts_runner.py`, `captcha_audio.py`, `fast_decode.py`,
+`gtraffic_runner.py`, `link4m_engine.py`, `runners.py`) đã được đọc và chạy qua
+gate offline — giữ nguyên, commit cùng lượt này:
+
+- Desktop copy chỉ ghi khi `os.name == "nt"` (trước đó tạo
+  `~/Desktop/destination_url.txt` trong repo trên Linux ở cả BBMKTS/GTraffic).
+- `fast_decode`: cho phép `~` và `%` trong `/go/file/<b64>`; chỉ nhận
+  `http://`/`https://` thay vì prefix `http` bất kỳ.
+- `runners.Link4MRunner`: `L4M_ENGINE` mặc định là `cdp` (đi qua registry), chỉ
+  `legacy` mới dùng flow cũ.
+- `captcha_audio`: dò lại `bframe` sau khi đổi chế độ audio thay vì giữ tham
+  chiếu frame cũ; nhận diện "try again later"/"automated"/"blocked" là bị chặn.
+- `link4m_engine.submit`: ô mã dò rộng (`#main-form-3`, `form input[name=password]`
+  …), hỗ trợ vào thẳng bước captcha khi phiên trước đã nhập mã, reload lấy anchor
+  mới khi thử thách hỏng, bấm `.get-link` khi nút đã hết disabled; headless bỏ
+  lưới ảnh thủ công trừ khi `L4M_MANUAL_GRID=1`.
+
+Gate sau khi áp: `test_fast_paths_and_pool`, `test_provider_registry`,
+`test_engine_adapters`, `test_suite_integrity`, `test_unit_core`, `test_r3_cli_api`
+— tất cả PASS.

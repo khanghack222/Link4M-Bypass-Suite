@@ -69,20 +69,58 @@ def audio_ready(ch) -> bool:
         return False
 
 
-def open_audio_mode(ch) -> bool:
-    """Bấm nút tai nghe để đổi từ lưới ảnh sang thử thách audio."""
+def _bframes(pg):
+    try:
+        return [f for f in pg.frames if "bframe" in (f.url or "")]
+    except Exception:
+        return []
+
+
+def find_audio_frame(pg):
+    """Frame đang có ô trả lời audio. Sau khi đổi chế độ, bframe có thể bị
+    thay bằng frame mới nên phải dò lại chứ không giữ tham chiếu cũ."""
+    for f in _bframes(pg):
+        if audio_ready(f):
+            return f
+    return None
+
+
+def open_audio_mode(ch, pg=None) -> bool:
+    """Bấm nút tai nghe để đổi từ lưới ảnh sang thử thách audio.
+
+    Nút có thể nằm ở frame khác frame đang giữ thử thách (anchor/challenge),
+    nên dò toàn bộ bframe của page, không chỉ đúng frame truyền vào.
+    """
+    pg = pg or getattr(ch, "page", None)
     if audio_ready(ch):
         return True
-    for sel in ("#recaptcha-audio-button", "button#recaptcha-audio-button"):
-        try:
-            if ch.locator(sel).count():
-                ch.locator(sel).first.click(timeout=5000)
-                for _ in range(12):
-                    time.sleep(0.6)
-                    if audio_ready(ch):
-                        return True
-        except Exception:
-            pass
+    cands = [ch] + [f for f in _bframes(pg) if f is not ch] if pg else [ch]
+    for f in cands:
+        clicked = False
+        for sel in ("#recaptcha-audio-button", "button#recaptcha-audio-button"):
+            try:
+                loc = f.locator(sel).first
+                if loc.count():
+                    loc.click(timeout=4000)
+                    clicked = True
+                    break
+            except Exception:
+                pass
+        if not clicked:
+            try:
+                f.evaluate("() => { const b=document.getElementById('recaptcha-audio-button');"
+                           " if (b) b.click(); }")
+                clicked = True
+            except Exception:
+                pass
+        if not clicked:
+            continue
+        for _ in range(16):
+            time.sleep(0.5)
+            if audio_ready(f):
+                return True
+            if pg and find_audio_frame(pg):
+                return True
     return audio_ready(ch)
 
 
@@ -226,14 +264,14 @@ def error_text(ch) -> str:
 
 def solve(pg, tries: int = 4, limit: int = 150) -> str:
     """Giải thử thách đang hiện bằng audio; trả token ("" nếu thua)."""
-    ch = find_challenge(pg)
+    ch = find_challenge(pg) or find_audio_frame(pg)
     if not ch:
         return token_now(pg)
     for n in range(1, tries + 1):
-        if not open_audio_mode(ch):
+        if not open_audio_mode(ch, pg):
             log("[audio] không mở được chế độ audio")
             return ""
-        ch = find_challenge(pg) or ch
+        ch = find_audio_frame(pg) or find_challenge(pg) or ch
         blob = fetch_audio(ch)
         log(f"[audio] vòng {n}: mp3 {len(blob)} bytes")
         if not blob:
@@ -258,21 +296,21 @@ def solve(pg, tries: int = 4, limit: int = 150) -> str:
         while time.time() - t0 < limit:
             time.sleep(1)
             tok = token_now(pg)
-            if tok and not find_challenge(pg):
+            if tok and not find_challenge(pg) and not find_audio_frame(pg):
                 log(f"[audio] xong sau {int(time.time() - t0)}s, token {len(tok)}")
                 return tok
-            cur = find_challenge(pg)
+            cur = find_audio_frame(pg) or find_challenge(pg)
             if cur is None:
                 break
             err = error_text(cur)
             if err:
                 low = err.lower()
+                if "try again later" in low or "automated" in low or "blocked" in low:
+                    log("[audio] bị chặn:", err[:70])
+                    return ""
                 if "multiple" in low or "thử" in low or "try again" in low:
                     log("[audio] cần vòng nữa:", err[:60])
                     break
-                if "automated" in low or "blocked" in low:
-                    log("[audio] bị chặn:", err[:70])
-                    return ""
                 log("[audio] sai:", err[:60])
                 break
         else:

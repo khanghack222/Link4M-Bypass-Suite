@@ -424,6 +424,12 @@ def solve_challenge(pg) -> str:
         log("[captcha] solver thua:", res.get("error"))
     except Exception as exc:
         log("[captcha] solver lỗi:", str(exc)[:80])
+    headless = os.environ.get("L4M_HEADLESS", "").strip().lower() in ("1", "true", "yes")
+    manual = os.environ.get("L4M_MANUAL_GRID", "").strip().lower() in ("1", "true", "yes")
+    if headless and not manual:
+        # Không có người ngồi trước màn hình: chờ index lưới 5 phút là treo job.
+        log("[captcha] headless: bỏ lưới ảnh (L4M_MANUAL_GRID=1 để bật)")
+        return ""
     tok = solve_grid(pg)
     if tok:
         log("[captcha] lưới ảnh xong, token", len(tok))
@@ -965,45 +971,125 @@ class Engine:
         return code
 
     # -- bước 4: điền mã + captcha + đọc link đích (KHÔNG reload trang)
+    def _password_input(self):
+        """Ô mã đổi id theo campaign (#main-form, -2, -3...), nên dò rộng."""
+        a = self.page
+        selectors = (
+            "#main-form input[name=password]",
+            "#main-form-2 input[name=password]",
+            "#main-form-3 input[name=password]",
+            "form input[name=password]",
+            "input[name=password]",
+        )
+        for sel in selectors:
+            loc = a.locator(sel).first
+            try:
+                loc.wait_for(state="visible", timeout=6000)
+                return loc
+            except Exception:
+                continue
+        return None
+
+    def _captcha_step(self) -> bool:
+        """Trang đã sang bước captcha (phiên trước đã nhập mã) hay chưa."""
+        try:
+            self.page.locator("#captcha-html-wrapper").first.wait_for(
+                state="visible", timeout=3000)
+            return True
+        except Exception:
+            return False
+
+    def _fill_code(self, inp, code: str) -> None:
+        inp.click()
+        time.sleep(0.3)
+        inp.fill("")
+        inp.type(code, delay=90)
+        try:
+            inp.evaluate("el => { el.dispatchEvent(new Event('input', {bubbles: true}));"
+                         " el.dispatchEvent(new Event('change', {bubbles: true})); }")
+        except Exception:
+            pass
+        time.sleep(1.2)
+        log("[form] mã đã điền:", inp.input_value())
+
     def submit(self, code: str) -> str:
         a = self.page
         a.bring_to_front()
         time.sleep(1)
-        inp = a.locator("#main-form input[name=password], #main-form-2 input[name=password]").first
-        inp.click()
-        time.sleep(0.3)
-        a.keyboard.type(code, delay=90)
-        time.sleep(1.2)
-        log("[form] mã đã điền:", inp.input_value())
+        inp = self._password_input()
+        captcha_step = False
+        if inp is None:
+            captcha_step = self._captcha_step()
+            log("[form] không thấy ô mã |", a.url[:90], "| bước captcha:", captcha_step)
+            if not captcha_step:
+                try:
+                    log("[form] title:", (a.title() or "")[:80])
+                    a.screenshot(path=os.path.join(LOG_DIR, "form_missing.png"), full_page=False)
+                except Exception:
+                    pass
+                # Trang có thể đã tự về bước đầu: reload một lần rồi dò lại.
+                try:
+                    a.reload(wait_until="domcontentloaded", timeout=45000)
+                    time.sleep(4)
+                    inp = self._password_input()
+                    captcha_step = inp is None and self._captcha_step()
+                except Exception as exc:
+                    log("[form] reload lỗi:", str(exc)[:90])
+        if inp is None and not captcha_step:
+            log("[form] bỏ lượt: form mã không tồn tại")
+            return ""
+        if inp is not None:
+            self._fill_code(inp, code)
+        else:
+            log("[form] vào thẳng bước captcha (mã đã nhập ở phiên trước)")
         a.evaluate("window.scrollTo(0,0)")
         time.sleep(0.8)
         if not click_anchor(a):
             log("[captcha] không thấy checkbox")
             return ""
-        deadline = time.time() + 240
+        deadline = time.time() + 330
         tok = ""
         rounds = 0
-        while time.time() < deadline:
-            time.sleep(1)
-            tok = token_now(a)
-            if tok:
-                break
-            if find_challenge(a):
-                rounds += 1
-                log(f"[captcha] thử thách vòng {rounds}")
-                tok = solve_challenge(a)
+        attempts = 0
+        while time.time() < deadline and not tok:
+            attempts += 1
+            if attempts > 1:
+                # Thử thách hỏng (audio bị chặn): mở lại link để lấy anchor mới.
+                # Điểm reCAPTCHA đổi theo phiên, phần lớn lượt sau qua luôn.
+                try:
+                    a.reload(wait_until="domcontentloaded", timeout=45000)
+                    time.sleep(4)
+                    inp2 = self._password_input()
+                    if inp2 is not None:
+                        self._fill_code(inp2, code)
+                except Exception as exc:
+                    log("[captcha] reload lỗi:", str(exc)[:80])
+            if not click_anchor(a):
+                log("[captcha] không thấy checkbox")
+                continue
+            rounds = 0
+            while time.time() < deadline:
+                time.sleep(1)
+                tok = token_now(a)
                 if tok:
                     break
-                if rounds >= 2:
-                    log("[captcha] thua 2 vòng")
-                    break
-                for f in a.frames:
-                    if "bframe" in (f.url or ""):
-                        try:
-                            f.locator("#recaptcha-reload-button").first.click(timeout=3000)
-                        except Exception:
-                            pass
-                time.sleep(3)
+                if find_challenge(a):
+                    rounds += 1
+                    log(f"[captcha] thử thách vòng {rounds}")
+                    tok = solve_challenge(a)
+                    if tok:
+                        break
+                    if rounds >= 2:
+                        break
+                    for f in a.frames:
+                        if "bframe" in (f.url or ""):
+                            try:
+                                f.locator("#recaptcha-reload-button").first.click(timeout=3000)
+                            except Exception:
+                                pass
+                    time.sleep(2)
+            if not tok:
+                log(f"[captcha] lần {attempts} thua — mở lại trang")
         log("[captcha] token", len(tok))
         if not tok:
             return ""
@@ -1014,24 +1100,55 @@ class Engine:
             if href and href.startswith("http"):
                 break
             time.sleep(1)
+        if not href:
+            # Nút "Click vào đây để tiếp tục" chỉ bấm được khi đã hết disabled.
+            try:
+                btn = a.locator(".get-link").first
+                cls = (btn.get_attribute("class") or "")
+                if btn.is_visible() and "disabled" not in cls:
+                    log("[form] bấm nút tiếp tục")
+                    btn.click()
+                    time.sleep(4)
+                    href = a.evaluate("""() => { const b=document.querySelector('.get-link');
+                        return b ? (b.getAttribute('href') || '') : ''; }""")
+            except Exception as exc:
+                log("[form] nút tiếp tục lỗi:", str(exc)[:90])
         log("[server]", self.resp[-1][:220] if self.resp else "không bắt được response")
         return href
 
     # -- chạy trọn gói, thử lần lượt các sponsor ứng viên
     def run(self) -> dict:
         info = self.open_link4m()
+        if self._captcha_step():
+            # Phiên trước đã nhập mã cho alias này: link4m giữ trạng thái và chỉ
+            # còn captcha. Bỏ 4 phút quest, vào thẳng bước cuối.
+            log("[flow] trang đã ở bước captcha — bỏ qua quest")
+            href = self.submit("")
+            if href:
+                save_destination(href)
+                return {"ok": True, "alias": self.alias, "code": "",
+                        "sponsor": "", "destination": href,
+                        "server": self.resp[-1] if self.resp else ""}
         sponsors = self.detect_sponsor(info)
         if not sponsors:
             return {"ok": False, "stage": "sponsor", "imgs": info["imgs"]}
         last_code = ""
         for i, (sponsor, key) in enumerate(sponsors[:3]):
             log(f"[thử {i + 1}/{min(3, len(sponsors))}]", sponsor)
-            code = self.harvest_code(sponsor, key)
+            try:
+                code = self.harvest_code(sponsor, key)
+            except Exception as exc:
+                log("[quest] lỗi:", str(exc)[:120])
+                code = ""
             log("[quest] mã:", code or "KHÔNG LẤY ĐƯỢC")
             if not code:
                 continue
             last_code = code
-            href = self.submit(code)
+            try:
+                href = self.submit(code)
+            except Exception as exc:
+                log("[submit] lỗi:", str(exc)[:120])
+                href = ""
             if href:
                 save_destination(href)
                 return {"ok": True, "alias": self.alias, "code": code,

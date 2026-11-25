@@ -12,7 +12,7 @@ import re
 import urllib.parse
 from typing import Optional
 
-_GO_FILE = re.compile(r"/go/file/([A-Za-z0-9_\-%]+)")
+_GO_FILE = re.compile(r"/go/file/([A-Za-z0-9_\-%.~]+)")
 _SELF_REF = ("link4m", "bbmkts", "trafficvn", "yeumoney")
 
 
@@ -23,11 +23,15 @@ def _normalize(url: str) -> str:
     return u
 
 
+def _looks_like_url(value: str) -> bool:
+    return value.startswith("http://") or value.startswith("https://")
+
+
 def _try_b64(s: str) -> Optional[str]:
     try:
         pad = (-len(s)) % 4
         dec = base64.b64decode(s + ("=" * pad)).decode("utf-8", errors="ignore")
-        return dec if dec.startswith("http") else None
+        return dec if _looks_like_url(dec) else None
     except Exception:
         return None
 
@@ -42,7 +46,7 @@ def fast_decode(url: str) -> Optional[str]:
             got = _try_b64(candidate)
             if got and not any(k in got.lower() for k in _SELF_REF):
                 return got
-            if candidate.startswith("http") and not any(k in candidate.lower() for k in _SELF_REF):
+            if _looks_like_url(candidate) and not any(k in candidate.lower() for k in _SELF_REF):
                 return candidate
     try:
         parsed = urllib.parse.urlparse(u)

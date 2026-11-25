@@ -86,12 +86,13 @@ def run(target_link: str = None, headless: bool = None):
                 f.write(dec)
             with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f:
                 f.write(dec)
-            desk_dest = os.path.expanduser(r"~\Desktop\destination_url.txt")
-            try:
-                with open(desk_dest, "w", encoding="utf-8") as f_d:
-                    f_d.write(dec)
-            except Exception:
-                pass
+            if os.name == "nt":
+                desk_dest = os.path.expanduser(r"~\Desktop\destination_url.txt")
+                try:
+                    with open(desk_dest, "w", encoding="utf-8") as f_d:
+                        f_d.write(dec)
+                except Exception:
+                    pass
             return dec
 
     final_destination = None

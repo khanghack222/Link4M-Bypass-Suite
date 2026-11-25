@@ -139,7 +139,7 @@ class Link4MRunner(BaseBypassRunner):
         return None
 
     def execute_flow(self, page, context, target_url: str) -> str:
-        if os.environ.get("L4M_ENGINE", "legacy").strip().lower() == "cdp":
+        if os.environ.get("L4M_ENGINE", "cdp").strip().lower() != "legacy":
             import runner_registry
             parsed = runner_registry.parse_key(target_url)
             alias = parsed[1] if parsed else ""

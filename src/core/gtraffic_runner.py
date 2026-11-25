@@ -90,6 +90,12 @@ CAMPAIGN_RULES = [
 
 _GEMINI_IMAGE_CACHE = {}
 
+# Pre-flight candidate fetch ceiling. Measured 2026-11-26 on this box: a live
+# sponsor candidate answers in 0.28-1.0 s, dead hosts fail in ~0.01 s (DNS or
+# connect refused). 3 s keeps 3x headroom over the slowest healthy hit while
+# capping a silently stalling candidate 1 s shorter than the old 4 s.
+_PREFLIGHT_TIMEOUT = 3.0
+
 def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_gemini: bool = True) -> str:
     import unicodedata
     import ssl
@@ -97,7 +103,7 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_g
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
-    def fetch_url(req, timeout=4.0):
+    def fetch_url(req, timeout=_PREFLIGHT_TIMEOUT):
         try:
             return urllib.request.urlopen(req, context=ctx, timeout=timeout)
         except Exception:
@@ -130,7 +136,7 @@ def resolve_sponsor_domain(keyword_text: str, img_url: str, opener=None, allow_g
             for t in to_try:
                 try:
                     req = urllib.request.Request(t, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-                    with fetch_url(req, timeout=4.0) as resp:
+                    with fetch_url(req, timeout=_PREFLIGHT_TIMEOUT) as resp:
                         final_u = resp.geturl() or t
                         html = resp.read(524288).decode("utf-8", errors="ignore")
                         is_btn = any(w in html for w in [
@@ -1447,9 +1453,10 @@ def run(target_url: str = None, headless: bool = True):
                         f_run.write(str(final_destination))
                 with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f_d:
                     f_d.write(str(final_destination))
-                desk = os.path.expanduser(r"~\Desktop\destination_url.txt")
-                with open(desk, "w", encoding="utf-8") as fd:
-                    fd.write(str(final_destination))
+                if os.name == "nt":
+                    desk = os.path.expanduser(r"~\Desktop\destination_url.txt")
+                    with open(desk, "w", encoding="utf-8") as fd:
+                        fd.write(str(final_destination))
             except Exception:
                 pass
             copy_to_clipboard(str(final_destination))
