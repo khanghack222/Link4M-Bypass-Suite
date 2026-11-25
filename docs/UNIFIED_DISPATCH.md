@@ -61,3 +61,25 @@ Exit code: `0` thành công, `1` bypass thất bại, `2` thiếu tham số.
 `success`, `destination_url`, `engine`, `provider`, `stage`, `error_code`,
 `error_message`, `duration_ms`, `metadata`. `to_dict()` dùng cho JSON.
 Lỗi pre-flight trả `stage="pre_flight"`; Chrome hỏng trả `ERR_BROWSER_CRASH`.
+
+## Node + Chrome cho Turnstile (BBMKTS)
+
+BBMKTS chặn ở Cloudflare Turnstile; `src/core/turnstile_solver.js` là đường
+giải chính. Nó cần hai thứ ngoài Python:
+
+```bash
+npm install                      # patchright đã khai báo trong package.json
+npx patchright install chromium  # hoặc để trống và dùng Chrome hệ thống
+```
+
+Solver tự dò Chrome theo thứ tự `CHROME_BIN` → `/usr/bin/google-chrome` →
+`/usr/bin/chromium` → `/opt/google/chrome/chrome` → đường dẫn Windows mặc định.
+Trên box bị chặn tải browser của patchright, Chrome hệ thống là đủ.
+
+- Node solve đo được **16.7–22.8 s**; budget trong `turnstile_solver.py` là
+  **45 s** (25 s cũ cắt ngang cold start và để lại browser mồ côi).
+- `get_turnstile_token()` tự chạy trong thread riêng khi phát hiện event loop,
+  vì BBMKTS runner đã giữ một sync Playwright context — mở context thứ hai
+  trong cùng thread sẽ ném `Sync API inside the asyncio loop`.
+- Ocilar cloud API (`api.ocilar.com`) là fallback; box nào chặn IP đó thì bỏ
+  qua, solver vẫn chạy bằng Node + Chrome local.
