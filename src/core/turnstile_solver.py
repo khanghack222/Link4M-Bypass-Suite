@@ -11,6 +11,7 @@ import os
 import time
 import json
 import subprocess
+import asyncio
 import logging
 from typing import Optional, Dict, Any
 
@@ -190,7 +191,9 @@ class TurnstileSolver:
                     cmd.append("--headless")
                 if self.debug:
                     logger.info(f"Executing Node.js Patchright runner: {' '.join(cmd)}")
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+                # Node + system Chrome measured at 16.7-22.8 s; 25 s killed cold starts
+                # and left an orphan browser writing EPIPE.
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
                 if proc.returncode == 0 and proc.stdout.strip():
                     try:
                         res = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -303,9 +306,24 @@ class TurnstileSolver:
 
 def get_turnstile_token(url: str, sitekey: str, action: Optional[str] = None, cdata: Optional[str] = None,
                         debug: bool = True, headless: bool = False) -> Dict[str, Any]:
-    """Universal helper function to solve Turnstile and return result."""
+    """Universal helper function to solve Turnstile and return result.
+
+    A caller can already hold a sync Playwright context in this thread (the
+    BBMKTS runner does). Starting a second sync Playwright there raises
+    "Sync API inside the asyncio loop", so when a loop is visible hand the
+    work to a fresh thread with its own loop.
+    """
     solver = TurnstileSolver(debug=debug, headless=headless)
-    return solver.solve(url=url, sitekey=sitekey, action=action, cdata=cdata)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return solver.solve(url=url, sitekey=sitekey, action=action, cdata=cdata)
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            solver.solve, url=url, sitekey=sitekey, action=action, cdata=cdata
+        ).result()
 
 
 if __name__ == "__main__":

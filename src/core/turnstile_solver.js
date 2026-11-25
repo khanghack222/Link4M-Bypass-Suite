@@ -6,6 +6,26 @@
  */
 
 const { chromium } = require('patchright');
+const fs = require('fs');
+
+// patchright's own browser download can be blocked on locked-down boxes.
+// Fall back to any installed Chrome/Chromium so the solver still launches.
+function findChrome() {
+    const candidates = [
+        process.env.CHROME_BIN,
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/opt/google/chrome/chrome',
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+    ];
+    for (const candidate of candidates) {
+        if (candidate && fs.existsSync(candidate)) return candidate;
+    }
+    return undefined;
+}
 
 const HTML_TEMPLATE = `<!DOCTYPE html>
 <html lang="en">
@@ -33,6 +53,7 @@ async function solveTurnstile({ url, sitekey, headless = false, timeoutMs = 3000
 
     const browser = await chromium.launch({
         headless: headless,
+        executablePath: findChrome(),
         args: [
             '--disable-blink-features=AutomationControlled',
             '--no-sandbox',
