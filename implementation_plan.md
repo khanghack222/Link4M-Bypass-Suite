@@ -800,3 +800,29 @@ engine → envelope chạy end-to-end, không chỉ decode.
 - Ocilar cloud vẫn unreachable trên box này; Node + Chrome local gánh toàn bộ.
 - Tổng 285 s nằm trong budget 480 s của `JOB_TIMEOUT`/service và 540 s của lần
   chạy này.
+
+## [Handoff] 2026-11-26 (7) — `requirements.txt` không cài được trên Python 3.13
+
+`rapidocr_onnxruntime>=1.3.0` là pin không thoả mãn được trên box này:
+
+```
+ERROR: Ignored the following versions that require a different python version:
+1.3.0 … 1.4.4 Requires-Python >=3.6,<3.13
+ERROR: Could not find a version that satisfies the requirement
+rapidocr_onnxruntime>=1.3.0
+```
+
+Bản mới nhất cài được trên Python 3.13 là **1.2.3**. Nghĩa là `pip install -r
+requirements.txt` hỏng trên môi trường hiện tại, dù code chạy được (venv đã có
+1.2.3 từ trước).
+
+- Hạ pin xuống `rapidocr_onnxruntime>=1.2.3` kèm comment giải thích: suite chỉ
+  gọi `RapidOCR()` **không truyền kwargs**, và 1.2.3 chạy đúng như vậy (init
+  3.9 s, inference 0.68 s trên ảnh campaign thật).
+- Lỗi `KeyError: 'model_path'` chỉ xuất hiện khi truyền `det_limit_side_len`
+  (như `tests/test_tier4_rapidocr_sponsor.py` làm) — API đó có từ 1.3.0. Đây là
+  lý do thứ hai khiến Tier 4 không chạy được trên 3.13, độc lập với `adv.json`.
+- Cài luôn `ddddocr>=1.5.0` (có trong requirements nhưng chưa có trong venv) →
+  1.6.1, `import ddddocr` OK. Đây là fallback OCR của `ocr_helper`/`sponsor`.
+- Kiểm chứng: `pip install --dry-run --no-deps -r requirements.txt` resolve sạch
+  (chỉ còn `ddddocr` là "would install" trước khi cài).
