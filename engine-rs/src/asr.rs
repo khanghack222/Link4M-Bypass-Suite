@@ -100,8 +100,10 @@ pub type SharedAsr = Arc<Asr>;
 /// Read a raw PCM16 little-endian blob into normalized f32 samples.
 pub fn pcm16_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i16::from_le_bytes(*pair) as f32 / 32768.0)
         .collect()
 }
 

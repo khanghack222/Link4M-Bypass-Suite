@@ -641,3 +641,46 @@ gate offline — giữ nguyên, commit cùng lượt này:
 Gate sau khi áp: `test_fast_paths_and_pool`, `test_provider_registry`,
 `test_engine_adapters`, `test_suite_integrity`, `test_unit_core`, `test_r3_cli_api`
 — tất cả PASS.
+
+## [Handoff] 2026-11-26 (3) — Tier 4 live: link demo đã chết, và launch fix GTraffic
+
+### Kết quả chạy live qua `src.bypass_api` (budget 420 s)
+
+| Provider | Link | HTTP | Kết quả | Nguyên nhân |
+|---|---|---|---|---|
+| Link4M | `link4m.net/go/2kCcIqn` | 200 | `needs_code` sau ~10 s (engine native); Python quest fail sau 420–560 s | quest/sponsor chưa xong ở bản Python; native chỉ fast-path |
+| BBMKTS | `bbmkts.com/go/3p82s` | 200 | `ERR_DESTINATION_NOT_FOUND` sau 101 s | Cloudflare Turnstile không giải được: Ocilar API `api.ocilar.com` bị proxy chặn (502) và timeout |
+| GTraffic | `gtraffic.io/X3BR2OQ` | 200 → `/404` | `ERR_DESTINATION_NOT_FOUND` sau 20 s; **trước đó chết ngay ở launch** | link demo hết hạn (server trả trang 404); launch fix bên dưới |
+| LayMa | `layma.net/pohWNZgba` | 200 | `ERR_DESTINATION_NOT_FOUND` sau 7 s | campaign id `00000000-…`: link hết lượt/không còn chiến dịch |
+| OctoLink | `octolink.vip/K3r4k5` | **404** | không chạy | link demo chết |
+| TrafficVN | `trafficvn.com/get/MFGm2tAlcSn` | **404** | không chạy | link demo chết |
+
+Kết luận Tier 4: **không thể** xác nhận success end-to-end bằng bộ link demo
+trong plan — 5/6 link đã hết hạn hoặc bị chặn ở tầng riêng. Cần link tươi để
+chạy lại; đây là dữ liệu đầu vào, không phải lỗi dispatch. Bằng chứng dispatch
+vẫn đúng: mỗi provider được nhận diện đúng key, chạy đúng engine, và báo lỗi
+theo đúng `error_code`/`stage` của envelope.
+
+### GTraffic: patchright launch không có browser
+
+`gtraffic_runner.py` nhánh `IS_PATCHRIGHT` gọi `p.chromium.launch(headless=…)`
+mà không truyền `executable_path`. Patchright không đóng gói browser, nên trên
+box này chết ngay:
+
+```
+BrowserType.launch: Executable doesn't exist at
+~/.cache/ms-playwright/chromium_headless_shell-1248/...
+```
+
+Đã sửa: truyền `executable_path=CHROME_PATH` (khi tồn tại) và `args` như nhánh
+playwright. Sau fix, engine vào được trang và chạy hết 3 attempt trước khi báo
+link 404. `errexit` của lần chạy trước (4 s) → 20 s, đúng hành vi.
+
+### engine-rs: HTTP contract test + `asr` optional
+
+`Inner.asr` đổi thành `Option<SharedAsr>` để dựng được `ApiState` trong test mà
+không cần model 77 MB. Worker trả `kind: "asr"` nếu job chạy khi thiếu model
+(chỉ xảy ra trong test). Thêm 5 test HTTP (18 tổng) phủ `/health`,
+`/api/v1/supported`, decode POST/GET `wait=1`, 400/501, auth, jobs 404,
+batch > 50. `cargo clippy --all-targets` sạch sau khi sửa 4 cảnh báo cũ
+(`chunks_exact`, `useless_conversion`, `next_back`, `result_large_err`).

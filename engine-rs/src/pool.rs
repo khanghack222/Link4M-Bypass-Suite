@@ -31,6 +31,9 @@ pub struct Pool {
     sender: mpsc::Sender<Job>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct QueueFull;
+
 impl Pool {
     pub fn spawn(inner: Arc<Inner>) -> Self {
         let (sender, receiver) = mpsc::channel::<Job>(inner.cfg.max_queue);
@@ -45,11 +48,11 @@ impl Pool {
         Self { sender }
     }
 
-    pub fn try_dispatch(&self, job: Job) -> std::result::Result<(), Job> {
-        self.sender.try_send(job).map_err(|err| match err {
-            mpsc::error::TrySendError::Full(job) => job,
-            mpsc::error::TrySendError::Closed(job) => job,
-        })
+    /// The queue can no longer take the job. Callers only need to know that it
+    /// was rejected, so the job itself is dropped here instead of being carried
+    /// back in a 128-byte error variant.
+    pub fn try_dispatch(&self, job: Job) -> std::result::Result<(), QueueFull> {
+        self.sender.try_send(job).map_err(|_| QueueFull)
     }
 }
 
@@ -90,9 +93,20 @@ async fn worker_loop(
         }
 
         let Some((_, cdp)) = session.as_ref() else { continue };
+        let Some(asr) = inner.asr.clone() else {
+            let _ = job.respond.send(JobOutcome {
+                destination: None,
+                error: Some(FlowError {
+                    kind: "asr",
+                    message: "whisper model not loaded".into(),
+                }),
+                elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            });
+            continue;
+        };
         let outcome = run_alias(
             cdp,
-            &inner.asr,
+            &asr,
             &job.alias,
             job.code.as_deref(),
             inner.cfg.job_timeout,

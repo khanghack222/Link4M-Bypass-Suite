@@ -510,8 +510,13 @@ def run(target_url: str = None, headless: bool = True):
 
     with sync_playwright() as p:
         if IS_PATCHRIGHT:
+            # Patchright ships no browser of its own. Point it at the system
+            # Chrome (CHROME_PATH) like the playwright branch; without this the
+            # launch dies on a missing chrome-headless-shell.
             browser = p.chromium.launch(
+                executable_path=CHROME_PATH if CHROME_PATH and os.path.exists(CHROME_PATH) else None,
                 headless=headless,
+                args=args,
                 proxy=proxy_cfg
             )
             context = browser.new_context(

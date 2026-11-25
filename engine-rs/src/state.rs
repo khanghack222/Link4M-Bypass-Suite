@@ -152,7 +152,9 @@ impl Stats {
 pub struct Inner {
     pub cfg: Config,
     pub started: Instant,
-    pub asr: SharedAsr,
+    /// `None` only in tests: the API surface (decode, supported, auth, jobs)
+    /// must be exercisable without a 77 MB whisper model on disk.
+    pub asr: Option<SharedAsr>,
     pub cache: Mutex<HashMap<String, CacheEntry>>,
     pub jobs: Mutex<HashMap<String, JobView>>,
     pub locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -161,7 +163,7 @@ pub struct Inner {
 }
 
 impl Inner {
-    pub fn new(cfg: Config, asr: SharedAsr) -> Arc<Self> {
+    pub fn new(cfg: Config, asr: Option<SharedAsr>) -> Arc<Self> {
         let cache = load_cache(&cfg.cache_file);
         Arc::new(Self {
             queue_slots: Semaphore::new(cfg.max_queue),

@@ -35,7 +35,7 @@ impl Cdp {
                 tokio::select! {
                     outgoing = out_rx.recv() => {
                         let Some(value) = outgoing else { break };
-                        if write.send(Message::Text(value.to_string().into())).await.is_err() {
+                        if write.send(Message::Text(value.to_string())).await.is_err() {
                             break;
                         }
                     }

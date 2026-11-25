@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
         return run_once(cfg, asr, &target).await;
     }
 
-    let inner = Inner::new(cfg.clone(), asr);
+    let inner = Inner::new(cfg.clone(), Some(asr));
     let pool = Arc::new(Pool::spawn(inner.clone()));
     let state = Arc::new(ApiState { inner, pool });
     let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;

@@ -43,6 +43,26 @@ crate dùng được, chỉ cần `cmake` + `g++` để dịch whisper.cpp.
 Build sạch trên box này (Rust 1.9x, cmake từ `pip install cmake`, `g++` 14):
 release mất **~3 phút** với LTO, binary **7.1 MB**.
 
+## 2.1 Test
+
+```bash
+cd engine-rs
+WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
+```
+
+**18 test**, không cần Chrome, không cần model — gồm 5 test HTTP contract dựng
+`ApiState` với `asr = None`:
+
+| Test | Nội dung |
+|---|---|
+| `health_and_supported_need_no_browser` | `/health`, `/api/v1/supported` đủ 7 key |
+| `post_decode_and_get_with_lenient_wait` | POST decode + `?wait=1` (không 400) |
+| `unknown_host_is_400_and_foreign_provider_is_501` | host lạ 400, GTraffic 501 |
+| `auth_accepts_header_and_query_key` | 401 thiếu key, `x-api-key`, `?key=` |
+| `missing_job_is_404_and_batch_is_capped` | job lạ 404, batch > 50 → 400 |
+
+`cargo clippy --all-targets` sạch (cần cùng hai biến môi trường như build).
+
 ## 3. Chạy
 
 ```bash

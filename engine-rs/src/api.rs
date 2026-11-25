@@ -399,3 +399,223 @@ pub fn router(state: Arc<ApiState>) -> Router {
 
 #[allow(dead_code)]
 fn _query_map(_: HashMap<String, String>) {}
+
+#[cfg(test)]
+mod tests {
+    //! HTTP contract tests that need no Chrome and no whisper model.
+    //!
+    //! `Inner.asr` is `None`, so a job that actually reaches a worker fails
+    //! with `asr: whisper model not loaded`; every path here resolves before
+    //! dispatch (decode, supported, validation, auth).
+
+    use super::*;
+    use crate::state::Config;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::path::PathBuf;
+    use tower::ServiceExt;
+
+    fn state(api_key: &str, workers: usize, max_queue: usize) -> Arc<ApiState> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let scratch = std::env::temp_dir().join(format!("l4m-api-test-{stamp}"));
+        let cfg = Config {
+            host: "127.0.0.1".into(),
+            port: 0,
+            api_key: api_key.into(),
+            workers,
+            max_queue,
+            job_timeout: Duration::from_secs(30),
+            cache_ttl: Duration::from_secs(60),
+            cache_file: scratch.join("cache.json"),
+            cache_enabled: false,
+            chrome_bin: "google-chrome".into(),
+            headless: true,
+            profile_dir: scratch.join("profile"),
+            model_path: PathBuf::from("models/ggml-tiny.en.bin"),
+            model_url: String::new(),
+            asr_threads: 1,
+        };
+        let inner = Inner::new(cfg, None);
+        let pool = Arc::new(Pool::spawn(inner.clone()));
+        Arc::new(ApiState { inner, pool })
+    }
+
+    async fn call(app: Router, request: Request<Body>) -> (StatusCode, Value) {
+        let response = app.oneshot(request).await.expect("router answered");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, value)
+    }
+
+    const DECODE_URL: &str =
+        "https://bbmkts.com/go/file/aHR0cHM6Ly9leGFtcGxlLmNvbS94";
+
+    #[tokio::test]
+    async fn health_and_supported_need_no_browser() {
+        let app = router(state("", 2, 8));
+        let (status, body) = call(
+            app.clone(),
+            Request::builder().uri("/health").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["workers"], 2);
+
+        let (status, body) = call(
+            app,
+            Request::builder()
+                .uri("/api/v1/supported")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let keys: Vec<&str> = body["supported"]["supported"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        // Six browser providers plus the zero-browser DECODE fast path.
+        assert_eq!(keys.len(), 7);
+        for key in ["LINK4M", "BBMKTS", "GTRAFFIC", "LAYMA", "TRAFFICVN", "OCTOLINK", "DECODE"] {
+            assert!(keys.contains(&key), "missing {key} in {keys:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn post_decode_and_get_with_lenient_wait() {
+        let app = router(state("", 1, 8));
+        let payload = json!({ "url": DECODE_URL, "wait": true }).to_string();
+        let (status, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/bypass")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "success");
+        assert_eq!(body["destination_url"], "https://example.com/x");
+        assert_eq!(body["provider"], "decode");
+
+        // `wait=1` is what the README documents; serde's bool parser would 400.
+        let uri = format!("/api/v1/bypass?url={DECODE_URL}&wait=1");
+        let (status, body) = call(
+            app,
+            Request::builder().uri(uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["destination_url"], "https://example.com/x");
+    }
+
+    #[tokio::test]
+    async fn unknown_host_is_400_and_foreign_provider_is_501() {
+        let app = router(state("", 1, 8));
+        let (status, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/bypass")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"url": "https://unknown.invalid/x"}).to_string()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["detail"].as_str().unwrap().contains("Hỗ trợ"));
+
+        let (status, body) = call(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/bypass")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"url": "https://gtraffic.io/X3BR2OQ"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert!(body["detail"].as_str().unwrap().contains("GTRAFFIC"));
+    }
+
+    #[tokio::test]
+    async fn auth_accepts_header_and_query_key() {
+        let app = router(state("secret", 1, 8));
+        let payload = json!({ "url": DECODE_URL }).to_string();
+
+        let (status, _) = call(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/bypass")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, _) = call(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/bypass")
+                .header("content-type", "application/json")
+                .header("x-api-key", "secret")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let uri = format!("/api/v1/bypass?url={DECODE_URL}&key=secret");
+        let (status, _) = call(
+            app,
+            Request::builder().uri(uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn missing_job_is_404_and_batch_is_capped() {
+        let app = router(state("", 1, 8));
+        let (status, _) = call(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/jobs/nope")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let urls: Vec<String> = (0..51).map(|i| format!("{DECODE_URL}-{i}")).collect();
+        let (status, body) = call(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/batch")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "urls": urls }).to_string()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["detail"].as_str().unwrap().contains("50"));
+    }
+}

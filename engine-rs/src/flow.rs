@@ -1014,7 +1014,7 @@ pub fn extract_alias(input: &str) -> Option<String> {
     let after = trimmed
         .split("/go/")
         .nth(1)
-        .or_else(|| trimmed.split('/').last())
+        .or_else(|| trimmed.split('/').next_back())
         .unwrap_or("");
     let alias: String = after
         .chars()
