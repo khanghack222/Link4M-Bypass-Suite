@@ -759,3 +759,44 @@ khi gọi từ trong sync Playwright context. Budget Node nâng 25 s → **45 s*
   crash ở `setUpClass`. Cần mirror có ≥ 1.3.0 (hoặc wheel tự build) mới chạy.
 
 Tier 1/2/3/5 vẫn xanh sau các thay đổi turnstile.
+
+## [Handoff] 2026-11-26 (6) — BBMKTS live: PASS sau khi sửa Turnstile
+
+Chạy `BYPASS_RUN_ID=live-bbmkts3 python -m src.bypass_api --url
+https://bbmkts.com/go/3p82s --json --timeout 540`:
+
+```
+status=success
+provider=BBMKTS
+engine=BBMKTS
+duration_ms=285350.0   (~4 m 45 s)
+destination=https://dash.nvnmc.cloud/earn/callback/a7d6c48…81039b
+stage=browser
+```
+
+Diễn biến:
+
+| Thời điểm | Việc |
+|---|---|
+| 02:15:17 | attempt 1, Turnstile solved bằng Node + Chrome trong 22.3 s |
+| 02:15:49 | campaign "Website Đối tác ngoài (Countdown Button)"; tab 2 nút `#bb` trả "Vui lòng thử lại!" suốt 95 s → reroll |
+| 02:16–02:19 | attempt 2 cùng kiểu, reroll |
+| 02:19:32 | attempt 3, Turnstile solved 26.4 s |
+| 02:19:34 | campaign "VƯỢT THẲNG" — mã mặc định `trafficseo2025` từ DOM bước 5 |
+| 02:19:42 | submit, giải mã URL đích từ trang file |
+| 02:19:45 | `success`, destination in ra, exit 0 |
+
+Đây là **Tier 4 pass đầu tiên của một provider khác Link4M** qua
+`runner_registry.execute()` — chứng minh chuỗi face → registry → adapter →
+engine → envelope chạy end-to-end, không chỉ decode.
+
+Điểm cần biết:
+
+- Turnstile là điều kiện tiên quyết; trước fix (thiếu `patchright` trong
+  `package.json`) BBMKTS không bao giờ qua được bước này.
+- Attempt 1–2 fail ở phía sponsor ("Vui lòng thử lại!"), không phải ở
+  runner; cơ chế reroll 3 lần cứu được. Link demo vẫn còn sống nhưng campaign
+  đổi theo lần tải.
+- Ocilar cloud vẫn unreachable trên box này; Node + Chrome local gánh toàn bộ.
+- Tổng 285 s nằm trong budget 480 s của `JOB_TIMEOUT`/service và 540 s của lần
+  chạy này.
