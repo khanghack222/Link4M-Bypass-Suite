@@ -53,3 +53,8 @@ server-rs/target/
 
 # Rust build tree
 server-rs/target/
+
+# Native engine build tree, model, chrome profile
+engine-rs/target/
+engine-rs/models/*.bin
+engine-rs/data/
