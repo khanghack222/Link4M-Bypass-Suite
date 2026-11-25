@@ -558,3 +558,36 @@ Kết quả đo offline (máy này, không mạng, không browser):
 
 Chưa làm (cần mạng/browser, ngoài gate offline): Tier 4 live cho từng provider,
 và việc hạ timeout pre-flight GTraffic 4 s → 3 s (giữ nguyên vì chưa đo lại).
+
+## [Handoff] 2026-11-26 — Tier 4 live: kết quả đo, và engine-rs
+
+### engine-rs (native) — `15b4f67`
+
+- `wait_for_page` trước đây coi `#captcha-html-wrapper` trần là "đã sẵn sàng".
+  Wrapper đó có cả trên trang khung chiến dịch trước khi form mã render, nên
+  flow giải captcha 4 lần (token 2382–2510) trong **4 m 55 s** rồi vẫn fail vì
+  không có mã. Nay chỉ sẵn sàng khi `input[name=password]` hiển thị, hoặc form
+  có mặt **và** wrapper có mặt.
+- Hệ quả: `--once 2kCcIqn` trên campaign mới trả `needs_code` sau **10 s**
+  (release) / 11.8 s (debug) thay vì đốt 5 phút.
+- `GET /api/v1/bypass?wait=1` nhận đúng; hàng đợi đầy không còn để lại job
+  "running" ma.
+- Build sạch cần `WHISPER_DONT_GENERATE_BINDINGS=1` (tránh bindgen/libclang) và
+  `cmake` + `g++`; `engine-rs/build.sh` làm sẵn. Release ~3 phút, binary 7.1 MB.
+- `--check` OK với Chrome 158: `check ok: chrome + cdp + whisper`, ~18–21 s.
+- 14 unit test pass. Chưa có integration test cho HTTP API (cần Asr thật để dựng
+  `ApiState`).
+
+### Python full flow — vẫn chưa qua live
+
+Chạy `src/core/link4m_engine.py 2kCcIqn --json` trên box này:
+
+| Lần | Cấu hình | Kết quả |
+|---|---|---|
+| 1 | không đặt `L4M_HEADLESS` | audio fail → vào chờ lưới ảnh thủ công → timeout 560 s |
+| 2 | `L4M_HEADLESS=1` | giải audio ra token 2489, `[server] không bắt được response`, rồi chuyển sang quét sponsor (OCR `tylekeopro.site`) → timeout 420 s |
+
+Kết luận: phần quest/sponsor + submit vẫn là chỗ hỏng, không phải phần nhận diện
+trang. Đây là lý do engine native chỉ chạy fast path và trả `needs_code`; muốn
+native chạy trọn link mới cần port quest (chọn sponsor → OCR ảnh hướng dẫn →
+lấy mã → countdown) sang Rust.
