@@ -35,7 +35,7 @@ python -m src.bypass_api --url https://link4m.net/go/2kCcIqn
 # ép engine + xuất JSON máy đọc
 python -m src.bypass_api --engine OCTOLINK --json --url https://octolink.vip/abc
 
-# npm
+# npm (script gọi `python` trên PATH — kích hoạt .venv trước)
 npm run list
 npm run bypass -- --url https://bbmkts.com/go/3p82s --timeout 480
 ```
