@@ -1,0 +1,39 @@
+# Chạy từ thư mục gốc repo:
+#   docker compose -f server-rs/deploy/docker-compose.yml up -d --build
+#
+# Image build từ repo root (context: .) vì cần cả cây Python engine.
+
+services:
+  bypass:
+    build:
+      context: ../..
+      dockerfile: server-rs/Dockerfile
+    image: bypass-server:rs
+    container_name: bypass-server-rs
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    shm_size: "1gb"
+    # Chrome CDP cần /dev/shm rộng và không bị seccomp chặn
+    security_opt:
+      - seccomp:unconfined
+    volumes:
+      - bypass-data:/app/data
+      - bypass-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          # 1 Chrome + 1 engine Python: 2GB là mức tối thiểu thực tế
+          memory: 2g
+
+volumes:
+  bypass-data:
+  bypass-logs:

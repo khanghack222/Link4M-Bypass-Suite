@@ -1,0 +1,33 @@
+[Unit]
+Description=Link Bypass Server (Rust façade)
+Documentation=file:///opt/link4m/server-rs/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=l4m
+Group=l4m
+WorkingDirectory=/opt/link4m
+EnvironmentFile=/opt/link4m/server-rs/.env
+ExecStart=/usr/local/bin/bypass-server
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+# Chrome + engine Python cần không gian địa chỉ bình thường nhưng vẫn siết phần còn lại
+NoNewPrivileges=yes
+PrivateTmp=no
+ProtectSystem=full
+ProtectHome=no
+ReadWritePaths=/opt/link4m/data /opt/link4m/logs /tmp
+
+LimitNOFILE=65535
+MemoryMax=2G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bypass-server
+
+[Install]
+WantedBy=multi-user.target

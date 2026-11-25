@@ -47,3 +47,9 @@ extracted_code.txt
 final_result_screen.png
 proxies.txt
 .aider*
+
+# Rust build tree
+server-rs/target/
+
+# Rust build tree
+server-rs/target/
