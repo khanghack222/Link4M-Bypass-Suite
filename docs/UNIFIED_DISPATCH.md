@@ -93,3 +93,25 @@ Trên box bị chặn tải browser của patchright, Chrome hệ thống là đ
 
 `server-rs` và `engine-rs` dùng chung envelope JSON với `service/app.py`; client
 đổi backend mà không phải sửa parser.
+
+## Façade `server-rs` gọi native `engine-rs`
+
+`server-rs` mặc định spawn Python cho mọi job. Đặt `L4M_NATIVE_URL` để đẩy riêng
+`link4m` sang engine native qua HTTP loopback:
+
+```bash
+cd engine-rs && PORT=8080 ./target/release/l4m-engine
+cd ../server-rs && L4M_NATIVE_URL=127.0.0.1:8080 ./target/release/bypass-server
+```
+
+| Trường hợp | Hành vi |
+|---|---|
+| `L4M_NATIVE_URL` rỗng (default) | mọi provider → Python như cũ |
+| `link4m` + native bật | POST `/api/v1/bypass` tới native |
+| provider khác `link4m` | luôn Python (Rust không có flow) |
+| native transport lỗi | log warn, fallback `src.bypass_api` |
+| native trả `failed`/`timeout` | báo đúng lỗi đó, **không** retry Python |
+
+Client nằm ở `server-rs/src/native.rs`: HTTP/1.1 viết tay trên
+`tokio::net::TcpStream`, `Connection: close`, body cap 1 MB, đọc được
+`content-length` lẫn `chunked`. Không thêm crate nào vào `Cargo.toml`.

@@ -22,6 +22,9 @@ pub struct Config {
     pub python: String,
     pub l4m_engine: String,
     pub headless: bool,
+    /// `L4M_NATIVE_URL` — base URL of a running `l4m-engine`. `None` leaves
+    /// every job on the Python subprocess path, which stays the default.
+    pub native: Option<crate::native::NativeClient>,
 }
 
 fn env_string(name: &str, default: &str) -> String {
@@ -115,6 +118,10 @@ impl Config {
             python,
             l4m_engine: env_string("L4M_ENGINE", "cdp").to_lowercase(),
             headless: env_bool("HEADLESS", true),
+            native: crate::native::NativeClient::from_env_value(
+                &env_string("L4M_NATIVE_URL", ""),
+                &env_string("NATIVE_API_KEY", &env_string("API_KEY", "")),
+            ),
         }
     }
 
@@ -125,6 +132,7 @@ impl Config {
             format!("repo={}", self.repo.display()),
             format!("python={}", self.python),
             format!("l4m_engine={}", self.l4m_engine),
+            format!("l4m_native={}", self.native.as_ref().map_or_else(|| "off".to_string(), |client| client.base())),
             format!("workers={}", self.workers),
             format!("job_timeout={}s", self.job_timeout),
             format!("max_tries={}", self.max_tries),

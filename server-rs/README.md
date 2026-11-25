@@ -60,14 +60,16 @@ curl -s localhost:8080/api/v1/supported
 
 ## 3. Test
 
-### 3.1 Test Rust (29 test, không cần mạng, không cần Chrome)
+### 3.1 Test Rust (37 test, không cần mạng, không cần Chrome)
 
 ```bash
 cargo test
 ```
 
-- 13 unit test: phân loại host, alias (`LINK999 → OCTOLINK`), slug `parse_key`,
-  decode base64/percent + chống self-reference, parser stdout kể cả rác.
+- 21 unit test: phân loại host, alias (`LINK999 → OCTOLINK`), slug `parse_key`,
+  decode base64/percent + chống self-reference, parser stdout kể cả rác,
+  mapping envelope của native engine, và client HTTP loopback (URL form, chunked,
+  non-2xx, POST thật vào một listener tạm, connection refused không treo).
 - 16 integration test (`tests/api_contract.rs`): `/health`, `/api/v1/supported`,
   fast-path decode, provider lạ → 400, URL rỗng → 400, thiếu field → 422, auth
   header/query, batch 51 URL → 400, batch decode, job không tồn tại → 404,
@@ -208,6 +210,8 @@ không cần auth.
 | `L4M_REPO` | tự dò | gốc repo Python |
 | `PYTHON` | `<repo>/.venv/bin/python` → `python3` | interpreter chạy engine |
 | `L4M_ENGINE` | `cdp` | `cdp` (Chrome sẵn) hoặc `legacy` (Playwright) |
+| `L4M_NATIVE_URL` | rỗng | base URL của `l4m-engine` (engine-rs), vd `127.0.0.1:8080`; rỗng = luôn dùng Python |
+| `NATIVE_API_KEY` | `API_KEY` | key gửi kèm khi gọi native engine |
 | `L4M_HEADLESS` | `1` | thêm `--headless=new` cho Chrome |
 | `L4M_MANUAL_GRID` | `0` | `1` = cho phép chờ index lưới captcha thủ công khi headless |
 | `WORKERS` | `1` | số engine chạy song song; **mỗi worker = 1 Chrome + ~700MB** |
@@ -220,6 +224,31 @@ không cần auth.
 
 `WORKERS` > 1 chỉ nên bật khi RAM đủ và mỗi engine có Chrome riêng. Trên box 2GB
 để `1`.
+
+### 5.1 Chạy Link4M bằng engine native (`engine-rs`)
+
+`engine-rs` bind HTTP cùng envelope; façade nói chuyện với nó qua loopback thay
+vì spawn Python. Chỉ `link4m` được định tuyến native — 5 provider còn lại vẫn đi
+đường Python vì bên Rust không có flow cho chúng.
+
+```bash
+# 1) engine native (cần Chrome + model whisper)
+cd engine-rs && PORT=8080 ./target/release/l4m-engine
+# 2) façade trỏ vào nó
+L4M_NATIVE_URL=127.0.0.1:8080 ./target/release/bypass-server
+```
+
+`--check` in `l4m_native=http://127.0.0.1:8080` khi đã cấu hình.
+
+- Native engine trả `status=success|failed|timeout`. `success` phải có
+  `destination_url`, nếu không thì tính là thất bại.
+- Lỗi transport (connection refused, timeout, body rác) → façade log
+  `native engine không dùng được, rơi về Python` và chạy `src.bypass_api` như cũ.
+  Một kết quả `failed`/`timeout` từ native là phán quyết cuối, **không** retry
+  sang Python (tránh chạy hai browser cho cùng một job).
+- Client là HTTP/1.1 viết tay trên `tokio::net::TcpStream` (`src/native.rs`):
+  không thêm dependency, chỉ dùng cho loopback, body giới hạn 1 MB, hỗ trợ
+  `content-length` và `chunked`.
 
 ## 6. Deploy
 

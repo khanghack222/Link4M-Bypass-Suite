@@ -303,6 +303,12 @@ async fn do_bypass(
     }
 }
 
+/// Native `l4m-engine` only implements Link4M; the other providers have no Rust
+/// flow and must keep the Python subprocess.
+fn qualifies_for_native(cfg: &Config, provider: &str) -> bool {
+    cfg.native.is_some() && provider.eq_ignore_ascii_case("link4m")
+}
+
 async fn run_job(state: Arc<AppState>, id: String) {
     let Some(job) = state.get_job(&id).await else {
         return;
@@ -324,13 +330,29 @@ async fn run_job(state: Arc<AppState>, id: String) {
 
     for attempt in 1..=state.cfg.max_tries {
         state.update_job(&id, |job| job.tries = attempt).await;
-        let outcome = engine::run_engine(
-            &state.cfg,
-            &job.url,
-            Some(&job.provider),
-            state.cfg.job_timeout,
-        )
-        .await;
+        let outcome = if qualifies_for_native(&state.cfg, &job.provider) {
+            match engine::run_native(&state.cfg, &job.url, state.cfg.job_timeout).await {
+                Ok(outcome) => outcome,
+                Err(reason) => {
+                    tracing::warn!(reason = %reason, "native engine không dùng được, rơi về Python");
+                    engine::run_engine(
+                        &state.cfg,
+                        &job.url,
+                        Some(&job.provider),
+                        state.cfg.job_timeout,
+                    )
+                    .await
+                }
+            }
+        } else {
+            engine::run_engine(
+                &state.cfg,
+                &job.url,
+                Some(&job.provider),
+                state.cfg.job_timeout,
+            )
+            .await
+        };
         if outcome.success {
             success = true;
             destination = outcome.destination;

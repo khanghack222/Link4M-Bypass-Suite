@@ -122,6 +122,57 @@ pub fn parse_output(stdout: &str, stderr: &str, exit_success: bool) -> EngineOut
     )
 }
 
+/// Map a native `l4m-engine` envelope onto the façade outcome.
+///
+/// `status` is the only field the façade branches on: `success` must carry a
+/// destination, everything else (`failed`, `error`, `timeout`) is a real answer
+/// from the engine and is reported as-is rather than retried on the Python path.
+pub fn outcome_from_native(value: &Value) -> EngineOutcome {
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("failed")
+        .trim()
+        .to_ascii_lowercase();
+    let destination = destination_field(value);
+    if status == "success" && destination.is_some() {
+        return EngineOutcome {
+            success: true,
+            destination,
+            provider: string_field(value, "provider"),
+            stage: Some("native".to_string()),
+            ..Default::default()
+        };
+    }
+    let code = if status == "timeout" {
+        "ERR_ENGINE_TIMEOUT"
+    } else {
+        "ERR_DESTINATION_NOT_FOUND"
+    };
+    let message = string_field(value, "error")
+        .or_else(|| string_field(value, "detail"))
+        .unwrap_or_else(|| format!("native engine trả status={status}"));
+    EngineOutcome {
+        success: false,
+        provider: string_field(value, "provider"),
+        stage: Some("native".to_string()),
+        error_code: Some(code.to_string()),
+        error_message: Some(message),
+        ..Default::default()
+    }
+}
+
+/// Try the native engine first. `Err` is a transport problem (refused, timeout,
+/// garbage body) and the caller may fall back to Python; a returned outcome is
+/// the engine's verdict and is final.
+pub async fn run_native(cfg: &Config, url: &str, timeout_secs: u64) -> Result<EngineOutcome, String> {
+    let Some(client) = cfg.native.as_ref() else {
+        return Err("L4M_NATIVE_URL chưa đặt".to_string());
+    };
+    let value = client.bypass(url, timeout_secs).await?;
+    Ok(outcome_from_native(&value))
+}
+
 pub async fn run_engine(
     cfg: &Config,
     url: &str,
@@ -235,5 +286,41 @@ mod tests {
         assert!(!outcome.success);
         assert_eq!(outcome.error_code.as_deref(), Some("ERR_ENGINE_EXIT"));
         assert_eq!(outcome.error_message.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn native_success_envelope_maps_to_destination() {
+        let value: Value = serde_json::from_str(
+            r#"{"status":"success","destination_url":"https://example.com/n","provider":"link4m","cached":false}"#,
+        )
+        .unwrap();
+        let outcome = outcome_from_native(&value);
+        assert!(outcome.success);
+        assert_eq!(outcome.destination.as_deref(), Some("https://example.com/n"));
+        assert_eq!(outcome.stage.as_deref(), Some("native"));
+    }
+
+    #[test]
+    fn native_failures_keep_their_code() {
+        let failed: Value = serde_json::from_str(
+            r#"{"status":"failed","destination_url":null,"error":"needs_code: nhập mã"}"#,
+        )
+        .unwrap();
+        let outcome = outcome_from_native(&failed);
+        assert!(!outcome.success);
+        assert_eq!(outcome.error_code.as_deref(), Some("ERR_DESTINATION_NOT_FOUND"));
+        assert!(outcome.error_message.as_deref().unwrap().starts_with("needs_code"));
+
+        let timeout: Value = serde_json::from_str(r#"{"status":"timeout"}"#).unwrap();
+        assert_eq!(
+            outcome_from_native(&timeout).error_code.as_deref(),
+            Some("ERR_ENGINE_TIMEOUT")
+        );
+    }
+
+    #[test]
+    fn success_without_destination_is_not_success() {
+        let value: Value = serde_json::from_str(r#"{"status":"success","destination_url":null}"#).unwrap();
+        assert!(!outcome_from_native(&value).success);
     }
 }

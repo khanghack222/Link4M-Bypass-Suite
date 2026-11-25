@@ -37,6 +37,7 @@ fn test_config(api_key: &str) -> Config {
         python: "python3".to_string(),
         l4m_engine: "cdp".to_string(),
         headless: true,
+        native: None,
     }
 }
 
