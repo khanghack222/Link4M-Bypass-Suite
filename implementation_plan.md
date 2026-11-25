@@ -725,3 +725,37 @@ không phải test hành vi — không sửa test, không bịa fixture. Ghi nh�
 - Cả bốn face gọi đúng một cửa dispatch: `runner_registry.execute()` trong
   `auto_bypass.py:125`, `src/cli.py:89`, `src/bypass_api.py:91`,
   `service/worker.py:32`.
+
+## [Handoff] 2026-11-26 (5) — Turnstile mở được, và vì sao Tier 4 vẫn không qua
+
+### Turnstile solver trước đây không chạy được — không phải do Cloudflare
+
+Ba lỗi chồng nhau, đã sửa:
+
+1. `package.json` **không khai báo `patchright`** dù `turnstile_solver.js` require
+   nó → mọi lần gọi Node chết ở `MODULE_NOT_FOUND`, BBMKTS rơi xuống Python rồi
+   xuống Ocilar cloud (box này chặn IP `api.ocilar.com`).
+2. `chromium.launch` của patchright không có browser (download của patchright bị
+   chặn). Solver JS nay dò `CHROME_BIN` → Chrome hệ thống → đường dẫn Windows.
+3. `get_turnstile_token()` gọi `sync_playwright()` trong thread đang giữ một sync
+   Playwright context (BBMKTS runner) → `Sync API inside the asyncio loop`. Nay
+   chạy solve trong thread riêng khi thấy event loop.
+
+Đo lại: Node solver trả token **773 ký tự** sau **22.8 s** độc lập, **16.7 s**
+khi gọi từ trong sync Playwright context. Budget Node nâng 25 s → **45 s** vì
+25 s cắt ngang cold start và để lại browser mồ côi (EPIPE).
+
+### Tier 4 vẫn không thể xanh trên box này
+
+- `test_tier4_rapidocr_sponsor.py` cần `adv.json` (đã purge ở `d7de58c`).
+  Đã lấy được response thật qua `link4m_http.Session(alias).open().advertise()`
+  (`success=true`, `html` 3609 ký tự, 1 ảnh base64) — nhưng đó là campaign
+  "TRỰC TIẾP", không chứa keyword mà test assert (`keo nha cai`/`tylenhacai`).
+  Không bịa fixture.
+- Nặng hơn: `requirements.txt` ghi `rapidocr_onnxruntime>=1.3.0` nhưng mirror
+  pip của box chỉ có **1.2.3**. Bản 1.2.3 có bug: truyền `det_limit_side_len`
+  mà không truyền `det_model_path` → `KeyError: 'model_path'` trong
+  `update_det_params`. Test gọi đúng kiểu đó, nên kể cả có `adv.json` test vẫn
+  crash ở `setUpClass`. Cần mirror có ≥ 1.3.0 (hoặc wheel tự build) mới chạy.
+
+Tier 1/2/3/5 vẫn xanh sau các thay đổi turnstile.
