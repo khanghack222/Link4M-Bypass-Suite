@@ -16,7 +16,7 @@ def test_classifiers():
         "https://layma.net/pohWNZgba": "LAYMA",
         "https://trafficvn.net/get/MFGm2tAlcSn": "TRAFFICVN",
         "https://trafficvn.com/get/123": "TRAFFICVN",
-        "https://octolink.vip/abc": "LINK999",
+        "https://octolink.vip/abc": "OCTOLINK",
         "https://link4m.co/go/abc": "LINK4M",
         "https://link4m.net/go/2kCcIqn": "LINK4M"
     }

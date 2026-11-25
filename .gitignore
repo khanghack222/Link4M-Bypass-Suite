@@ -41,6 +41,8 @@ data/service.db-wal
 data/service.pid
 logs/
 destination_url.txt
+destination_url-*.txt
+DESTINATION_FINAL_URL.txt
 extracted_code.txt
 final_result_screen.png
 proxies.txt

@@ -3,21 +3,24 @@
 """
 ⚡ UNIFIED BASE RUNNER IMPLEMENTATIONS FOR LINK4M BYPASS SUITE ⚡
 Wraps domain runners with pre-flight fast paths and standardized execution.
+Engine call signatures live in ``engine_adapters``; these classes stay declarative.
 """
 
-import urllib.request
-import urllib.parse
-import json
 import base64
+import os
+import urllib.parse
 from typing import Optional
 
-from base_runner import BaseBypassRunner, BypassResult
+from base_runner import BaseBypassRunner
 from runner_registry import register_runner
 from errors import DestinationNotFound
+import engine_adapters
+
 
 @register_runner("BBMKTS")
 class BBMKTSRunner(BaseBypassRunner):
     engine_name = "BBMKTS"
+    provider_key = "BBMKTS"
 
     def pre_flight(self, target_url: str) -> Optional[str]:
         if "/go/file/" in target_url and any(k in target_url.lower() for k in ["bbmkts", "bbmkt", "yeumoney"]):
@@ -58,17 +61,20 @@ class BBMKTSRunner(BaseBypassRunner):
         return None
 
     def execute_flow(self, page, context, target_url: str) -> str:
-        import bbmkts_runner
-        res = bbmkts_runner.run(target_url, headless=True)
+        res = engine_adapters.run_bbmkts(target_url, headless=True)
         if res and self.is_valid_destination(res):
             return res
         raise DestinationNotFound(f"BBMKTS failed to extract destination for {target_url}")
 
+
 @register_runner("GTRAFFIC")
 class GTrafficRunner(BaseBypassRunner):
     engine_name = "GTRAFFIC"
+    provider_key = "GTRAFFIC"
 
     def pre_flight(self, target_url: str) -> Optional[str]:
+        import json
+        import urllib.request
         try:
             is_direct = "direct.gtraffic.io" in target_url or "dr-client" in target_url
             slug = target_url.split("?")[0].split("#")[0].strip().rstrip("/").split("/")[-1]
@@ -100,15 +106,16 @@ class GTrafficRunner(BaseBypassRunner):
         return None
 
     def execute_flow(self, page, context, target_url: str) -> str:
-        import gtraffic_runner
-        res = gtraffic_runner.run(target_url, headless=True)
+        res = engine_adapters.run_gtraffic(target_url, headless=True)
         if res and self.is_valid_destination(res):
             return res
         raise DestinationNotFound(f"GTraffic failed to extract destination for {target_url}")
 
+
 @register_runner("LINK4M")
 class Link4MRunner(BaseBypassRunner):
     engine_name = "LINK4M"
+    provider_key = "LINK4M"
 
     def pre_flight(self, target_url: str) -> Optional[str]:
         # Fast extraction if link4m passes target via direct query or redirect parameter
@@ -132,26 +139,37 @@ class Link4MRunner(BaseBypassRunner):
         return None
 
     def execute_flow(self, page, context, target_url: str) -> str:
-        import bypass
-        res = bypass.run(target_url, headless=True)
+        if os.environ.get("L4M_ENGINE", "legacy").strip().lower() == "cdp":
+            import runner_registry
+            parsed = runner_registry.parse_key(target_url)
+            alias = parsed[1] if parsed else ""
+            if alias:
+                res = engine_adapters.run_link4m_cdp(alias)
+                if res and self.is_valid_destination(res):
+                    return res
+        res = engine_adapters.run_link4m_legacy(target_url, headless=True,
+                                                proxy=getattr(self, "proxy", None))
         if res and self.is_valid_destination(res):
             return res
         raise DestinationNotFound(f"Link4M failed to extract destination for {target_url}")
 
+
 @register_runner("LAYMA")
 class LayMaRunner(BaseBypassRunner):
     engine_name = "LAYMA"
+    provider_key = "LAYMA"
 
     def execute_flow(self, page, context, target_url: str) -> str:
-        import layma_runner
-        res = layma_runner.run(target_url, headless=True)
+        res = engine_adapters.run_layma(target_url, headless=True)
         if res and self.is_valid_destination(res):
             return res
         raise DestinationNotFound(f"LayMa failed to extract destination for {target_url}")
 
+
 @register_runner("OCTOLINK")
 class OctoLinkRunner(BaseBypassRunner):
     engine_name = "OCTOLINK"
+    provider_key = "OCTOLINK"
 
     def pre_flight(self, target_url: str) -> Optional[str]:
         # Fast decode nếu là link direct /go/file/ hoặc có encoded parameter
@@ -165,32 +183,19 @@ class OctoLinkRunner(BaseBypassRunner):
         return None
 
     def execute_flow(self, page, context, target_url: str) -> str:
-        import subprocess
-        import os
-        import sys
-        octo_js = os.path.join(os.path.dirname(os.path.abspath(__file__)), "octolink_runner.js")
-        if os.path.exists(octo_js):
-            try:
-                proc = subprocess.run(["node", octo_js, target_url], capture_output=True, text=True, timeout=120)
-                dest_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "destination_url.txt")
-                if os.path.exists(dest_file):
-                    with open(dest_file, "r", encoding="utf-8") as f:
-                        dest = f.read().strip()
-                        if dest and self.is_valid_destination(dest):
-                            return dest
-            except Exception:
-                pass
+        res = engine_adapters.run_octolink(target_url, headless=True)
+        if res and self.is_valid_destination(res):
+            return res
         raise DestinationNotFound(f"OctoLink failed to extract destination for {target_url}")
+
 
 @register_runner("TRAFFICVN")
 class TrafficVNRunner(BaseBypassRunner):
     engine_name = "TRAFFICVN"
+    provider_key = "TRAFFICVN"
 
     def execute_flow(self, page, context, target_url: str) -> str:
-        import trafficvn_runner
-        res = trafficvn_runner.run(target_url, headless=True)
+        res = engine_adapters.run_trafficvn(target_url, headless=True)
         if res and self.is_valid_destination(res):
             return res
         raise DestinationNotFound(f"TrafficVN failed to extract destination for {target_url}")
-
-

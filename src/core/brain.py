@@ -121,21 +121,18 @@ class FlowDirector:
         self.data = data_ctrl
 
     def determine_best_engine(self, url: str) -> str:
-        """Phân loại và điều hướng runner với trọng số học từ lịch sử."""
-        u = url.lower()
-        if any(k in u for k in ["link999.app", "link999", "uptolink", "octolink", "linkhuongdan"]):
-            return "LINK999"
-        if any(k in u for k in ["gtraffic.io", "direct.gtraffic.io", "dr-client"]):
-            return "GTRAFFIC"
-        if any(k in u for k in ["bbmkts.com", "bbmkts", "yeumoney.com", "yeumoney"]):
-            return "BBMKTS"
-        if any(k in u for k in ["layma.net", "layma"]):
-            return "LAYMA"
-        if any(k in u for k in ["trafficvn.net", "trafficvn.com", "trafficvn"]):
-            return "TRAFFICVN"
-        if any(k in u for k in ["link4m.", "link4m", "link4"]):
-            return "LINK4M"
-        return "LINK4M"
+        """Phân loại và điều hướng runner qua provider registry duy nhất.
+
+        Giữ hợp đồng cũ: host lạ rơi về LINK4M (caller không bao giờ thấy
+        ``GENERIC``), còn alias lịch sử như ``LINK999`` chuẩn hoá thành
+        ``OCTOLINK``.
+        """
+        try:
+            import runner_registry
+            k = runner_registry.classify(url)
+        except Exception:
+            k = "GENERIC"
+        return "LINK4M" if k in (None, "GENERIC") else k
 
     def plan_sponsor_strategy(self, candidates: List[str]) -> List[Tuple[str, str, int]]:
         """

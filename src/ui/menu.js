@@ -4,14 +4,8 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
-const SCRIPT_PATH = path.join(ROOT_DIR, "src", "core", "bypass.py");
-const TRAFFICVN_RUNNER = path.join(ROOT_DIR, "src", "core", "trafficvn_runner.py");
-const BBMKTS_RUNNER = path.join(ROOT_DIR, "src", "core", "bbmkts_runner.py");
-const GTRAFFIC_RUNNER = path.join(ROOT_DIR, "src", "core", "gtraffic_runner.py");
-const LAYMA_RUNNER = path.join(ROOT_DIR, "src", "core", "layma_runner.py");
 const DEST_FILE = path.join(ROOT_DIR, "destination_url.txt");
 const CODE_FILE = path.join(ROOT_DIR, "extracted_code.txt");
-const OCTO_RUNNER = path.join(ROOT_DIR, "src", "core", "octolink_runner.js");
 
 // Bảng màu Cyber / Synthwave sống động rực rỡ (TrueColor ANSI)
 const c = {
@@ -305,43 +299,80 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function runBypassLink4M(targetUrl, headless = currentHeadless) {
+// ------------------------------------------------------------------ unified runner
+// Mọi menu/engine đi qua đúng một cửa: python -m src.bypass_api.
+// Engine tự nhận diện host, nên menu không còn bảng isXxxUrl riêng.
+
+const ENGINE_LABELS = {
+    LINK4M:    { badge: "LINK4M FULL AUTOMATION", note: "WHISPER AI + RAPIDOCR", color: "bgPurple" },
+    OCTOLINK:  { badge: "OCTOLINK ULTRA ENGINE", note: "CANVAS PHYSICS + DEVICE GATE", color: "bgPink" },
+    BBMKTS:    { badge: "BBMKTS AUTONOMOUS ENGINE", note: "DUAL-TAB + ROUTE PATCH", color: "bgBlue" },
+    GTRAFFIC:  { badge: "GTRAFFIC MOBILE ENGINE", note: "MOBILE VIEWPORT + AUTO SOLVER", color: "bgOrange" },
+    LAYMA:     { badge: "LAYMA QCAPTCHA ENGINE", note: "STEALTH + HSV VISION", color: "bgRed" },
+    TRAFFICVN: { badge: "TRAFFICVN ENGINE", note: "BETA", color: "bgGreen" },
+    DECODE:    { badge: "FAST DECODE", note: "ZERO BROWSER", color: "bgYellow" },
+};
+
+function runEngine(targetUrl, headless = currentHeadless, engineKey = null) {
     return new Promise((resolve) => {
         clearScreen();
         printBanner();
 
+        const label = ENGINE_LABELS[(engineKey || "").toUpperCase()] || {
+            badge: engineKey ? `${engineKey} ENGINE` : "AUTO-DETECT ENGINE",
+            note: "UNIFIED PROVIDER REGISTRY",
+            color: "bgCyan",
+        };
         const startTime = Date.now();
-        console.log(`  ${c.bgPurple} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.neonCyan}LINK4M FULL AUTOMATION (WHISPER AI + RAPIDOCR)${c.reset}`);
+        console.log(`  ${c[label.color] || c.bgCyan} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.neonCyan}${label.badge}${c.reset}  ${c.dim}${c.softGray}(${label.note})${c.reset}`);
         console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
+        console.log(`  ${c.neonPurple}╭───${c.reset} ${c.bgPurple} 🎯 MỤC TIÊU ${c.reset}  ${c.bold}${c.neonCyan}${targetUrl}${c.reset}`);
 
         if (fs.existsSync(DEST_FILE)) {
             try { fs.unlinkSync(DEST_FILE); } catch (e) {}
         }
 
-        let capturedDestUrl = null;
-        const baseArgs = fs.existsSync(SCRIPT_PATH)
-            ? ["-u", "-X", "utf8", SCRIPT_PATH, targetUrl]
-            : ["-u", "-X", "utf8", "-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import bypass; bypass.run(sys.argv[1])", targetUrl];
-        const pythonArgs = headless ? [...baseArgs, "--headless"] : baseArgs;
+        const args = ["-u", "-X", "utf8", "-m", "src.bypass_api", "--url", targetUrl, "--json"];
+        if (engineKey) args.push("--engine", String(engineKey).toUpperCase());
+        if (!headless) args.push("--head");
 
-        const proc = spawn(getPythonPath(), pythonArgs, {
+        const proc = spawn(getPythonPath(), args, {
             cwd: ROOT_DIR,
             stdio: ["inherit", "pipe", "pipe"],
+            env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUNBUFFERED: "1" },
         });
 
-        proc.stdout.on("data", (data) => {
-            const lines = data.toString("utf-8").split(/\r?\n/);
-            for (const line of lines) {
-                if (line.includes("FINAL DESTINATION URL:")) {
-                    capturedDestUrl = line.split("FINAL DESTINATION URL:")[1].trim();
-                } else if (line.includes("DESTINATION URL INTERCEPTED FROM API:")) {
-                    capturedDestUrl = line.split("DESTINATION URL INTERCEPTED FROM API:")[1].trim();
-                }
-                const formatted = formatLogLine(line);
-                if (formatted) console.log(formatted);
+        let capturedDestUrl = null;
+        let payload = null;
+
+        const handleLine = (raw) => {
+            const line = raw.replace(/\r$/, "");
+            if (!line.trim()) return;
+            if (line.startsWith("__BYPASS_JSON__")) {
+                try { payload = JSON.parse(line.slice("__BYPASS_JSON__".length)); } catch (e) {}
+                return;
             }
-        });
+            if (line.includes("FINAL DESTINATION URL:")) {
+                capturedDestUrl = line.split("FINAL DESTINATION URL:")[1].trim();
+            } else if (line.includes("DESTINATION URL INTERCEPTED FROM API:")) {
+                capturedDestUrl = line.split("DESTINATION URL INTERCEPTED FROM API:")[1].trim();
+            }
+            const formatted = formatLogLine(line);
+            if (formatted) console.log(formatted);
+        };
 
+        const pipeLines = (stream) => {
+            let buf = "";
+            stream.on("data", (data) => {
+                buf += data.toString("utf-8");
+                const parts = buf.split(/\r?\n/);
+                buf = parts.pop();
+                for (const line of parts) handleLine(line);
+            });
+            stream.on("end", () => { if (buf) handleLine(buf); });
+        };
+
+        pipeLines(proc.stdout);
         proc.stderr.on("data", (data) => {
             const errStr = data.toString("utf-8").trim();
             if (errStr && !errStr.includes("DeprecationWarning")) {
@@ -351,10 +382,17 @@ function runBypassLink4M(targetUrl, headless = currentHeadless) {
 
         proc.on("close", (code) => {
             const durationSec = Math.round((Date.now() - startTime) / 1000);
-            const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
+            const finalUrl = (payload && payload.success && payload.destination_url)
+                || capturedDestUrl
+                || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
 
-            if (finalUrl && !finalUrl.includes("link4m")) {
+            if (finalUrl && /^https?:\/\//i.test(finalUrl)) {
                 showResultCard(finalUrl, durationSec);
+                if (payload && payload.provider) {
+                    console.log(`  ${c.dim}${c.softGray}Engine: ${payload.provider} · ${payload.stage || "browser"} · ${payload.cached ? "cache" : "mới"}${c.reset}\n`);
+                }
+            } else if (payload && payload.error_code) {
+                console.log(`\n  ${c.cyberYellow}⚠ ${payload.error_code}: ${payload.error_message || "chưa lấy được link đích"}${c.reset}\n`);
             } else if (code === 0) {
                 console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
             } else {
@@ -368,405 +406,10 @@ function runBypassLink4M(targetUrl, headless = currentHeadless) {
             resolve(-1);
         });
     });
-}
-
-async function runBypassOctolink(targetUrl, headless = currentHeadless) {
-    clearScreen();
-    printBanner();
-
-    const startTime = Date.now();
-    console.log(`  ${c.bgPink} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.hotPink}OCTOLINK ULTRA ENGINE (CANVAS PHYSICS + DEVICE GATE)${c.reset}`);
-    console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
-    console.log(`  ${c.neonPurple}╭───${c.reset} ${c.bgPurple} 🎯 MỤC TIÊU ${c.reset}  ${c.bold}${c.neonCyan}${targetUrl}${c.reset}`);
-
-    if (!fs.existsSync(OCTO_RUNNER)) {
-        console.log(`  ${c.crimsonRed}❌ Không tìm thấy module Octolink tại: ${OCTO_RUNNER}${c.reset}\n`);
-        return;
-    }
-
-    try {
-        const { runBypass } = require(OCTO_RUNNER);
-        const res = await runBypass(targetUrl, { headless }, (msg) => {
-            if (msg.includes("Bắt đầu")) {
-                console.log(`  ${c.neonPurple}├───${c.reset} ${c.bgBlue} 🚀 INITIATE ${c.reset}  ${c.electricBlue}${msg.replace(/^[🚀⚙️]\s*/, "")}${c.reset}`);
-            } else if (msg.includes("Hook") || msg.includes("Canvas") || msg.includes("arc")) {
-                console.log(`  ${c.neonPurple}├───${c.reset} ${c.bgPink} 🎨 CANVAS HOOK ${c.reset}  ${c.brightPink}${msg}${c.reset}`);
-            } else if (msg.includes("THÀNH CÔNG") || msg.includes("Link đích")) {
-                console.log(`  ${c.neonPurple}╰───${c.reset} ${c.bgGreen} 🎉 HOÀN TẤT ${c.reset}  ${c.mintGreen}${msg}${c.reset}`);
-            } else if (msg.includes("CẢNH BÁO") || msg.includes("Lỗi") || msg.includes("Black-holed")) {
-                console.log(`  ${c.neonPurple}│    ${c.flameOrange}⚠ ${msg}${c.reset}`);
-            } else {
-                console.log(`  ${c.neonPurple}│    ${c.softGray}• ${msg}${c.reset}`);
-            }
-        });
-
-        const durationSec = Math.round((Date.now() - startTime) / 1000);
-        if (res && res.success && res.finalUrl) {
-            showResultCard(res.finalUrl, durationSec);
-        } else {
-            console.log(`\n  ${c.cyberYellow}⚠ Quá trình kết thúc: ${res?.reason || res?.error || "Chưa lấy được link callback"}${c.reset}\n`);
-        }
-    } catch (e) {
-        console.error(`\n  ${c.crimsonRed}❌ Lỗi khi vượt Octolink: ${e.message}${c.reset}\n`);
-    }
-}
-
-function isTrafficvnUrl(u) {
-    if (!u) return false;
-    const lower = u.toLowerCase();
-    return lower.includes("trafficvn") || /trafficvn\.com/i.test(lower);
-}
-
-function runBypassTrafficVN(targetUrl, headless = currentHeadless) {
-    return new Promise((resolve) => {
-        clearScreen();
-        printBanner();
-
-        const startTime = Date.now();
-        console.log(`  ${c.bgGreen} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.mintGreen}TRAFFICVN ULTRA ENGINE (CREEPJS STEALTH + RAPIDOCR + TURNSTILE)${c.reset}`);
-        console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
-
-        if (fs.existsSync(DEST_FILE)) {
-            try { fs.unlinkSync(DEST_FILE); } catch (e) {}
-        }
-
-        let capturedDestUrl = null;
-        const baseTrafficArgs = fs.existsSync(TRAFFICVN_RUNNER)
-            ? [TRAFFICVN_RUNNER, targetUrl]
-            : ["-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import trafficvn_runner; trafficvn_runner.run(sys.argv[1])", targetUrl];
-        const pythonArgs = headless ? ["-u", "-X", "utf8", ...baseTrafficArgs, "--headless"] : ["-u", "-X", "utf8", ...baseTrafficArgs];
-
-        const proc = spawn(getPythonPath(), pythonArgs, {
-            cwd: ROOT_DIR,
-            stdio: ["inherit", "pipe", "pipe"],
-        });
-
-        proc.stdout.on("data", (data) => {
-            const lines = data.toString("utf-8").split(/\r?\n/);
-            for (const line of lines) {
-                if (line.includes("FINAL DESTINATION URL:")) {
-                    capturedDestUrl = line.split("FINAL DESTINATION URL:")[1].trim();
-                } else if (line.includes("DESTINATION URL INTERCEPTED FROM API:")) {
-                    capturedDestUrl = line.split("DESTINATION URL INTERCEPTED FROM API:")[1].trim();
-                }
-                const formatted = formatLogLine(line);
-                if (formatted) console.log(formatted);
-            }
-        });
-
-        proc.stderr.on("data", (data) => {
-            const errStr = data.toString("utf-8").trim();
-            if (errStr && !errStr.includes("DeprecationWarning")) {
-                console.log(`  ${c.neonPurple}│    ${c.crimsonRed}✖ [ERROR] ${errStr.slice(0, 110)}${c.reset}`);
-            }
-        });
-
-        proc.on("close", (code) => {
-            const durationSec = Math.round((Date.now() - startTime) / 1000);
-            const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
-
-            if (finalUrl && !finalUrl.includes("trafficvn")) {
-                showResultCard(finalUrl, durationSec);
-            } else if (code === 0) {
-                console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
-            } else {
-                console.log(`\n  ${c.crimsonRed}❌ Tiến trình dừng lại (Exit Code: ${code})${c.reset}\n`);
-            }
-            resolve(code);
-        });
-
-        proc.on("error", (err) => {
-            console.error(`\n  ${c.crimsonRed}[Lỗi khi khởi chạy Python]: ${err.message}${c.reset}\n`);
-            resolve(-1);
-        });
-    });
-}
-
-function isBbmktsUrl(u) {
-    if (!u) return false;
-    const lower = u.toLowerCase();
-    return lower.includes("bbmkts") || /bbmkts\.com/i.test(lower);
-}
-
-function runBypassBBMKTS(targetUrl, headless = currentHeadless) {
-    return new Promise((resolve) => {
-        clearScreen();
-        printBanner();
-
-        const startTime = Date.now();
-        console.log(`  ${c.bgGreen} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.brightPink}BBMKTS ULTRA ENGINE (AUTONOMOUS DUAL-TAB + RAPIDOCR)${c.reset}`);
-        console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
-
-        if (fs.existsSync(DEST_FILE)) {
-            try { fs.unlinkSync(DEST_FILE); } catch (e) {}
-        }
-
-        let capturedDestUrl = null;
-
-        // Instant Zero-Click Base64 Decoder nếu link đầu vào là /go/file/
-        if (targetUrl.includes("/go/file/")) {
-            try {
-                const enc = targetUrl.split("/go/file/")[1].split("?")[0].split("#")[0].replace(/\/+$/, "");
-                const dec = Buffer.from(enc, "base64").toString("utf-8");
-                if (dec.startsWith("http")) {
-                    console.log(`\n  ${c.bgGreen} ⚡ GIẢI MÃ TỨC THÌ ZERO-CLICK BASE64 ⚡ ${c.reset}`);
-                    console.log(`  ${c.mintGreen}✔ Link đích đã giải mã: ${dec}${c.reset}\n`);
-                    showResultCard(dec, 0);
-                    try { fs.writeFileSync(DEST_FILE, dec, "utf-8"); } catch (e) {}
-                    resolve(0);
-                    return;
-                }
-            } catch (e) {}
-        }
-
-        const baseBbmktsArgs = fs.existsSync(BBMKTS_RUNNER)
-            ? [BBMKTS_RUNNER, targetUrl]
-            : ["-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import bbmkts_runner", targetUrl];
-        const pythonArgs = headless ? ["-u", "-X", "utf8", ...baseBbmktsArgs, "--headless"] : ["-u", "-X", "utf8", ...baseBbmktsArgs];
-
-        const proc = spawn(getPythonPath(), pythonArgs, {
-            cwd: ROOT_DIR,
-            stdio: ["inherit", "pipe", "pipe"],
-        });
-
-        proc.stdout.on("data", (data) => {
-            const lines = data.toString("utf-8").split(/\r?\n/);
-            for (const line of lines) {
-                if (line.includes("FINAL DESTINATION URL:")) {
-                    capturedDestUrl = line.split("FINAL DESTINATION URL:")[1].trim();
-                } else if (line.includes(">>> http")) {
-                    const m = line.match(/>>>\s*(https?:\/\/[^\s<]+)\s*<<</);
-                    if (m) capturedDestUrl = m[1].trim();
-                } else if (line.includes("bbmkts.com/go/file/")) {
-                    const m = line.match(/https?:\/\/bbmkts\.com\/go\/file\/([A-Za-z0-9+/=_-]+)/);
-                    if (m && m[1]) {
-                        try {
-                            const raw = m[1].split('?')[0].split('#')[0].replace(/\/+$/, '');
-                            const dec = Buffer.from(raw, 'base64').toString('utf-8');
-                            if (dec.startsWith('http')) {
-                                capturedDestUrl = dec;
-                            }
-                        } catch (e) {}
-                    }
-                }
-                const formatted = formatLogLine(line);
-                if (formatted) console.log(formatted);
-            }
-        });
-
-        proc.stderr.on("data", (data) => {
-            const errStr = data.toString("utf-8").trim();
-            if (errStr && !errStr.includes("DeprecationWarning")) {
-                console.log(`  ${c.neonPurple}│    ${c.crimsonRed}✖ [ERROR] ${errStr.slice(0, 110)}${c.reset}`);
-            }
-        });
-
-        proc.on("close", (code) => {
-            const durationSec = Math.round((Date.now() - startTime) / 1000);
-            const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
-
-            if (finalUrl && !finalUrl.includes("bbmkts")) {
-                showResultCard(finalUrl, durationSec);
-            } else if (code === 0) {
-                console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
-            } else {
-                console.log(`\n  ${c.crimsonRed}❌ Tiến trình dừng lại (Exit Code: ${code})${c.reset}\n`);
-            }
-            resolve(code);
-        });
-
-        proc.on("error", (err) => {
-            console.error(`\n  ${c.crimsonRed}[Lỗi khi khởi chạy Python]: ${err.message}${c.reset}\n`);
-            resolve(-1);
-        });
-    });
-}
-
-function isGtrafficUrl(u) {
-    if (!u) return false;
-    const lower = u.toLowerCase();
-    return lower.includes("gtraffic") || /gtraffic\.io/i.test(lower);
-}
-
-function runBypassGtraffic(targetUrl, headless = currentHeadless) {
-    return new Promise((resolve) => {
-        clearScreen();
-        printBanner();
-
-        const startTime = Date.now();
-        console.log(`  ${c.bgOrange} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.flameOrange}GTRAFFIC ULTRA ENGINE (MOBILE VIEWPORT + DUAL-TAB SOLVER)${c.reset}`);
-        console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
-
-        if (fs.existsSync(DEST_FILE)) {
-            try { fs.unlinkSync(DEST_FILE); } catch (e) {}
-        }
-
-        let capturedDestUrl = null;
-        const baseGtrafficArgs = fs.existsSync(GTRAFFIC_RUNNER)
-            ? [GTRAFFIC_RUNNER, targetUrl]
-            : ["-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import gtraffic_runner; gtraffic_runner.run(sys.argv[1])", targetUrl];
-        const pythonArgs = headless ? ["-u", "-X", "utf8", ...baseGtrafficArgs, "--headless"] : ["-u", "-X", "utf8", ...baseGtrafficArgs];
-
-        const proc = spawn(getPythonPath(), pythonArgs, {
-            cwd: ROOT_DIR,
-            stdio: ["inherit", "pipe", "pipe"],
-        });
-
-        proc.stdout.on("data", (data) => {
-            const lines = data.toString("utf-8").split(/\r?\n/);
-            for (const line of lines) {
-                if (line.includes("FINAL DESTINATION URL:")) {
-                    capturedDestUrl = line.split("FINAL DESTINATION URL:")[1].trim();
-                } else if (line.includes("DESTINATION URL INTERCEPTED FROM API:")) {
-                    capturedDestUrl = line.split("DESTINATION URL INTERCEPTED FROM API:")[1].trim();
-                } else if (line.includes(">>> http")) {
-                    const m = line.match(/>>>\s*(https?:\/\/[^\s<]+)\s*<<</);
-                    if (m) capturedDestUrl = m[1].trim();
-                }
-                const formatted = formatLogLine(line);
-                if (formatted) console.log(formatted);
-            }
-        });
-
-        proc.stderr.on("data", (data) => {
-            const errStr = data.toString("utf-8").trim();
-            if (errStr && !errStr.includes("DeprecationWarning")) {
-                console.log(`  ${c.neonPurple}│    ${c.crimsonRed}✖ [ERROR] ${errStr.slice(0, 110)}${c.reset}`);
-            }
-        });
-
-        proc.on("close", (code) => {
-            const durationSec = Math.round((Date.now() - startTime) / 1000);
-            const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
-
-            if (finalUrl && !finalUrl.includes("gtraffic.io")) {
-                copyToClipboard(finalUrl);
-                showResultCard(finalUrl, durationSec);
-            } else if (code === 0) {
-                console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
-            } else {
-                console.log(`\n  ${c.crimsonRed}❌ Tiến trình dừng lại (Exit Code: ${code})${c.reset}\n`);
-            }
-            resolve(code);
-        });
-
-        proc.on("error", (err) => {
-            console.error(`\n  ${c.crimsonRed}[Lỗi khi khởi chạy Python]: ${err.message}${c.reset}\n`);
-            resolve(-1);
-        });
-    });
-}
-
-function isLaymaUrl(u) {
-    if (!u) return false;
-    const lower = u.toLowerCase();
-    return lower.includes("layma") || /layma\.net/i.test(lower);
-}
-
-function runBypassLayMa(targetUrl, headless = currentHeadless) {
-    return new Promise((resolve) => {
-        clearScreen();
-        printBanner();
-
-        const startTime = Date.now();
-        console.log(`  ${c.bgPurple} ▶ KHỞI CHẠY ${c.reset}  ${c.bold}${c.brightPink}LAYMA.NET ULTRA ENGINE (QCAPTCHA STEALTH + HSV CONTOUR VISION)${c.reset}`);
-        console.log(`  ${c.dim}${c.softGray}Chế độ: ${headless ? "Ẩn (Headless)" : "Hiện cửa sổ (Window)"}${c.reset}\n`);
-
-        if (fs.existsSync(DEST_FILE)) {
-            try { fs.unlinkSync(DEST_FILE); } catch (e) {}
-        }
-
-        let capturedDestUrl = null;
-        const baseLaymaArgs = fs.existsSync(LAYMA_RUNNER)
-            ? [LAYMA_RUNNER, targetUrl]
-            : ["-c", "import sys, os; sys.path.insert(0, os.path.abspath('src/core')); import layma_runner; layma_runner.run(sys.argv[1])", targetUrl];
-        const pythonArgs = headless ? ["-u", "-X", "utf8", ...baseLaymaArgs, "--headless"] : ["-u", "-X", "utf8", ...baseLaymaArgs];
-
-        const proc = spawn(getPythonPath(), pythonArgs, {
-            cwd: ROOT_DIR,
-            stdio: ["inherit", "pipe", "pipe"],
-        });
-
-        proc.stdout.on("data", (data) => {
-            const lines = data.toString("utf-8").split(/\r?\n/);
-            for (const line of lines) {
-                if (line.includes("FINAL DESTINATION URL:")) {
-                    capturedDestUrl = line.split("FINAL DESTINATION URL:")[1].trim();
-                } else if (line.includes("DESTINATION URL INTERCEPTED FROM API:")) {
-                    capturedDestUrl = line.split("DESTINATION URL INTERCEPTED FROM API:")[1].trim();
-                }
-                const formatted = formatLogLine(line);
-                if (formatted) console.log(formatted);
-            }
-        });
-
-        proc.stderr.on("data", (data) => {
-            const errStr = data.toString("utf-8").trim();
-            if (errStr && !errStr.includes("DeprecationWarning")) {
-                console.log(`  ${c.neonPurple}│    ${c.crimsonRed}✖ [ERROR] ${errStr.slice(0, 110)}${c.reset}`);
-            }
-        });
-
-        proc.on("close", (code) => {
-            const durationSec = Math.round((Date.now() - startTime) / 1000);
-            const finalUrl = capturedDestUrl || (fs.existsSync(DEST_FILE) ? fs.readFileSync(DEST_FILE, "utf-8").trim() : null);
-
-            if (finalUrl && !finalUrl.includes("layma.net")) {
-                showResultCard(finalUrl, durationSec);
-            } else if (code === 0) {
-                console.log(`\n  ${c.cyberYellow}⚠ Tiến trình hoàn tất nhưng không trích xuất được link đích hợp lệ.${c.reset}\n`);
-            } else {
-                console.log(`\n  ${c.crimsonRed}❌ Tiến trình dừng lại (Exit Code: ${code})${c.reset}\n`);
-            }
-            resolve(code);
-        });
-
-        proc.on("error", (err) => {
-            console.error(`\n  ${c.crimsonRed}[Lỗi khi khởi chạy Python]: ${err.message}${c.reset}\n`);
-            resolve(-1);
-        });
-    });
-}
-
-function isOctolinkUrl(u) {
-    if (!u) return false;
-    const lower = u.toLowerCase();
-    return lower.includes("link999") || lower.includes("uptolink") || lower.includes("octolink") || lower.includes("linkhuongdan") || /octo/i.test(lower);
-}
-
-function isLink4mUrl(u) {
-    if (!u) return false;
-    const lower = u.toLowerCase();
-    return lower.includes("link4m") || lower.includes("link4") || /link4m\.(net|org|co|me|vip)/i.test(lower);
 }
 
 async function dispatchUrl(url, headless = currentHeadless) {
-    const target = url.trim();
-    if (isOctolinkUrl(target)) {
-        await runBypassOctolink(target, headless);
-        return;
-    }
-    if (isLaymaUrl(target)) {
-        await runBypassLayMa(target, headless);
-        return;
-    }
-    if (isGtrafficUrl(target)) {
-        await runBypassGtraffic(target, headless);
-        return;
-    }
-    if (isBbmktsUrl(target)) {
-        await runBypassBBMKTS(target, headless);
-        return;
-    }
-    if (isTrafficvnUrl(target)) {
-        if (fs.existsSync(TRAFFICVN_RUNNER)) {
-            await runBypassTrafficVN(target, headless);
-        } else {
-            console.log(`\n  ${c.cyberYellow}⚠ Tính năng TrafficVN hiện đang trong giai đoạn thử nghiệm nội bộ (Beta) và chưa công bố.${c.reset}\n`);
-        }
-        return;
-    }
-    await runBypassLink4M(target, headless);
+    return runEngine(url.trim(), headless, null);
 }
 
 async function main() {
@@ -835,32 +478,32 @@ async function main() {
             const defaultUrl = "https://octolink.vip/K3r4k5";
             let link = await ask(`\n  ${c.bold}${c.mintGreen}Nhập link Octolink / Link999 cần vượt [${defaultUrl}]:${c.reset} `);
             if (!link) link = defaultUrl;
-            await runBypassOctolink(link);
+            await runEngine(link, currentHeadless, "OCTOLINK");
         } else if (choice === "5") {
             const defaultUrl = "https://layma.net/Kd1onyItr";
             let link = await ask(`\n  ${c.bold}${c.brightPink}Nhập link LayMa cần vượt [${defaultUrl}]:${c.reset} `);
             if (!link) link = defaultUrl;
-            await runBypassLayMa(link);
+            await runEngine(link, currentHeadless, "LAYMA");
         } else if (choice === "4") {
             const defaultUrl = "https://gtraffic.io/X3BR2OQ";
             let link = await ask(`\n  ${c.bold}${c.flameOrange}Nhập link Gtraffic cần vượt [${defaultUrl}]:${c.reset} `);
             if (!link) link = defaultUrl;
-            await runBypassGtraffic(link);
+            await runEngine(link, currentHeadless, "GTRAFFIC");
         } else if (choice === "3") {
             const defaultUrl = "https://bbmkts.com/go/3p82s";
             let link = await ask(`\n  ${c.bold}${c.brightPink}Nhập link BBMKTS cần vượt [${defaultUrl}]:${c.reset} `);
             if (!link) link = defaultUrl;
-            await runBypassBBMKTS(link);
+            await runEngine(link, currentHeadless, "BBMKTS");
         } else if (choice === "2") {
             const defaultUrl = "https://link4m.net/go/2kCcIqn";
             let link = await ask(`\n  ${c.bold}${c.electricBlue}Nhập link Link4M cần vượt [${defaultUrl}]:${c.reset} `);
             if (!link) link = defaultUrl;
-            await runBypassLink4M(link);
+            await runEngine(link, currentHeadless, "LINK4M");
         } else if (choice === "beta" || choice === "trafficvn") {
             const defaultUrl = "https://trafficvn.com/get/MFGm2tAlcSn";
             let link = await ask(`\n  ${c.bold}${c.mintGreen}[BETA] Nhập link TrafficVN cần vượt [${defaultUrl}]:${c.reset} `);
             if (!link) link = defaultUrl;
-            await runBypassTrafficVN(link);
+            await runEngine(link, currentHeadless, "TRAFFICVN");
         } else {
             const defaultUrl = "https://link4m.net/go/2kCcIqn";
             let link = await ask(`\n  ${c.bold}${c.neonCyan}Nhập link cần vượt (Link4M / BBMKTS / Gtraffic / LayMa) [${defaultUrl}]:${c.reset} `);

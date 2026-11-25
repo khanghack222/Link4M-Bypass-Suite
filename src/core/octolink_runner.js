@@ -1439,4 +1439,25 @@ async function runBypass(octolinkUrl, options = {}, onLog = console.log) {
   }
 }
 
+async function main() {
+  const args = process.argv.slice(2);
+  const url = args.find(a => !a.startsWith("--"));
+  if (!url) {
+    console.error("usage: node octolink_runner.js <url> [--headless] [--json]");
+    process.exit(2);
+  }
+  const headless = args.includes("--headless");
+  const asJson = args.includes("--json");
+  const res = await runBypass(url, { headless }, (m) => console.log(m));
+  if (asJson) console.log(JSON.stringify(res));
+  process.exit(res && res.success ? 0 : 1);
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err && err.message ? err.message : err);
+    process.exit(1);
+  });
+}
+
 module.exports = { runBypass };

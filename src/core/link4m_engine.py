@@ -30,7 +30,9 @@ UA_MOBILE = ("Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
 GRID_PNG = "/tmp/grid_engine.png"
 GRID_IDX = "/tmp/idx.txt"
-DEST_FILE = os.path.expanduser("~/Link4M-Bypass-Suite/destination_url.txt")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.environ.get("L4M_REPO") or os.path.abspath(os.path.join(_HERE, "..", ".."))
+DEST_FILE = os.path.join(REPO, "destination_url.txt")
 
 # tld hay gặp trong chiến dịch; tránh bắt nhầm đuôi file ảnh
 TLD = r"(?:com|net|org|info|io|co|in|vn|app|cloud|xyz|top|site|online|pro|me|tv|cc|vip|asia|biz|link|live|shop|store|club|fun|space|website|one|bet|win|casino)"
@@ -40,7 +42,6 @@ CODE_RE = re.compile(r"Mã KM\s*:\s*([A-Za-z0-9]{4,10})")
 WIDGET_RE = re.compile(r"/widget/service(?:-v\d)?\.js\?key=([A-Za-z0-9]+)")
 
 
-REPO = os.path.expanduser("~/Link4M-Bypass-Suite")
 LOG_DIR = os.path.join(REPO, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "engine.log")
@@ -55,6 +56,39 @@ def log(*a):
             f.write(time.strftime("%H:%M:%S ") + line + "\n")
     except Exception:
         pass
+
+
+def _write_targets(path: str) -> list:
+    """Run-scoped copy first, then the fixed path the JS faces still read.
+
+    Several faces share one box; without BYPASS_RUN_ID they race on the same
+    two result files and a stale win looks like a fresh one.
+    """
+    run_id = os.environ.get("BYPASS_RUN_ID", "").strip()
+    if not run_id:
+        return [path]
+    stem, ext = os.path.splitext(path)
+    return [f"{stem}-{run_id}{ext}", path]
+
+
+def save_destination(href: str) -> None:
+    if not href or not href.startswith("http"):
+        return
+    for path in _write_targets(DEST_FILE):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(href + "\n")
+        except Exception:
+            pass
+
+
+def save_result(payload: dict) -> None:
+    for path in _write_targets(RESULT_FILE):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------ chrome
@@ -199,6 +233,59 @@ def sponsor_candidates(lines: list[str]) -> list[str]:
     return out
 
 
+SEARCH_KW_RE = re.compile(r"\bt[u]?\s*khoa\s*[:：]?\s*([A-Za-z0-9_\-\.]{2,40})", re.I)
+MASKED_DOMAIN_RE = re.compile(r"\b((?:[a-z0-9\-]{1,63}\.)*[a-z0-9\-]*\*[a-z0-9\-.*]*\.[a-z]{2,24})\b", re.I)
+
+
+def _deaccent(text: str) -> str:
+    """Bỏ dấu tiếng Việt để regex bắt được cả chữ NFD lẫn precomposed."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", text or "")
+                   if not unicodedata.combining(c))
+
+
+def instruction_hints(text: str) -> tuple[str, str]:
+    """Đọc hướng dẫn dạng chữ (campaign mới bỏ ảnh): từ khoá + domain bị che."""
+    plain = _deaccent(text)
+    kw = ""
+    m = SEARCH_KW_RE.search(plain)
+    if m:
+        kw = m.group(1).strip(".,;:()[]'\"")
+    mask = ""
+    for mm in MASKED_DOMAIN_RE.finditer(plain.lower()):
+        cand = mm.group(1).strip(".,;:")
+        if "*" in cand:
+            mask = cand
+            break
+    return kw, mask
+
+
+def masked_domain_guesses(mask: str) -> list[str]:
+    """Sinh domain ứng viên từ token bị che, ví dụ ``m.lotobet***.com``."""
+    if not mask or "*" not in mask:
+        return []
+    try:
+        from domain_utils import unmask_domain_candidates
+        out = list(unmask_domain_candidates(mask))
+    except Exception:
+        out = []
+    labels = mask.split(".")
+    if len(labels) < 2:
+        return out
+    base = ".".join(labels[:-1]).replace("*", "").strip(".-")
+    stems = [base]
+    if base.startswith("www."):
+        stems.append(base[4:])
+    parts = base.split(".")
+    if len(parts) > 2:
+        stems.append(".".join(parts[1:]))
+    for s in stems:
+        if not s:
+            continue
+        out.extend([s, f"www.{s}"])
+    return list(dict.fromkeys(d for d in out if d and DOMAIN_RE.fullmatch(d)))
+
+
 def widget_keys(html: str) -> list[str]:
     return list(dict.fromkeys(WIDGET_RE.findall(html)))
 
@@ -277,15 +364,27 @@ def find_challenge(pg):
 
 
 def click_anchor(pg) -> bool:
-    """Bấm ô checkbox reCAPTCHA của đúng widget (khớp recaptcha_key)."""
+    """Bấm ô checkbox reCAPTCHA của đúng widget (khớp recaptcha_key).
+
+    Ưu tiên click bằng JS ngay trong anchor frame (ổn định hơn toạ độ, không
+    lệch khi trang cuộn), fallback về mouse theo bounding box.
+    """
     want = pg.evaluate("typeof recaptcha_key!=='undefined'?recaptcha_key:''")
     cand = []
     for f in pg.frames:
-        if "/recaptcha/api2/anchor" not in f.url:
+        if "/recaptcha/api2/anchor" not in f.url and "/recaptcha/enterprise/anchor" not in f.url:
             continue
         k = f.url.split("k=")[1].split("&")[0] if "k=" in f.url else ""
         if want and k != want:
             continue
+        try:
+            chk = f.locator("#recaptcha-anchor")
+            if chk.count():
+                chk.first.click(timeout=3000)
+                log("[captcha] đã bấm checkbox (frame)")
+                return True
+        except Exception:
+            pass
         try:
             bb = f.frame_element().bounding_box()
         except Exception:
@@ -302,8 +401,33 @@ def click_anchor(pg) -> bool:
     pg.mouse.move(cx, cy, steps=6)
     time.sleep(0.2)
     pg.mouse.click(cx, cy)
-    log("[captcha] đã bấm checkbox")
+    log("[captcha] đã bấm checkbox (mouse)")
     return True
+
+
+def solve_challenge(pg) -> str:
+    """Giải thử thách đang hiện: audio (local) -> solver 3 tầng -> lưới ảnh."""
+    try:
+        from captcha_audio import solve as solve_audio
+        tok = solve_audio(pg)
+        if tok:
+            log("[captcha] audio xong, token", len(tok))
+            return tok
+    except Exception as exc:
+        log("[captcha] audio lỗi:", str(exc)[:80])
+    try:
+        from recaptcha_solver import get_solver
+        res = get_solver(headless=True).solve_on_page(pg, timeout_sec=45)
+        if res.get("success") and res.get("token"):
+            log("[captcha] solver xong:", res.get("type"), len(res["token"]))
+            return res["token"]
+        log("[captcha] solver thua:", res.get("error"))
+    except Exception as exc:
+        log("[captcha] solver lỗi:", str(exc)[:80])
+    tok = solve_grid(pg)
+    if tok:
+        log("[captcha] lưới ảnh xong, token", len(tok))
+    return tok
 
 
 GRID_PROMPT = "/tmp/grid_prompt.txt"
@@ -682,6 +806,7 @@ class Engine:
           const w = document.getElementById('captcha-html-wrapper');
           return {form: o, code: w ? w.getAttribute('data-code') : null,
                   imgs: [...document.images].map(i => i.src).filter(s => s.includes('img.link4m.net')),
+                  text: (document.body.innerText || '').slice(0, 8000),
                   title: document.title};
         }""")
         if not info["form"]:
@@ -698,9 +823,62 @@ class Engine:
             except Exception:
                 pass
 
-    # -- bước 2: OCR ảnh -> sponsor -> xác minh widget
-    def detect_sponsor(self, imgs: list[str]) -> list[tuple[str, str]]:
+    # -- bước 2: đọc sponsor (chữ hoặc ảnh) -> xác minh widget
+    def google_candidates(self, keyword: str, mask: str) -> list[str]:
+        """Tra Google bằng từ khoá trong hướng dẫn, trả link kết quả khớp mask."""
+        if not keyword:
+            return []
+        import urllib.parse as up
+        tab = None
+        try:
+            tab = self.ctx.new_page()
+            tab.set_viewport_size({"width": 390, "height": 844})
+            q = up.quote(keyword)
+            tab.goto(f"https://www.google.com/search?q={q}&hl=vi&num=10",
+                     wait_until="domcontentloaded", timeout=45000)
+            time.sleep(4)
+            links = tab.evaluate(
+                "() => [...document.querySelectorAll('a')].map(a => a.href)"
+                ".filter(h => h.startsWith('http'))")
+        except Exception as exc:
+            log("[google] lỗi tìm kiếm:", str(exc)[:80])
+            links = []
+        finally:
+            if tab is not None:
+                try:
+                    tab.close()
+                except Exception:
+                    pass
+        skip = ("google.", "gstatic.", "youtube.", "facebook.", "instagram.",
+                "tiktok.", "support.google", "accounts.google", "policies.google")
+        stem = mask.split(".")[0] if mask else ""
+        stem2 = ""
+        if mask and "*" in mask:
+            lab = [x for x in mask.split(".") if "*" in x]
+            if lab:
+                stem2 = lab[0].replace("*", "")
+        out: list[str] = []
+        for href in links or []:
+            try:
+                host = (up.urlparse(href).hostname or "").lower()
+            except Exception:
+                continue
+            if not host or any(s in host for s in skip):
+                continue
+            if stem2 and stem2.lower() in host:
+                out.append(href)
+            elif stem and host.split(".")[0] == stem:
+                out.append(href)
+        log("[google]", keyword, "->", out[:3])
+        return out[:6]
+
+    def detect_sponsor(self, info: dict) -> list[tuple[str, str]]:
         import urllib.request
+        imgs = info.get("imgs") or []
+        text = info.get("text") or ""
+        kw, mask = instruction_hints(text)
+        if kw or mask:
+            log("[hướng dẫn]", "từ khoá:", kw or "-", "| domain che:", mask or "-")
         cands: list[str] = []
         for i, src in enumerate(imgs[:4]):
             pth = f"/tmp/l4m_instr_{i}.jpg"
@@ -723,6 +901,12 @@ class Engine:
                 continue
             log(f"[ocr {i}]", " | ".join(lines[:3])[:150])
             cands += sponsor_candidates(lines)
+        # domain đoán từ mask + kết quả Google theo từ khoá (hướng dẫn dạng chữ)
+        guessed = masked_domain_guesses(mask)
+        if guessed:
+            log("[domain đoán]", guessed[:6])
+            cands.extend(f"https://{d}" for d in guessed)
+        cands.extend(self.google_candidates(kw, mask))
         # bỏ trùng, giữ thứ tự
         seen, uniq = set(), []
         for u in cands:
@@ -731,7 +915,11 @@ class Engine:
                 uniq.append(u)
         log("[sponsor ứng viên]", uniq[:6])
         found: list[tuple[str, str]] = []
+        checked = 0
         for url in uniq + [u for u in cached_sponsors() if u not in uniq]:
+            if checked >= 10 or len(found) >= 3:
+                break
+            checked += 1
             html = fetch_html(url)
             if not html:
                 log("[fetch]", url, "-> 0")
@@ -792,41 +980,47 @@ class Engine:
         if not click_anchor(a):
             log("[captcha] không thấy checkbox")
             return ""
-        deadline = time.time() + 210
+        deadline = time.time() + 240
         tok = ""
+        rounds = 0
         while time.time() < deadline:
             time.sleep(1)
             tok = token_now(a)
             if tok:
                 break
             if find_challenge(a):
-                tok = ""
-                try:
-                    from captcha_audio import solve as solve_audio
-                    log("[captcha] lưới ảnh -> thử kênh audio")
-                    tok = solve_audio(a)
-                except Exception as e:
-                    log("[captcha] audio lỗi:", str(e)[:70])
-                if not tok:
-                    log("[captcha] audio thua -> chuyển sang lưới ảnh")
-                    tok = solve_grid(a)
-                if not tok:
-                    log("[grid] thất bại")
-                    return ""
-                break
+                rounds += 1
+                log(f"[captcha] thử thách vòng {rounds}")
+                tok = solve_challenge(a)
+                if tok:
+                    break
+                if rounds >= 2:
+                    log("[captcha] thua 2 vòng")
+                    break
+                for f in a.frames:
+                    if "bframe" in (f.url or ""):
+                        try:
+                            f.locator("#recaptcha-reload-button").first.click(timeout=3000)
+                        except Exception:
+                            pass
+                time.sleep(3)
         log("[captcha] token", len(tok))
         if not tok:
             return ""
-        time.sleep(8)
-        href = a.evaluate("""() => { const b=document.querySelector('.get-link');
-            return b ? (b.getAttribute('href') || '') : ''; }""")
+        href = ""
+        for _ in range(25):
+            href = a.evaluate("""() => { const b=document.querySelector('.get-link');
+                return b ? (b.getAttribute('href') || '') : ''; }""")
+            if href and href.startswith("http"):
+                break
+            time.sleep(1)
         log("[server]", self.resp[-1][:220] if self.resp else "không bắt được response")
         return href
 
     # -- chạy trọn gói, thử lần lượt các sponsor ứng viên
     def run(self) -> dict:
         info = self.open_link4m()
-        sponsors = self.detect_sponsor(info["imgs"])
+        sponsors = self.detect_sponsor(info)
         if not sponsors:
             return {"ok": False, "stage": "sponsor", "imgs": info["imgs"]}
         last_code = ""
@@ -839,11 +1033,7 @@ class Engine:
             last_code = code
             href = self.submit(code)
             if href:
-                if href.startswith("http"):
-                    try:
-                        open(DEST_FILE, "w").write(href + "\n")
-                    except Exception:
-                        pass
+                save_destination(href)
                 return {"ok": True, "alias": self.alias, "code": code,
                         "sponsor": sponsor, "destination": href,
                         "server": self.resp[-1] if self.resp else ""}
@@ -892,10 +1082,7 @@ def main(argv=None) -> int:
         for k in ("ok", "code", "sponsor", "destination", "stage", "server"):
             if k in res:
                 log(f"{k:12}: {res[k]}")
-    try:
-        json.dump(res, open(RESULT_FILE, "w"), ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    save_result(res)
     return 0 if res.get("ok") else 1
 
 

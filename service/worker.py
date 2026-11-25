@@ -13,10 +13,9 @@ import time
 import traceback
 from typing import Optional
 
-from .config import CFG
+from .config import CFG, L4M_ENGINE, REPO
 
-REPO = os.path.expanduser("~/Link4M-Bypass-Suite")
-for _p in (os.path.join(REPO, "src", "core"), os.path.join(REPO, "src")):
+for _p in (os.path.join(REPO, "src", "core"), os.path.join(REPO, "src"), REPO):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -25,6 +24,26 @@ def _blocking_bypass(alias: str, keep_open: bool = False) -> dict:
     """Chạy thật trong thread (blocking) — engine là sync."""
     from link4m_engine import bypass_alias  # noqa: WPS433
     return bypass_alias(alias, keep_open=keep_open)
+
+
+def _registry_bypass(url: str, provider: str) -> dict:
+    """Dispatch qua registry cho mọi provider không phải Link4M/CDP."""
+    import runner_registry  # noqa: WPS433
+    res = runner_registry.execute(url, engine=provider, headless=True)
+    return {
+        "ok": bool(res.success),
+        "destination": res.destination_url or "",
+        "stage": res.stage or "",
+        "error": res.error_message or res.error_code or "",
+    }
+
+
+def _run_provider(job: dict) -> dict:
+    """Một job = một lần dispatch. Link4M/CDP đi đường alias đã kiểm chứng."""
+    provider = (job.get("provider") or "").lower()
+    if provider == "link4m" and L4M_ENGINE == "cdp":
+        return _blocking_bypass(job["key"])
+    return _registry_bypass(job["url"], provider.upper())
 
 
 class WorkerPool:
@@ -39,13 +58,16 @@ class WorkerPool:
     # ------------------------------------------------------------- vòng đời
     async def start(self) -> None:
         self.store.requeue_running()
-        # Bật Chrome + kiểm tra đi thẳng trước khi nhận việc.
-        try:
-            from link4m_engine import ensure_chrome
-            await asyncio.to_thread(ensure_chrome)
-            self.log("Chrome CDP sẵn sàng (đi thẳng, không proxy)")
-        except Exception as exc:  # pragma: no cover
-            self.log(f"CẢNH BÁO: chưa bật được Chrome: {exc}")
+        # Chỉ cần Chrome khi Link4M chạy engine CDP; provider khác tự lo browser.
+        if L4M_ENGINE == "cdp":
+            try:
+                from link4m_engine import ensure_chrome
+                await asyncio.to_thread(ensure_chrome)
+                self.log("Chrome CDP sẵn sàng (đi thẳng, không proxy)")
+            except Exception as exc:  # pragma: no cover
+                self.log(f"CẢNH BÁO: chưa bật được Chrome: {exc}")
+        else:
+            self.log(f"L4M_ENGINE={L4M_ENGINE}: bỏ qua Chrome CDP")
         for i in range(CFG.WORKERS):
             self._tasks.append(asyncio.create_task(self._worker(i)))
 
@@ -110,12 +132,6 @@ class WorkerPool:
         job = self.store.get_job(job_id)
         if not job:
             return
-        if job["provider"] != "link4m":
-            self.store.set_status(job_id, "error",
-                                  error=f"provider '{job['provider']}' chưa hỗ trợ")
-            self._resolve(job_id, {"id": job_id, "status": "error"})
-            return
-
         last_err = ""
         for attempt in range(1, CFG.MAX_TRIES + 1):
             self.store.incr_tries(job_id)
@@ -123,7 +139,7 @@ class WorkerPool:
             t0 = time.time()
             try:
                 res = await asyncio.wait_for(
-                    asyncio.to_thread(_blocking_bypass, job["key"]),
+                    asyncio.to_thread(_run_provider, job),
                     timeout=CFG.JOB_TIMEOUT)
             except asyncio.TimeoutError:
                 last_err = f"timeout sau {CFG.JOB_TIMEOUT}s"

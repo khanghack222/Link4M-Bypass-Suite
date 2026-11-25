@@ -519,3 +519,42 @@ Fast paths (offline, no browser, measured):
 
 No change to the [Types], [Files] or [Functions] designs. Three concrete amendments: (a) 480 s default budget on every ≥ browser path; (b) pre-warm Chrome + distinct browser-crash error code; (c) run-scoped result files in `link4m_engine.py` via the existing `BYPASS_RUN_ID` mechanism. Tiers 0–3 of [Testing] remain the offline gate; Tier 4 now has a measured baseline (≈ 6 m 45 s, single worker) to compare against.
 
+
+---
+
+## [Handoff] 2026-11-25 — steps 1–10 closed, offline gate green
+
+Trạng thái sau khi hoàn tất trục registry:
+
+- Bước 1–9: xong. `provider_table.py`, `engine_adapters.py`, `bypass_api.py`,
+  `runner_registry.py` là nguồn duy nhất; `auto_bypass.py`, `src/cli.py`,
+  `service/*`, `src/ui/menu.js`, `bot_discord.js` chỉ còn gọi registry.
+- Bước 10: xong. `package.json` có `list` / `bypass` / `check`; tài liệu ở
+  `docs/UNIFIED_DISPATCH.md` (canonical keys, entry points, `L4M_ENGINE`,
+  `L4M_REPO`, `BYPASS_RUN_ID`, `JOB_TIMEOUT`).
+- Addendum (a): ngân sách 480 s là mặc định ở `bypass_api.DEFAULT_TIMEOUT`
+  và `service/config.JOB_TIMEOUT`.
+- Addendum (b): `bypass_api.run_once()` pre-warm Chrome khi `L4M_ENGINE=cdp`
+  và trả `ERR_BROWSER_CRASH` thay vì để `RuntimeError` thoát ra.
+- Addendum (c): `link4m_engine.py` ghi qua `save_destination()` /
+  `save_result()`; mỗi lần chạy có `destination_url-<BYPASS_RUN_ID>.txt` và
+  `logs/last_run-<BYPASS_RUN_ID>.json`, bản cố định vẫn được ghi để menu đọc.
+- `config.save_destination()` chỉ ghi file Desktop trên Windows; trước đó trên
+  Linux nó tạo file rác tên `~\Desktop\destination_url.txt` ngay trong repo.
+
+Kết quả đo offline (máy này, không mạng, không browser):
+
+| Gate | Kết quả |
+|---|---|
+| `tests/test_provider_registry.py` | PASS |
+| `tests/test_engine_adapters.py` | PASS |
+| `tests/test_fast_paths_and_pool.py` | PASS |
+| `tests/test_unit_core.py` | PASS |
+| `tests/test_suite_integrity.py` | PASS |
+| `python -m src.bypass_api --list` | rc=0, `bypass` không nằm trong `sys.modules` |
+| `service/app.py` `/api/v1/supported` | 200, sáu provider |
+| `POST /api/v1/bypass` với BBMKTS `go/file/<b64>` | 200, `provider=decode`, 0.1 ms |
+| `node --check` menu.js / bot_discord.js / octolink_runner.js | PASS |
+
+Chưa làm (cần mạng/browser, ngoài gate offline): Tier 4 live cho từng provider,
+và việc hạ timeout pre-flight GTraffic 4 s → 3 s (giữ nguyên vì chưa đo lại).

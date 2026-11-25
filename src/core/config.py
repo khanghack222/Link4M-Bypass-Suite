@@ -390,9 +390,12 @@ def save_destination(url: str, run_id: str = None):
             f.write(url)
         with open(os.path.join(ROOT_DIR, "DESTINATION_FINAL_URL.txt"), "w", encoding="utf-8") as f:
             f.write(url)
-        desk = os.path.expanduser(r"~\Desktop\destination_url.txt")
-        with open(desk, "w", encoding="utf-8") as fd:
-            fd.write(url)
+        # Desktop copy is a Windows-only convenience; on POSIX the literal
+        # "~\\Desktop\\..." path lands inside the repo instead.
+        if os.name == "nt":
+            desk = os.path.expanduser(r"~\Desktop\destination_url.txt")
+            with open(desk, "w", encoding="utf-8") as fd:
+                fd.write(url)
     except Exception:
         pass
 

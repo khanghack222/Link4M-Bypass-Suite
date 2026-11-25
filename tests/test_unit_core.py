@@ -30,7 +30,7 @@ def test_classify_url():
         ("https://yeumoney.com/go/file/abc", "BBMKTS"),
         ("https://layma.net/pohWNZgba", "LAYMA"),
         ("https://trafficvn.net/get/MFGm", "TRAFFICVN"),
-        ("https://octolink.vip/abc", "LINK999"),
+        ("https://octolink.vip/abc", "OCTOLINK"),
         ("https://link4m.co/xyz", "LINK4M"),
         ("https://link4m.net/go/68pw167Y", "LINK4M"),
         ("https://unknownlink.com/123", "GENERIC")

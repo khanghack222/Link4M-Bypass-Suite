@@ -30,6 +30,10 @@ class BypassResult:
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # --- additive registry fields ---
+    provider: Optional[str] = None
+    cached: bool = False
+    stage: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -39,7 +43,10 @@ class BypassResult:
             "duration_ms": round(self.duration_ms, 2),
             "error_code": self.error_code,
             "error_message": self.error_message,
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "provider": self.provider,
+            "cached": self.cached,
+            "stage": self.stage,
         }
 
 class BaseBypassRunner(ABC):
@@ -49,6 +56,13 @@ class BaseBypassRunner(ABC):
     2. execute_flow(): Full browser execution with event-driven DOM handling.
     """
     engine_name: str = "BASE"
+    provider_key: str = "UNKNOWN"
+    # Optional proxy, honoured only by engines that accept one (Link4M legacy).
+    proxy: Optional[str] = None
+    # Every engine in this suite launches and owns its own browser (or a Node
+    # subprocess). Acquiring a BrowserPool context here would open a second
+    # browser that is immediately thrown away.
+    standalone_browser: bool = True
 
     # Known ads/intermediary domains that are NOT destination URLs
     BLOCKED_DESTINATION_PATTERNS: List[str] = [
@@ -105,24 +119,28 @@ class BaseBypassRunner(ABC):
                     destination_url=fast_dest.strip(),
                     engine=self.engine_name,
                     duration_ms=duration,
-                    metadata={"fast_path": True}
+                    metadata={"fast_path": True},
+                    provider=self.provider_key,
+                    stage="pre_flight",
                 )
-        except Exception as e:
+        except Exception:
             # Pre-flight is best effort, fallback to browser
             pass
 
-        # Step 2: Full browser execution
+        # Step 2: Full execution. Standalone engines own their browser/process.
+        managed_context = None
+        managed_page = None
+        should_cleanup = False
         if context is None or page is None:
-            # Import pool dynamically to avoid circular references
-            from browser_pool import BrowserPool
-            pool = BrowserPool.get_instance()
-            managed_context = pool.acquire_context(block_media=False)
-            managed_page = managed_context.new_page()
-            should_cleanup = True
+            if not self.standalone_browser:
+                from browser_pool import BrowserPool
+                pool = BrowserPool.get_instance()
+                managed_context = pool.acquire_context(block_media=False)
+                managed_page = managed_context.new_page()
+                should_cleanup = True
         else:
             managed_context = context
             managed_page = page
-            should_cleanup = False
 
         # Fast-Exit response interceptor: bắt ngay link đích khi có response redirect hoặc JSON chứa url
         captured_dest = []
@@ -149,7 +167,8 @@ class BaseBypassRunner(ABC):
             except Exception:
                 pass
 
-        managed_page.on("response", _check_response)
+        if managed_page is not None:
+            managed_page.on("response", _check_response)
 
         try:
             dest = self.execute_flow(managed_page, managed_context, target_url)
@@ -165,7 +184,9 @@ class BaseBypassRunner(ABC):
                 destination_url=dest.strip(),
                 engine=self.engine_name,
                 duration_ms=duration,
-                metadata={"fast_path": False}
+                metadata={"fast_path": False},
+                provider=self.provider_key,
+                stage="browser",
             )
         except BypassError as be:
             duration = (time.perf_counter() - start_time) * 1000
@@ -175,7 +196,9 @@ class BaseBypassRunner(ABC):
                 duration_ms=duration,
                 error_code=be.code,
                 error_message=be.message,
-                metadata=be.details
+                metadata=be.details,
+                provider=self.provider_key,
+                stage="browser",
             )
         except Exception as e:
             duration = (time.perf_counter() - start_time) * 1000
@@ -184,10 +207,12 @@ class BaseBypassRunner(ABC):
                 engine=self.engine_name,
                 duration_ms=duration,
                 error_code="ERR_UNEXPECTED",
-                error_message=str(e)
+                error_message=str(e),
+                provider=self.provider_key,
+                stage="browser",
             )
         finally:
-            if should_cleanup:
+            if should_cleanup and managed_page is not None:
                 try:
                     managed_page.close()
                 except Exception:

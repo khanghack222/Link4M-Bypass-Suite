@@ -78,21 +78,9 @@ read_captured_destination = read_destination
 
 
 def classify_url(url: str) -> str:
-    """Accurately classifies the target URL to select the corresponding engine."""
-    u = url.strip().lower()
-    if any(k in u for k in ["link999.app", "link999", "uptolink", "octolink", "linkhuongdan"]):
-        return "LINK999"
-    if any(k in u for k in ["gtraffic.io", "direct.gtraffic.io", "dr-client.gtraffic.io", "client.gtraffic.io", "gtraffic"]):
-        return "GTRAFFIC"
-    if any(k in u for k in ["bbmkts.com", "bbmkt", "yeumoney.com", "yeumoney"]):
-        return "BBMKTS"
-    if any(k in u for k in ["layma.net", "layma"]):
-        return "LAYMA"
-    if any(k in u for k in ["trafficvn.net", "trafficvn.com", "trafficvn"]):
-        return "TRAFFICVN"
-    if any(k in u for k in ["link4m.", "link4m", "link4"]):
-        return "LINK4M"
-    return "GENERIC"
+    """Classifies the target URL through the unified provider registry."""
+    import runner_registry
+    return runner_registry.classify(url)
 
 
 def show_result_card(final_url: str, duration_sec: int, engine_name: str):
@@ -113,8 +101,9 @@ def show_result_card(final_url: str, duration_sec: int, engine_name: str):
         pass
 
 
-def execute_bypass(target_url: str, headless: bool = True, quiet: bool = False, output_json: bool = False) -> str:
-    """Executes the specialized bypass runner guided by BotBrain FlowDirector & DataController."""
+def execute_bypass(target_url: str, headless: bool = True, quiet: bool = False,
+                   output_json: bool = False, engine: str = None) -> str:
+    """Executes the bypass through the unified registry, guided by BotBrain."""
     target_url = target_url.strip()
 
     # 🧠 BRAIN FLOW DIRECTOR: determine engine with intelligent priority
@@ -132,150 +121,37 @@ def execute_bypass(target_url: str, headless: bool = True, quiet: bool = False, 
             except Exception: pass
 
     start_time = time.time()
+    import runner_registry
+    res = runner_registry.execute(target_url, engine=engine, headless=headless)
+    duration = int((time.time() - start_time) * 1000)
+    provider = res.provider or category
 
-    # 0. Instant Zero-Click BBMKTS /go/file/ Base64 Decoder (0.001s)
-    if "/go/file/" in target_url and any(k in target_url.lower() for k in ["bbmkts", "bbmkt", "yeumoney"]):
-        encoded_part = target_url.split("/go/file/")[-1].split("?")[0].split("#")[0]
-        import base64, urllib.parse
-        for dec_fn in [
-            lambda s: base64.b64decode(s + "===").decode("utf-8", errors="ignore"),
-            lambda s: urllib.parse.unquote(s)
-        ]:
-            try:
-                dec = dec_fn(encoded_part)
-                if dec.startswith("http"):
-                    duration = int((time.time() - start_time) * 1000)
-                    save_destination_url(dec)
-                    brain.data_controller.finish_session(success=True, destination_url=dec)
-                    if output_json:
-                        import json
-                        print(json.dumps({"status": "success", "destination_url": dec, "duration_ms": duration, "engine": "BBMKTS_BASE64"}))
-                    elif quiet:
-                        print(dec)
-                    else:
-                        print(f"\n  {BG_PINK} ⚡ PHÁT HIỆN LINK FILE BBMKTS TRỰC TIẾP ⚡ {C_RESET}")
-                        print(f"  {C_GREEN}✔ Giải mã Base64 tức thì trong 0.001s: {dec}{C_RESET}")
-                        show_result_card(dec, 0, "BBMKTS INSTANT BASE64")
-                    return dec
-            except Exception:
-                pass
-
-    if category == "LINK999":
-        print(f"  {BG_PINK} ▶ KHỞI CHẠY {C_RESET}  {C_BOLD}{C_BPINK}LINK999 / UPTOLINK AUTONOMOUS ENGINE{C_RESET}")
-        print(f"  {C_DIM}{C_GRAY}Mục tiêu: {target_url} | Headless: {headless}{C_RESET}\n")
-        octo_js = os.path.join(CORE_DIR, "octolink_runner.js")
-        if os.path.exists(octo_js):
-            try:
-                cmd = ["node", octo_js, target_url]
-                if headless:
-                    cmd.append("--headless")
-                subprocess.run(cmd, check=False)
-            except Exception as e:
-                print(f"[-] Node.js runner error: {e}")
-        else:
-            print(f"[-] Không tìm thấy {octo_js}")
-
-    elif category == "GTRAFFIC":
-        # 0.1. Zero-Click Fast API Probe for GTraffic Direct Link Leak (0.2s)
-        try:
-            import urllib.request, json
-            is_direct = "direct.gtraffic.io" in target_url or "dr-client" in target_url
-            slug = target_url.split("?")[0].split("#")[0].strip().rstrip("/").split("/")[-1]
-            probe_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Referer": target_url,
-                "Content-Type": "application/json"
-            }
-            if is_direct:
-                api_url = f"https://dr-client.gtraffic.io/api/url/get?id={slug}&deviceType=desktop"
-            else:
-                api_url = f"https://client.gtraffic.io/api/url/get?id={slug}&deviceType=desktop"
-
-            d_req = urllib.request.Request(api_url, headers=probe_headers)
-            with urllib.request.urlopen(d_req, timeout=4) as d_res:
-                get_data = json.loads(d_res.read().decode("utf-8", errors="ignore"))
-
-            if get_data:
-                dl = get_data.get("data_link")
-                direct_leak = None
-                if isinstance(dl, dict) and dl.get("url"):
-                    direct_leak = dl.get("url")
-                elif isinstance(dl, str) and dl.startswith("http"):
-                    direct_leak = dl
-                if direct_leak and "gtraffic.io" not in direct_leak:
-                    duration = int((time.time() - start_time) * 1000)
-                    save_destination_url(direct_leak)
-                    brain.data_controller.finish_session(success=True, destination_url=direct_leak)
-                    if output_json:
-                        import json
-                        print(json.dumps({"status": "success", "destination_url": direct_leak, "duration_ms": duration, "engine": "GTRAFFIC_LEAK"}))
-                    elif quiet:
-                        print(direct_leak)
-                    else:
-                        print(f"\n  {BG_GREEN} ⚡ PHÁT HIỆN LINK ĐÍCH TRỰC TIẾP TỪ GTRAFFIC API LEAK ⚡ {C_RESET}")
-                        print(f"  {C_GREEN}✔ Lấy link thành công trong 0.2s không cần mở trình duyệt: {direct_leak}{C_RESET}")
-                        show_result_card(direct_leak, 0, "GTRAFFIC ZERO-WAIT LEAK")
-                    return direct_leak
-        except Exception:
-            pass
-
-        if not quiet and not output_json:
-            print(f"  {BG_ORANGE} ▶ KHỞI CHẠY {C_RESET}  {C_BOLD}{C_ORANGE}GTRAFFIC & DIRECT GTRAFFIC AUTONOMOUS ENGINE{C_RESET}")
-            print(f"  {C_DIM}{C_GRAY}Mục tiêu: {target_url} | Headless: {headless}{C_RESET}\n")
-        import gtraffic_runner
-        gtraffic_runner.run(target_url, headless=headless)
-
-    elif category == "BBMKTS":
-        if not quiet and not output_json:
-            print(f"  {BG_PINK} ▶ KHỞI CHẠY {C_RESET}  {C_BOLD}{C_BPINK}BBMKTS AUTONOMOUS DUAL-TAB ENGINE{C_RESET}")
-            print(f"  {C_DIM}{C_GRAY}Mục tiêu: {target_url} | Headless: {headless}{C_RESET}\n")
-        import bbmkts_runner
-        bbmkts_runner.run(target_url, headless=headless)
-
-    elif category == "LAYMA":
-        if not quiet and not output_json:
-            print(f"  {BG_PURPLE} ▶ KHỞI CHẠY {C_RESET}  {C_BOLD}{C_PURPLE}LAYMA.NET QCAPTCHA STEALTH & HSV ENGINE{C_RESET}")
-            print(f"  {C_DIM}{C_GRAY}Mục tiêu: {target_url} | Headless: {headless}{C_RESET}\n")
-        import layma_runner
-        layma_runner.run(target_url, headless=headless)
-
-    elif category == "TRAFFICVN":
-        if not quiet and not output_json:
-            print(f"  {BG_GREEN} ▶ KHỞI CHẠY {C_RESET}  {C_BOLD}{C_GREEN}TRAFFICVN TURNSTILE & CREEPJS ENGINE (BETA){C_RESET}")
-            print(f"  {C_DIM}{C_GRAY}Mục tiêu: {target_url} | Headless: {headless}{C_RESET}\n")
-        import trafficvn_runner
-        trafficvn_runner.run(target_url, headless=headless)
-
-    else:
-        # Default Link4M runner
-        if not quiet and not output_json:
-            print(f"  {BG_CYAN} ▶ KHỞI CHẠY {C_RESET}  {C_BOLD}{C_CYAN}LINK4M RAPIDOCR & WHISPER AI ENGINE{C_RESET}")
-            print(f"  {C_DIM}{C_GRAY}Mục tiêu: {target_url} | Headless: {headless}{C_RESET}\n")
-        import bypass
-        bypass.run(target_url, headless=headless)
-
-    duration = int(time.time() - start_time)
-    final_dest = read_captured_destination()
-
-    if final_dest and final_dest.startswith("http"):
+    if res.success and res.destination_url:
+        final_dest = res.destination_url.strip()
         brain.data_controller.finish_session(success=True, destination_url=final_dest)
         save_destination_url(final_dest)
         if output_json:
             import json
-            print(json.dumps({"status": "success", "destination_url": final_dest, "duration_ms": duration * 1000, "engine": category}))
+            print(json.dumps({"status": "success", "destination_url": final_dest,
+                              "duration_ms": duration, "engine": provider}))
         elif quiet:
             print(final_dest)
         else:
-            show_result_card(final_dest, duration, category)
+            print(f"FINAL DESTINATION URL: {final_dest}", flush=True)
+            show_result_card(final_dest, int(duration / 1000), provider)
         return final_dest
-    else:
-        brain.data_controller.finish_session(success=False)
-        if output_json:
-            import json
-            print(json.dumps({"status": "error", "error_code": "ERR_DESTINATION_NOT_FOUND", "engine": category}))
-        elif not quiet:
-            print(f"\n  {C_YELLOW}⚠ Tiến trình hoàn tất nhưng chưa trích xuất được link đích.{C_RESET}\n")
-        return ""
+
+    brain.data_controller.finish_session(success=False)
+    if output_json:
+        import json
+        print(json.dumps({"status": "error",
+                          "error_code": res.error_code or "ERR_DESTINATION_NOT_FOUND",
+                          "error": res.error_message or "",
+                          "engine": provider}))
+    elif not quiet:
+        print(f"\n  {C_YELLOW}⚠ {res.error_code or 'ERR_DESTINATION_NOT_FOUND'}: "
+              f"{res.error_message or 'chưa trích xuất được link đích.'}{C_RESET}\n")
+    return ""
 
 
 def run_loop_watcher(headless: bool = True):
@@ -314,6 +190,7 @@ def main():
     parser.add_argument("--headless", "-hl", action="store_true", default=True, help="Run in headless browser mode (default)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Print ONLY destination URL to stdout for piping")
     parser.add_argument("--json", action="store_true", help="Output result as JSON object")
+    parser.add_argument("--engine", "-e", default=None, help="Force engine key (LINK4M, BBMKTS, GTRAFFIC, LAYMA, TRAFFICVN, OCTOLINK)")
     parser.add_argument("--loop", "-l", action="store_true", help="Continuously monitor clipboard for new shortlinks")
     parser.add_argument("--no-proxy", action="store_true", help="Disable proxy usage (direct connection)")
     parser.add_argument("--train", "--train-brain", action="store_true", help="Run autonomous training on BotBrain knowledge base")
@@ -356,7 +233,8 @@ def main():
             ans = input(f"  {C_BOLD}{C_CYAN}➤ Nhập link cần vượt {C_DIM}(Enter để dùng demo {default_demo}){C_RESET}: ").strip()
             target_url = ans if ans.startswith("http") else default_demo
 
-    execute_bypass(target_url, headless=headless, quiet=args.quiet, output_json=args.json)
+    execute_bypass(target_url, headless=headless, quiet=args.quiet, output_json=args.json,
+                   engine=args.engine)
 
 
 if __name__ == "__main__":

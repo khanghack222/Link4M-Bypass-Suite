@@ -25,7 +25,6 @@ from .providers import fast_decode, normalize, parse, supported
 from .store import Store
 from .worker import WorkerPool
 
-REPO = os.path.expanduser("~/Link4M-Bypass-Suite")
 os.makedirs(os.path.dirname(CFG.LOG_PATH) or ".", exist_ok=True)
 
 

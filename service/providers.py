@@ -1,31 +1,26 @@
 # -*- coding: utf-8 -*-
 """Nhận diện nhà cung cấp shortlink + giải nhanh (fast-path) không cần browser.
 
-Thêm nhà mới = thêm một mục trong ``PROVIDERS``. ``kind == "browser"`` thì đẩy
-sang worker Chrome; ``kind == "decode"`` thì giải thẳng bằng biến đổi chuỗi.
+Toàn bộ bảng provider nằm ở ``src/core/provider_table.py``; module này chỉ là
+adapter mỏng cho FastAPI, giữ nguyên dataclass ``Match`` và payload API cũ.
 """
 from __future__ import annotations
 
-import base64
-import re
+import os
+import sys
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
 
-# host -> cấu hình. Giữ nhẹ, chỉ khai báo cái đang có engine thật.
-PROVIDERS: dict[str, dict] = {
-    "link4m": {
-        "hosts": ("link4m.net", "link4m.com", "link4m.co", "link4m.org",
-                  "link4m.vip", "link4m.pro", "link4m.me", "link4m.app"),
-        "pattern": re.compile(r"/go/([A-Za-z0-9_-]+)"),
-        "kind": "browser",
-    },
-    # Ví dụ để mở rộng sau (engine chưa có, khai báo sẵn khung):
-    # "layma": {"hosts": ("layma.net",), "pattern": re.compile(r"/([A-Za-z0-9_-]+)$"), "kind": "browser"},
-}
+_SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_DIR = os.path.abspath(os.path.join(_SERVICE_DIR, ".."))
+_CORE_DIR = os.path.join(_REPO_DIR, "src", "core")
+for _p in (_CORE_DIR, os.path.join(_REPO_DIR, "src"), _REPO_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-# regex giải nhanh: URL nằm trong path /go/file/<base64|encoded>
-_GO_FILE = re.compile(r"/go/file/([A-Za-z0-9_\-%]+)")
+import runner_registry  # noqa: E402
+from provider_table import spec_for  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -43,58 +38,22 @@ def normalize(url: str) -> str:
     return url
 
 
-def _host(url: str) -> str:
-    try:
-        return (urllib.parse.urlparse(url).hostname or "").lower().lstrip("www.")
-    except Exception:
-        return ""
-
-
 def parse(url: str) -> Optional[Match]:
-    """Nhận diện provider + key từ URL."""
+    """Nhận diện provider + key từ URL qua registry."""
     url = normalize(url)
-    host = _host(url)
-    if not host:
+    parsed = runner_registry.parse_key(url)
+    if not parsed:
         return None
-    for name, cfg in PROVIDERS.items():
-        ok = any(host == h or host.endswith("." + h) for h in cfg["hosts"])
-        if not ok:
-            continue
-        m = cfg["pattern"].search(urllib.parse.urlparse(url).path)
-        if m:
-            return Match(provider=name, key=m.group(1), url=url, kind=cfg["kind"])
-    return None
-
-
-def _try_b64(s: str) -> Optional[str]:
-    try:
-        dec = base64.b64decode(s + "===").decode("utf-8", errors="ignore")
-        return dec if dec.startswith("http") else None
-    except Exception:
+    key, slug = parsed
+    spec = spec_for(key)
+    if spec is None:
         return None
+    return Match(provider=key.lower(), key=slug or url, url=url, kind=spec.kind.value)
 
 
 def fast_decode(url: str) -> Optional[str]:
-    """Giải các dạng không cần browser (BBMKTS /go/file/ và query base64)."""
-    url = normalize(url)
-    m = _GO_FILE.search(url)
-    if m:
-        part = urllib.parse.unquote(m.group(1))
-        got = _try_b64(part) or _try_b64(urllib.parse.unquote(part))
-        if got:
-            return got
-    try:
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-    except Exception:
-        return None
-    for vals in q.values():
-        for v in vals:
-            if len(v) > 16:
-                got = _try_b64(v)
-                if got and not any(k in got.lower() for k in ("link4m", "bbmkts", "trafficvn")):
-                    return got
-    return None
+    return runner_registry.fast_decode(normalize(url))
 
 
 def supported() -> list[str]:
-    return sorted(PROVIDERS.keys())
+    return sorted(k.lower() for k in runner_registry.supported() if k != "DECODE")

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import os
 
-REPO = os.path.expanduser("~/Link4M-Bypass-Suite")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.environ.get("L4M_REPO") or os.path.dirname(_HERE)
+
+# Engine chọn cho Link4M: "cdp" (Chrome CDP đã kiểm chứng, mặc định service)
+# hoặc "legacy" (Playwright tự mở browser).
+L4M_ENGINE = os.environ.get("L4M_ENGINE", "cdp").strip().lower()
 
 
 def _int(name: str, default: int) -> int:

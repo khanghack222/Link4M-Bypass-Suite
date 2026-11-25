@@ -31,7 +31,7 @@ const {
     ComponentType,
     MessageFlags
 } = require("discord.js");
-const { spawn } = require("child_process");
+const { spawn, execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -53,6 +53,39 @@ const TASK_TIMEOUT_MS = 300 * 1000; // 300 giây (5 phút) bảo đảm hoàn t�
 if (!TOKEN) {
     console.error("[FATAL] DISCORD_TOKEN is missing! Please set DISCORD_TOKEN in .env or environment variables.");
     process.exit(1);
+}
+
+// ==========================================
+// PROVIDER REGISTRY (đọc từ Python --list, cache 1 lần)
+// ==========================================
+let _registryCache = null;
+
+function loadProviderRegistry() {
+    if (_registryCache) return _registryCache;
+    try {
+        const out = execFileSync(getPythonExecutable(),
+            ["-u", "-X", "utf8", "-m", "src.bypass_api", "--list"], {
+                cwd: ROOT_DIR,
+                encoding: "utf-8",
+                timeout: 15000,
+                env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+            });
+        const payload = JSON.parse(out);
+        _registryCache = (payload.providers || []).filter((p) => p.key !== "DECODE");
+    } catch (e) {
+        _registryCache = [];
+    }
+    if (!_registryCache.length) {
+        _registryCache = [
+            { key: "LINK4M", hosts: ["link4m.net", "link4m.com"], note: "sponsor OCR + reCAPTCHA audio" },
+            { key: "OCTOLINK", hosts: ["octolink.vip", "link999.app", "uptolink.*"], note: "canvas physics + hold captcha" },
+            { key: "BBMKTS", hosts: ["bbmkts.com", "yeumoney.com"], note: "dual-tab countdown + route patch" },
+            { key: "GTRAFFIC", hosts: ["gtraffic.io", "client.gtraffic.io"], note: "mobile viewport + API leak" },
+            { key: "LAYMA", hosts: ["layma.net"], note: "qcaptcha stealth + HSV vision" },
+            { key: "TRAFFICVN", hosts: ["trafficvn.com", "trafficvn.net"], note: "countdown + activation code" },
+        ];
+    }
+    return _registryCache;
 }
 
 // ==========================================
@@ -226,7 +259,7 @@ function runBypassProcess(targetUrl, onLog) {
             try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (e) {}
         }
 
-        const args = ["-u", "-X", "utf8", AUTO_BYPASS_SCRIPT, targetUrl, "--headless"];
+        const args = ["-u", "-X", "utf8", "-m", "src.bypass_api", "--url", targetUrl, "--json"];
         const proc = spawn(pythonBin, args, {
             cwd: ROOT_DIR,
             env: { ...process.env, PYTHONUNBUFFERED: "1", BYPASS_RUN_ID: runId },
@@ -256,7 +289,14 @@ function runBypassProcess(targetUrl, onLog) {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
 
-                if (trimmed.includes("FINAL DESTINATION URL:")) {
+                if (trimmed.startsWith("__BYPASS_JSON__")) {
+                    try {
+                        const payload = JSON.parse(trimmed.slice("__BYPASS_JSON__".length));
+                        if (payload && payload.success && payload.destination_url) {
+                            capturedUrl = payload.destination_url;
+                        }
+                    } catch (e) {}
+                } else if (trimmed.includes("FINAL DESTINATION URL:")) {
                     capturedUrl = trimmed.split("FINAL DESTINATION URL:")[1].trim();
                 } else if (trimmed.includes("DESTINATION URL INTERCEPTED FROM API:")) {
                     capturedUrl = trimmed.split("DESTINATION URL INTERCEPTED FROM API:")[1].trim();
@@ -686,18 +726,21 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({ embeds: [pingEmbed], flags: MessageFlags.Ephemeral });
     }
 
-    // --- LỆNH /platforms ---
+    // --- LỆNH /platforms (đọc từ provider registry) ---
     if (commandName === "platforms") {
+        const registry = loadProviderRegistry();
         const platEmbed = new EmbedBuilder()
             .setColor(0x9D00FF)
             .setTitle("🌐 CÁC CỔNG LINK ĐƯỢC HỖ TRỢ BỞI BOT")
-            .setDescription("Hệ thống tự động nhận diện và áp dụng kịch bản bypass chuyên biệt cho từng cổng:")
-            .addFields(
-                { name: "🔹 Link4M & Octolink", value: "`link4m.com`, `link4m.org`, `octolink.vip`\n(Vượt qua bảo vệ nhiều bước, giải mã API token)", inline: false },
-                { name: "🔹 GTraffic Engine", value: "`gtraffic.io`, `client.gtraffic.io`\n(Nhận diện banner, bóc tách OCR tên miền tài trợ, đếm ngược)", inline: false },
-                { name: "🔹 LayMa & BBMKTS", value: "`layma.net`, `bbmkts.com`, `4mmo.com`\n(Vượt kiểm tra sponsor, tự động lấy code kích hoạt)", inline: false },
-                { name: "🔹 TrafficVIP & ShortEarn", value: "`trafficvip.vip`, `shortearn.net`, `click90s`\n(Tự động xác thực Google reCAPTCHA v2 bằng AI)", inline: false }
-            )
+            .setDescription("Hệ thống tự động nhận diện và áp dụng kịch bản bypass chuyên biệt cho từng cổng:");
+        for (const spec of registry) {
+            platEmbed.addFields({
+                name: `🔹 ${spec.key}`,
+                value: `\`${(spec.hosts || []).join("`, `")}\`\n${spec.note || spec.module || ""}`.slice(0, 1024),
+                inline: false,
+            });
+        }
+        platEmbed
             .setFooter({ text: "Cập nhật liên tục 24/7", iconURL: client.user.displayAvatarURL() })
             .setTimestamp();
         return interaction.reply({ embeds: [platEmbed] });

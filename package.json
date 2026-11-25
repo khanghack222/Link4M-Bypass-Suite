@@ -5,7 +5,10 @@
   "main": "src/ui/menu.js",
   "scripts": {
     "start": "node src/ui/menu.js",
-    "bot": "node bot_discord.js"
+    "bot": "node bot_discord.js",
+    "list": "python -m src.bypass_api --list",
+    "bypass": "python -m src.bypass_api",
+    "check": "node --check src/ui/menu.js && node --check bot_discord.js"
   },
   "dependencies": {
     "discord.js": "^14.27.0",
