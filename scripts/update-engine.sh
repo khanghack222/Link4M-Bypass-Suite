@@ -232,11 +232,28 @@ write_metadata() {
     printf '%s\n' "$remote_sha" > "$STATE"
 }
 
+STAMP="$(date +%Y%m%d-%H%M%S)"
+
+copy_conflicts() {
+    local target="$CONFLICT_ROOT/$STAMP"
+    mkdir -p "$target"
+    while IFS=$'\t' read -r _ rel; do
+        [ -n "${rel:-}" ] || continue
+        mkdir -p "$target/$(dirname "$rel")"
+        cp -p "$NEW/$rel" "$target/$rel"
+    done < "$TMP/conflict.list"
+    echo "$target"
+}
+
 if [ "$add_n" -eq 0 ] && [ "$update_n" -eq 0 ] && [ "$delete_n" -eq 0 ]; then
     if [ "$APPLY" -eq 1 ]; then
         write_metadata
         echo
         echo "Không có thay đổi mã nguồn; đã ghi mốc ${remote_sha:0:12}."
+        if [ "$conflict_n" -gt 0 ]; then
+            target="$(copy_conflicts)"
+            echo "Bản mới của file bạn đã sửa nằm trong: $target"
+        fi
     else
         echo
         echo "Không có thay đổi mã nguồn."
@@ -264,7 +281,6 @@ fi
 
 # --- áp dụng, có backup và rollback khi build fail ------------------------
 
-STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="$BACKUP_ROOT/$STAMP"
 CONFLICTS="$CONFLICT_ROOT/$STAMP"
 mkdir -p "$BACKUP" "$CONFLICTS"
