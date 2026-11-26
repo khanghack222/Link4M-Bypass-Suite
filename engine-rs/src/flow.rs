@@ -10,6 +10,7 @@ use crate::instr;
 use crate::quest;
 use std::sync::Arc;
 use crate::cdp::Cdp;
+use crate::proxy::Proxy;
 use base64::Engine;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -191,6 +192,7 @@ pub struct Flow<'a> {
     alias: String,
     code: Option<String>,
     port: u16,
+    proxy: Option<Proxy>,
     deadline: Instant,
 }
 
@@ -201,6 +203,7 @@ impl<'a> Flow<'a> {
         alias: &str,
         code: Option<String>,
         port: u16,
+        proxy: Option<Proxy>,
         budget: Duration,
     ) -> Self {
         Self {
@@ -209,6 +212,7 @@ impl<'a> Flow<'a> {
             alias: alias.to_string(),
             code,
             port,
+            proxy,
             deadline: Instant::now() + budget,
         }
     }
@@ -464,7 +468,7 @@ impl<'a> Flow<'a> {
             self.code = Some(code.clone());
             return Ok(Some((campaign, code)));
         }
-        let Some(code) = self.harvest_code().await else {
+        let Some(code) = self.harvest_code(&campaign).await else {
             return Err(FlowError::new(
                 "needs_code",
                 "campaign code unavailable: sponsor widget did not return one",
@@ -476,8 +480,8 @@ impl<'a> Flow<'a> {
     }
 
     /// Ask the sponsored page for its campaign code.
-    async fn harvest_code(&self) -> Option<String> {
-        let campaign = instr::discover(self.cdp).await?;
+    async fn harvest_code(&self, campaign_id: &str) -> Option<String> {
+        let campaign = instr::discover(self.cdp, self.proxy.clone()).await?;
         let budget = self.remaining().min(Duration::from_secs(260));
         if budget.as_secs() < 60 {
             return None;
@@ -498,6 +502,12 @@ impl<'a> Flow<'a> {
             Ok(code) => Some(code),
             Err(err) => {
                 warn!(target: "engine", "sponsor harvest failed: {err}");
+                // A `widget` failure means the cached sponsor no longer serves
+                // a working quest; drop it so the next job re-runs discovery
+                // and can pick another candidate domain.
+                if err.kind == "widget" {
+                    instr::forget(campaign_id);
+                }
                 None
             }
         }
@@ -1239,9 +1249,18 @@ pub async fn run_alias(
     alias: &str,
     code: Option<&str>,
     port: u16,
+    proxy: Option<Proxy>,
     budget: Duration,
 ) -> FlowResult<String> {
-    let mut flow = Flow::new(cdp, asr.clone(), alias, code.map(str::to_string), port, budget);
+    let mut flow = Flow::new(
+        cdp,
+        asr.clone(),
+        alias,
+        code.map(str::to_string),
+        port,
+        proxy,
+        budget,
+    );
     flow.run().await
 }
 

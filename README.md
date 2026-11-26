@@ -55,10 +55,11 @@ Ghi chú nền tảng:
 - **Linux không có màn hình**: chạy Xvfb và đặt `L4M_HEADLESS=0`. Widget
   sponsor và captcha audio chỉ hoạt động đúng khi Chrome có display thật.
 - **macOS**: có desktop, đặt `L4M_HEADLESS=0`; không cần Xvfb.
-- **Windows**: `engine-rs` đã có cfg Windows (`taskkill /T`, process group, CIM
-  sweep, PowerShell/pwsh) nhưng chưa live test trên máy Windows thật và cần
-  toolchain MSVC; đường an toàn nhất vẫn là WSL2 (Ubuntu) theo hướng dẫn Linux.
-  `server-rs` và engine Python chạy native Windows bình thường.
+- **Windows**: `engine-rs` có cfg Windows đầy đủ (`taskkill /T`, process group,
+  CIM sweep, PowerShell/pwsh, `GlobalMemoryStatusEx`). Bản mặc định (whisper
+  local) cần MSVC + VS Build Tools; bản `--no-default-features` + `ASR_URL` đã
+  cross-build `x86_64-pc-windows-gnu` thành công nhưng chưa chạy live trên máy
+  Windows thật. `server-rs` và engine Python chạy native Windows bình thường.
 - Đường dẫn Python trong venv khác nhau:
   - Linux/macOS: `.venv/bin/python`
   - Windows: `.venv\Scripts\python.exe`
@@ -177,7 +178,7 @@ Auth: nếu đặt `API_KEY`, gửi `x-api-key: <key>` hoặc `?key=`.
 | `MAX_QUEUE` | `100` | hàng đợi; vượt → 429 |
 | `MAX_BATCH` | `50` | URL tối đa mỗi batch (1–500) |
 | `BATCH_CONCURRENCY` | `max(4, WORKERS)` | request batch song song (1–64) |
-| `PROXY_LIST` / `PROXY_FILE` | rỗng / `data/proxies.txt` | pool proxy |
+| `PROXY_LIST` / `PROXY_FILE` | rỗng / `data/proxies.txt` | pool proxy; file tự reload khi đổi |
 | `PROXY_ROTATE` | `0` | `1` = đổi exit sau mỗi job |
 | `L4M_HEADLESS` | `1` nếu không có `DISPLAY` | **đặt `0`** khi có display/Xvfb |
 | `JOB_TIMEOUT` | `480` | giây/lượt |
@@ -192,7 +193,8 @@ Auth: nếu đặt `API_KEY`, gửi `x-api-key: <key>` hoặc `?key=`.
 | `L4M_CODE_TTL` | `900` | TTL mã sponsor |
 | `L4M_CAMPAIGN` | rỗng | ghim campaign (list id, debug) |
 | `L4M_CODE` | rỗng | truyền mã có sẵn, bỏ quest |
-| `ASR_THREADS` | `2` | thread whisper |
+| `ASR_THREADS` | `2` | thread whisper local |
+| `ASR_URL` / `ASR_LANGUAGE` / `ASR_TIMEOUT` | rỗng / `en` / `90` | dùng ASR server ngoài thay whisper local |
 
 ## 8. Bằng chứng live (26/11/2026, Linux 3.7 GB, qua proxy relay)
 
@@ -210,7 +212,7 @@ ra `nmkiosvn-api.nmk87201.workers.dev/claim?...`.
 ## 9. Test
 
 ```bash
-# engine-rs — 43 test (Linux/macOS/WSL2)
+# engine-rs — 50 test (Linux/macOS/WSL2)
 cd <repo>/engine-rs
 WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
 
@@ -245,8 +247,8 @@ không được sửa nội dung test.
   thì engine tự đổi exit sau `PROXY_ROTATE_AFTER` lượt; không có proxy thì
   không có exit khác để đổi.
 - Máy 4 GB chỉ nên chạy 1 worker headful (Chrome 1.3–1.8 GB). `WORKERS=auto`
-  đọc `MemAvailable` trên Linux (`(MemAvailable-900)/1400`, kẹp 1–32); macOS/
-  Windows fallback 1 worker, đặt `WORKERS` số cụ thể nếu muốn hơn.
+  đọc RAM trống theo từng hệ (`MemAvailable` / `vm_stat` /
+  `GlobalMemoryStatusEx`, `(available-900)/1400`, kẹp 1–32).
 - reCAPTCHA audio bị chặn theo IP/profile: engine reload lấy anchor mới trong
   budget. Khi Google báo `automated queries` / `try again later`, engine đánh
   dấu exit đó là xấu và relaunch Chrome sang exit kế tiếp nếu có pool.
@@ -258,10 +260,11 @@ không được sửa nội dung test.
 - Job đang chạy lúc process chết được chạy lại từ đầu (`QUEUE_RESUME_RUNNING=1`,
   mặc định); đặt `0` nếu muốn đánh `failed` để tránh chạy đôi một lượt đã qua
   captcha.
-- `engine-rs` build native trên Windows (taskkill + `CREATE_NEW_PROCESS_GROUP`);
-  Linux/WSL2 vẫn là môi trường đã chạy live nhiều nhất. Cross-check mingw trên
-  Linux fail ở bindgen `whisper-rs-sys` (dependency), không phải code engine;
-  build Windows thật cần toolchain MSVC.
+- `engine-rs` có cfg Windows đầy đủ (taskkill + `CREATE_NEW_PROCESS_GROUP`);
+  bản `--no-default-features` + `ASR_URL` đã cross-build
+  `x86_64-pc-windows-gnu` nhưng chưa chạy live trên Windows thật. Bản mặc định
+  (whisper local) cần MSVC; cross-check mingw fail ở bindgen `whisper-rs-sys`
+  (dependency), không phải code engine.
 
 ## 12. Bản đồ repo
 
@@ -345,4 +348,6 @@ Cơ chế 3 chiều, chống đè file bạn đã sửa:
   cập nhật sau khi apply thành công.
 - Lần đầu chưa có manifest: file đã sửa được coi là xung đột và giữ nguyên,
   không có chuyện ghi đè mù.
-- Windows: chạy script trong WSL2 (engine-rs native Windows chưa hỗ trợ).
+- Windows: script là bash; chạy trong WSL2/Git Bash. Engine native Windows giờ
+  build được bằng `--no-default-features` + `ASR_URL`, nhưng script cập nhật
+  vẫn cần môi trường bash.

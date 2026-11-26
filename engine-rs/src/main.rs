@@ -5,7 +5,9 @@
 
 use anyhow::{anyhow, Result};
 use l4m_engine::api::{router, ApiState};
-use l4m_engine::asr::{ensure_model, Asr};
+use l4m_engine::asr::Asr;
+#[cfg(feature = "local-asr")]
+use l4m_engine::asr::ensure_model;
 use l4m_engine::cdp::Cdp;
 use l4m_engine::chrome::ChromeProc;
 use l4m_engine::flow::run_alias;
@@ -52,14 +54,20 @@ async fn main() -> Result<()> {
     let model_path = cfg.model_path.clone();
     let model_url = cfg.model_url.clone();
     let threads = cfg.asr_threads;
-    let asr = tokio::task::spawn_blocking(move || -> Result<Asr> {
-        let path = ensure_model(&model_path, &model_url)?;
-        Asr::load(&path, threads)
-    })
-    .await??;
-    info!(target: "engine", "whisper ready ({} threads)", cfg.asr_threads);
+    let remote = std::env::var("ASR_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let asr = match remote {
+        Some(url) => {
+            let asr = Asr::remote(&url)?;
+            info!(target: "engine", endpoint = %url, "asr ready (remote)");
+            asr
+        }
+        None => load_local_asr(&model_path, &model_url, threads).await?,
+    };
 
     if check {
+        report_side_channels().await;
         let binary = cfg.chrome_bin.clone();
         let headless = cfg.headless;
         let chrome = tokio::task::spawn_blocking(move || {
@@ -75,7 +83,7 @@ async fn main() -> Result<()> {
         let ws = chrome.page_ws()?;
         let cdp = Cdp::connect(&ws).await?;
         cdp.call("Page.enable", serde_json::json!({})).await?;
-        info!(target: "engine", "check ok: chrome + cdp + whisper");
+        info!(target: "engine", asr = asr.label(), "check ok: chrome + cdp + asr");
         return Ok(());
     }
 
@@ -98,6 +106,75 @@ async fn main() -> Result<()> {
         warn!(target: "engine", "shutdown timed out, dropping open sessions");
     }
     Ok(())
+}
+
+#[cfg(feature = "local-asr")]
+async fn load_local_asr(
+    model_path: &std::path::Path,
+    model_url: &str,
+    threads: i32,
+) -> Result<Asr> {
+    let model_path = model_path.to_path_buf();
+    let model_url = model_url.to_string();
+    let asr = tokio::task::spawn_blocking(move || -> Result<Asr> {
+        let path = ensure_model(&model_path, &model_url)?;
+        Asr::load(&path, threads)
+    })
+    .await??;
+    info!(target: "engine", "whisper ready ({} threads)", threads);
+    Ok(asr)
+}
+
+#[cfg(not(feature = "local-asr"))]
+async fn load_local_asr(
+    _model_path: &std::path::Path,
+    _model_url: &str,
+    _threads: i32,
+) -> Result<Asr> {
+    Err(anyhow!(
+        "this build has no local ASR; set ASR_URL to a whisper.cpp server \
+         or an OpenAI-compatible transcription endpoint"
+    ))
+}
+
+/// `--check` used to leave proxy and OCR misconfiguration for the first job to
+/// discover. Probe the configured exit and name the OCR backend up front.
+async fn report_side_channels() {
+    if let Some(pool) = l4m_engine::proxy::shared() {
+        let count = pool.len();
+        if let Some(proxy) = pool.next() {
+            let exit = format!("{}:{}", proxy.host, proxy.port);
+            let probe = proxy.clone();
+            let ok = tokio::task::spawn_blocking(move || {
+                let agent = l4m_engine::proxy::agent_for(
+                    Some(&probe),
+                    Duration::from_secs(20),
+                    "Mozilla/5.0",
+                );
+                agent
+                    .get("https://www.google.com/generate_204")
+                    .call()
+                    .map(|response| response.status() == 204)
+                    .unwrap_or(false)
+            })
+            .await
+            .unwrap_or(false);
+            if ok {
+                info!(target: "engine", proxies = count, exit = %exit, "proxy check ok");
+            } else {
+                warn!(target: "engine", proxies = count, exit = %exit, "proxy check failed");
+            }
+        } else {
+            warn!(target: "engine", proxies = count, "proxy pool is empty");
+        }
+    } else {
+        info!(target: "engine", "proxy: direct connection (no pool)");
+    }
+    info!(
+        target: "engine",
+        backend = l4m_engine::instr::ocr_status(),
+        "ocr backend"
+    );
 }
 
 async fn shutdown_signal() {
@@ -146,7 +223,16 @@ async fn run_once(cfg: Config, asr: Arc<Asr>, target: &str) -> Result<()> {
     let cdp = Cdp::connect(&ws).await?;
     let started = std::time::Instant::now();
     let code = std::env::var("L4M_CODE").ok().filter(|c| !c.trim().is_empty());
-    let result = run_alias(&cdp, &asr, &alias, code.as_deref(), chrome.port, cfg.job_timeout).await;
+    let result = run_alias(
+        &cdp,
+        &asr,
+        &alias,
+        code.as_deref(),
+        chrome.port,
+        proxy.clone(),
+        cfg.job_timeout,
+    )
+    .await;
     let elapsed = started.elapsed().as_secs_f64() * 1000.0;
     match result {
         Ok(destination) => {

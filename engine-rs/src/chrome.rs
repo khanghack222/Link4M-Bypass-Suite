@@ -302,6 +302,10 @@ impl ChromeProc {
             // Every request goes through the local relay, which injects the
             // upstream proxy credentials Chrome cannot carry itself.
             command.arg(format!("--proxy-server=http://127.0.0.1:{port}"));
+            // WebRTC would otherwise send UDP straight from the host and QUIC
+            // bypasses HTTP proxies entirely; both leak the real exit.
+            command.arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+            command.arg("--disable-quic");
         } else {
             command.arg("--no-proxy-server");
         }

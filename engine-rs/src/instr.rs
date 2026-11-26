@@ -9,7 +9,7 @@
 //! campaign is served to many aliases and the OCR only has to run once.
 
 use crate::cdp::Cdp;
-use crate::proxy;
+use crate::proxy::{self, Proxy};
 use base64::Engine as _;
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -118,6 +118,29 @@ fn cache_put(campaign_id: &str, value: &Campaign) {
     }
 }
 
+/// Drop a campaign whose cached sponsor no longer serves a widget. Without
+/// this a dead sponsor stays cached in `data/campaigns.json` forever and every
+/// alias burns a full harvest attempt on it.
+pub fn forget(campaign_id: &str) {
+    if campaign_id.is_empty() {
+        return;
+    }
+    let mut guard = cache().lock().expect("campaign cache");
+    if guard.is_none() {
+        *guard = Some(load_cache());
+    }
+    if let Some(map) = guard.as_mut() {
+        if map.remove(campaign_id).is_some() {
+            store_cache(map);
+            info!(
+                target: "engine",
+                campaign = %campaign_id,
+                "campaign cache dropped after sponsor failure"
+            );
+        }
+    }
+}
+
 fn clean_domains(blob: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = blob;
@@ -208,7 +231,33 @@ fn ocr_script() -> PathBuf {
     PathBuf::from("tools/ocr.py")
 }
 
-fn decode_image(src: &str, dir: &Path, index: usize) -> Option<PathBuf> {
+/// Which OCR reader is available right now. `--check` prints this so a missing
+/// sidecar and a missing tesseract are visible before a campaign needs them.
+pub fn ocr_status() -> &'static str {
+    let python = ocr_binary();
+    let script = ocr_script();
+    if script.exists() && runnable(&python, &["-c", "import rapidocr_onnxruntime"]) {
+        return "rapidocr";
+    }
+    let tesseract = std::env::var("L4M_TESSERACT").unwrap_or_else(|_| "tesseract".into());
+    if runnable(Path::new(&tesseract), &["--version"]) {
+        "tesseract"
+    } else {
+        "none"
+    }
+}
+
+fn runnable(binary: &Path, args: &[&str]) -> bool {
+    std::process::Command::new(binary)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn decode_image(src: &str, dir: &Path, index: usize, proxy: Option<&Proxy>) -> Option<PathBuf> {
     let path = dir.join(format!("instr-{index}.png"));
     if let Some(rest) = src.strip_prefix("data:image/") {
         let payload = rest.split_once(',')?.1;
@@ -217,7 +266,7 @@ fn decode_image(src: &str, dir: &Path, index: usize) -> Option<PathBuf> {
         return Some(path);
     }
     if src.starts_with("http://") || src.starts_with("https://") {
-        let body = proxy::agent(Duration::from_secs(12), "Mozilla/5.0")
+        let body = proxy::agent_for(proxy, Duration::from_secs(12), "Mozilla/5.0")
             .get(src)
             .call()
             .ok()?
@@ -231,12 +280,12 @@ fn decode_image(src: &str, dir: &Path, index: usize) -> Option<PathBuf> {
     None
 }
 
-fn run_ocr(images: &[String]) -> Vec<String> {
+fn run_ocr(images: &[String], proxy: Option<&Proxy>) -> Vec<String> {
     let dir = std::env::temp_dir().join("l4m-instr");
     let _ = std::fs::create_dir_all(&dir);
     let mut files = Vec::new();
     for (i, src) in images.iter().enumerate() {
-        if let Some(path) = decode_image(src, &dir, i) {
+        if let Some(path) = decode_image(src, &dir, i, proxy) {
             files.push(path);
         }
     }
@@ -390,7 +439,7 @@ fn widget_src(body: &str) -> Option<String> {
 
 /// Read `ref_domain_list` out of the widget script: an empty list accepts a
 /// bare navigation, a Google list requires a Google referrer.
-fn widget_refs(body: &str) -> String {
+fn widget_refs(body: &str, proxy: Option<&Proxy>) -> String {
     let Some(src) = widget_src(body) else {
         return "auto".into();
     };
@@ -401,7 +450,7 @@ fn widget_refs(body: &str) -> String {
     } else {
         return "auto".into();
     };
-    let Ok(response) = proxy::agent(Duration::from_secs(8), UA_MOBILE)
+    let Ok(response) = proxy::agent_for(proxy, Duration::from_secs(8), UA_MOBILE)
         .get(&url)
         .call()
     else {
@@ -431,8 +480,8 @@ fn widget_refs(body: &str) -> String {
 }
 
 /// Fetch a candidate homepage and return `(final host, widget key)`.
-fn probe(domain: &str) -> Option<(String, String)> {
-    let agent = proxy::agent(Duration::from_secs(9), UA_MOBILE);
+fn probe(domain: &str, proxy: Option<&Proxy>) -> Option<(String, String)> {
+    let agent = proxy::agent_for(proxy, Duration::from_secs(9), UA_MOBILE);
     let response = agent.get(&format!("https://{domain}/")).call().ok()?;
     let final_url = response.get_url().to_string();
     let mut body = String::new();
@@ -443,17 +492,18 @@ fn probe(domain: &str) -> Option<(String, String)> {
         .ok()?;
     let key = widget_key(&body)?;
     let host = url::Url::parse(&final_url).ok()?.host_str()?.to_string();
-    let refs = widget_refs(&body);
+    let refs = widget_refs(&body, proxy);
     Some((host, format!("{key}\u{1}{refs}")))
 }
 
 /// Probe candidates in parallel, keeping the OCR order as priority.
-async fn probe_all(candidates: Vec<String>) -> Option<(String, String)> {
+async fn probe_all(candidates: Vec<String>, proxy: Option<Proxy>) -> Option<(String, String)> {
     for chunk in candidates.chunks(4) {
         let futures = chunk.iter().enumerate().map(|(i, domain)| {
             let domain = domain.clone();
+            let proxy = proxy.clone();
             async move {
-                let hit = tokio::task::spawn_blocking(move || probe(&domain))
+                let hit = tokio::task::spawn_blocking(move || probe(&domain, proxy.as_ref()))
                     .await
                     .ok()
                     .flatten();
@@ -473,7 +523,7 @@ async fn probe_all(candidates: Vec<String>) -> Option<(String, String)> {
 }
 
 /// Read the instruction block on the current campaign page.
-pub async fn discover(cdp: &Cdp) -> Option<Campaign> {
+pub async fn discover(cdp: &Cdp, proxy: Option<Proxy>) -> Option<Campaign> {
     let value = cdp.eval(None, INSTR_JS).await.ok()?;
     let text = value.get("text").and_then(Value::as_str).unwrap_or("");
     let campaign_id = value.get("campaign").and_then(Value::as_str).unwrap_or("");
@@ -484,7 +534,7 @@ pub async fn discover(cdp: &Cdp) -> Option<Campaign> {
             return Some(hit);
         }
         // Cached before the probe existed, or the probe failed last time.
-        if let Some((host, packed)) = probe_all(vec![hit.sponsor.clone()]).await {
+        if let Some((host, packed)) = probe_all(vec![hit.sponsor.clone()], proxy.clone()).await {
             let (key, refs) = packed
                 .split_once('\u{1}')
                 .map(|(k, r)| (k.to_string(), r.to_string()))
@@ -505,7 +555,7 @@ pub async fn discover(cdp: &Cdp) -> Option<Campaign> {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
             .unwrap_or_default();
-        let lines = run_ocr(&images);
+        let lines = run_ocr(&images, proxy.as_ref());
         if lines.is_empty() {
             warn!(target: "engine", "instruction OCR returned nothing");
         }
@@ -521,7 +571,7 @@ pub async fn discover(cdp: &Cdp) -> Option<Campaign> {
         }
     }
 
-    let (sponsor, packed) = probe_all(domains).await?;
+    let (sponsor, packed) = probe_all(domains, proxy).await?;
     let (key, refs) = packed
         .split_once('\u{1}')
         .map(|(k, r)| (k.to_string(), r.to_string()))

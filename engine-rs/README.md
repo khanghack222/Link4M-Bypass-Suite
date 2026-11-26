@@ -30,11 +30,14 @@ browser** và chỉ chạy Link4M.
 | Chrome/Chromium | bắt buộc; engine mở bằng CDP |
 | X display | **bắt buộc** cho quest: widget và reCAPTCHA audio chỉ chạy đúng khi tab thật sự foreground. Dùng Xvfb trên server |
 | Model whisper | `models/ggml-tiny.en.bin` (~77 MB), tự tải lần đầu nếu thiếu |
+| ASR remote (tuỳ chọn) | `ASR_URL` trỏ whisper.cpp server hoặc endpoint OpenAI-compatible; thay được model local |
 | Python venv + rapidocr | sidecar `tools/ocr.py`; chỉ dùng khi campaign giấu hướng dẫn trong ảnh |
 | RAM | 1 worker ≈ 1 Chrome headful + whisper ≈ 1.3–1.8 GB |
 
 Model tải từ `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin`
 (`WHISPER_MODEL_URL` đổi được). Đặt sẵn vào `models/` nếu máy không ra internet.
+Không muốn build whisper.cpp (máy Windows không MSVC, box ARM, cross-compile)
+thì dùng ASR server ngoài — xem mục 2.
 
 OCR sidecar:
 
@@ -56,6 +59,18 @@ Binary: `target/release/l4m-engine`.
 `whisper-rs-sys` mặc định chạy bindgen, cần `libclang.so` — box slim thường
 không có và build chết ở `Unable to find libclang`. Bindings đóng sẵn trong
 crate dùng được, chỉ cần `cmake` + `g++` để dịch whisper.cpp.
+
+Build không có C++ toolchain — chỉ dùng ASR server ngoài:
+
+```bash
+# Bỏ whisper.cpp + model; binary chỉ gửi audio tới ASR_URL.
+./build.sh --no-default-features
+ASR_URL=http://127.0.0.1:8081/inference ./target/release/l4m-engine
+```
+
+Đường này đã cross-build thành công `x86_64-pc-windows-gnu` (file `.exe`
+7.0 MB) trên Linux; chạy thật trên Windows vẫn cần Chrome + `.venv` OCR và
+một ASR server (whisper.cpp server hoặc endpoint OpenAI-compatible).
 
 ## 2.1 Test
 
@@ -196,7 +211,7 @@ Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?ke
 | `MAX_BATCH` | `50` | số URL tối đa mỗi `/api/v1/batch` (1–500) |
 | `BATCH_CONCURRENCY` | `max(4, WORKERS)` | số request batch chạy song song (1–64) |
 | `PROXY_LIST` | rỗng | danh sách proxy inline, phân tách bởi dấu phẩy/xuống dòng |
-| `PROXY_FILE` | `data/proxies.txt` | file proxy khi không đặt `PROXY_LIST` |
+| `PROXY_FILE` | `data/proxies.txt` | file proxy khi không đặt `PROXY_LIST`; tự reload khi file đổi (mtime/size) |
 | `PROXY_ROTATE` | `0` | `1` = đổi IP sau **mỗi job** (relaunch Chrome, ~5 s) |
 | `PROXY_ROTATE_AFTER` | `4` | tự đổi exit sau N lượt thành công khi pool có >1 proxy; `0` tắt |
 | `PROXY_COOLDOWN` | `300` | giây một exit lỗi bị loại khỏi vòng xoay |
@@ -217,9 +232,12 @@ Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?ke
 | `CHROME_PROFILE` | `data/chrome-profile` | profile gốc; worker > 1 copy sang `-w<N>` |
 | `L4M_PYTHON` / `L4M_OCR` | `.venv/bin/python` / `tools/ocr.py` | sidecar OCR |
 | `L4M_TESSERACT` | `tesseract` | OCR fallback khi sidecar chết/thiếu |
-| `WHISPER_MODEL` | `models/ggml-tiny.en.bin` | model ASR |
+| `WHISPER_MODEL` | `models/ggml-tiny.en.bin` | model ASR local (bỏ qua khi có `ASR_URL`) |
 | `WHISPER_MODEL_URL` | HuggingFace tiny.en | nguồn tải khi thiếu model |
-| `ASR_THREADS` | `2` | thread whisper |
+| `ASR_THREADS` | `2` | thread whisper local |
+| `ASR_URL` | rỗng | bật ASR remote; bare host tự thêm `/inference`, path cụ thể giữ nguyên |
+| `ASR_LANGUAGE` | `en` | ngôn ngữ gửi kèm request ASR remote |
+| `ASR_TIMEOUT` | `90` | giây timeout request ASR remote (tối thiểu 5) |
 | `RUST_LOG` | `l4m_engine=info,engine=info` | mức log |
 
 ## 6.1 Proxy — phá giới hạn IP
@@ -237,7 +255,17 @@ host:port
 user:pass@host:port
 http://user:pass@host:port
 host:port:user:pass
+socks5://user:pass@host:port
+socks5h://host:port
 ```
+
+HTTP và SOCKS5 đều đi qua relay loopback. SOCKS5 được relay tự bắt tay
+(no-auth hoặc user/pass) và nói chuyện trực tiếp với đích; request HTTP tuyệt
+đối được đổi về origin-form trước khi gửi. Với proxy bật, Chrome còn bị khoá
+WebRTC UDP và QUIC để không lộ IP thật ra ngoài tunnel.
+
+`PROXY_FILE` được đọc lại khi mtime/size đổi: thêm hoặc thay exit không cần
+restart. File bị editor cắt rỗng giữ nguyên pool cũ thay vì xoá sạch.
 
 Chrome không nhận credential trong `--proxy-server`, nên engine dựng một relay
 127.0.0.1 cho mỗi session: Chrome → relay → proxy thật, relay chèn
@@ -269,6 +297,9 @@ bỏ qua toàn bộ quest (tiết kiệm ~2–3 phút/lượt).
   quest, các job còn lại chờ rồi đọc cache.
 - Mã bị từ chối → `invalidate(campaign)`, xoá `self.code`, harvest lại trong
   cùng job.
+- Sponsor trong cache chết (quest báo `widget`) → entry campaign bị xoá khỏi
+  `data/campaigns.json`; job sau chạy lại discovery và có thể chọn domain khác,
+  không kẹt vào sponsor cũ.
 
 ## 8. RAM, worker và vòng đời Chrome
 
@@ -283,10 +314,10 @@ Box 3.7 GB từng bị OOM vì Chrome sống sót sau khi engine bị `timeout` 
 3. systemd `KillMode=control-group` + `MemoryMax` là lưới ngoài cùng.
 
 Khuyến nghị: `WORKERS=1` trên 4 GB, `WORKERS=2` trên 8 GB. Trên box 3.7 GB đặt
-`WORKERS=auto`: engine đọc `MemAvailable` (Linux), trừ 900 MB cho hệ thống, chia
-1.4 GB mỗi worker, kẹp 1–32. macOS/Windows không có `MemAvailable` thì fallback
-1 worker; đặt `WORKERS` số cụ thể nếu muốn nhiều hơn. Tab sponsor chặn
-ảnh/video/font; tab campaign chỉ chặn media và font (captcha cần ảnh).
+`WORKERS=auto`: engine đọc `MemAvailable` (Linux), `vm_stat` (macOS) hoặc
+`GlobalMemoryStatusEx` (Windows), trừ 900 MB cho hệ thống, chia 1.4 GB mỗi
+worker, kẹp 1–32. Tab sponsor chặn ảnh/video/font; tab campaign chỉ chặn media
+và font (captcha cần ảnh).
 
 ## 9. Deploy (systemd + Xvfb)
 
@@ -339,7 +370,13 @@ curl -s -X POST localhost:8080/api/v1/bypass \
   từ ảnh (campaign `TRỰC TIẾP` vẫn chạy).
 - Một campaign chỉ có một mã tại một thời điểm; mã cũ hết hạn sẽ bị từ chối và
   engine tự harvest lại.
-- `engine-rs` build native trên Windows (taskkill + process group); Linux/WSL2
-  là môi trường đã chạy live nhiều nhất. Cross-check mingw trên Linux fail ở
-  bindgen của `whisper-rs-sys` (không phải code engine); build Windows thật cần
-  toolchain MSVC + Visual Studio Build Tools.
+- `engine-rs` có cfg Windows đầy đủ (`taskkill /T`, `CREATE_NEW_PROCESS_GROUP`,
+  CIM + PowerShell/pwsh sweep). Bản `--no-default-features` + `ASR_URL` đã
+  cross-build thành công `x86_64-pc-windows-gnu` trên Linux, nhưng chưa chạy
+  live trên máy Windows thật. Bản mặc định (whisper local) vẫn cần toolchain
+  MSVC + Visual Studio Build Tools; cross-check mingw fail ở bindgen của
+  `whisper-rs-sys`, không phải code engine. Linux/WSL2 là môi trường đã chạy
+  live nhiều nhất.
+- ASR remote: đặt `ASR_URL` (whisper.cpp `/inference` hoặc endpoint
+  OpenAI-compatible). Audio captcha đi qua endpoint đó thay vì whisper local;
+  build `--no-default-features` bỏ hẳn whisper.cpp/cmake/model.

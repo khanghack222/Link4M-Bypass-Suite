@@ -114,21 +114,101 @@ fn which(binary: &str) -> Result<String> {
     Err(anyhow!("{binary} not found"))
 }
 
-/// `WORKERS=auto` sizes the pool from MemAvailable: one headful Chrome plus
+/// Available RAM in MiB, platform-specific so `WORKERS=auto` is not a Linux
+/// only feature. Returns `None` when the platform cannot report it.
+#[cfg(target_os = "linux")]
+fn available_memory_mb() -> Option<u64> {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find(|line| line.starts_with("MemAvailable:"))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|kb| kb.parse::<u64>().ok())
+        })
+        .map(|kb| kb / 1024)
+}
+
+#[cfg(target_os = "macos")]
+fn available_memory_mb() -> Option<u64> {
+    // `vm_stat` is part of the base system; no extra binary or FFI needed.
+    let output = std::process::Command::new("vm_stat").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let page_size = text
+        .lines()
+        .find(|line| line.contains("page size of"))
+        .and_then(|line| line.split("page size of").nth(1))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .unwrap_or(4096);
+    let mut pages = 0u64;
+    for line in text.lines() {
+        let Some((label, value)) = line.split_once(':') else {
+            continue;
+        };
+        if matches!(
+            label.trim(),
+            "Pages free" | "Pages inactive" | "Pages speculative" | "Pages purgeable"
+        ) {
+            if let Ok(count) = value.trim().trim_end_matches('.').parse::<u64>() {
+                pages += count;
+            }
+        }
+    }
+    if pages == 0 {
+        None
+    } else {
+        Some(pages * page_size / (1024 * 1024))
+    }
+}
+
+#[cfg(windows)]
+fn available_memory_mb() -> Option<u64> {
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MemoryStatusEx {
+        length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        memory_load: 0,
+        total_phys: 0,
+        avail_phys: 0,
+        total_page_file: 0,
+        avail_page_file: 0,
+        total_virtual: 0,
+        avail_virtual: 0,
+        avail_extended_virtual: 0,
+    };
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    if ok == 0 {
+        None
+    } else {
+        Some(status.avail_phys / (1024 * 1024))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn available_memory_mb() -> Option<u64> {
+    None
+}
+
+/// `WORKERS=auto` sizes the pool from available RAM: one headful Chrome plus
 /// its share of whisper costs ~1.4 GB, and the box needs ~900 MB to breathe.
 fn parse_workers() -> usize {
     let raw = std::env::var("WORKERS").unwrap_or_else(|_| "2".into());
     if raw.trim().eq_ignore_ascii_case("auto") {
-        let available_mb = std::fs::read_to_string("/proc/meminfo")
-            .ok()
-            .and_then(|text| {
-                text.lines()
-                    .find(|line| line.starts_with("MemAvailable:"))
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .and_then(|kb| kb.parse::<u64>().ok())
-            })
-            .map(|kb| kb / 1024)
-            .unwrap_or(2048);
+        let available_mb = available_memory_mb().unwrap_or(2048);
         let workers = available_mb.saturating_sub(900) / 1400;
         return (workers as usize).clamp(1, 32);
     }

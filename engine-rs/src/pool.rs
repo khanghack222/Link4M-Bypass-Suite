@@ -261,6 +261,7 @@ async fn worker_loop(
             &job.alias,
             job.code.as_deref(),
             chrome_port,
+            active_proxy.clone(),
             inner.cfg.job_timeout,
         )
         .await;
@@ -268,7 +269,10 @@ async fn worker_loop(
 
         let dead = match &outcome {
             Ok(_) => false,
-            Err(err) => err.kind == "cdp",
+            // A timeout can be a wedged page or a burned exit. Relaunching is
+            // the only way to guarantee the next job starts from a clean
+            // browser, so treat it like a dead session.
+            Err(err) => err.kind == "cdp" || err.kind == "timeout",
         };
         if dead {
             warn!(target: "engine", worker = worker_id, "browser died, dropping session");
@@ -302,11 +306,14 @@ async fn worker_loop(
             }
         }
         // PROXY_ROTATE=1 gives every job a fresh exit; the cost is a Chrome
-        // relaunch (~5 s) and a fresh profile boot.
+        // relaunch (~5 s) and a fresh profile boot. A blocked audio challenge
+        // also gets a new browser even without a proxy pool: the profile and
+        // the reCAPTCHA session are part of what Google scores.
         let rotate = std::env::var("PROXY_ROTATE")
             .map(|value| value != "0")
             .unwrap_or(false);
-        if active_proxy.is_some() && (rotate || blocked || quota_reached) && session.is_some() {
+        let restart = blocked || (active_proxy.is_some() && (rotate || quota_reached));
+        if restart && session.is_some() {
             info!(
                 target: "engine",
                 worker = worker_id,
@@ -317,7 +324,7 @@ async fn worker_loop(
                 } else {
                     "rotate"
                 },
-                "moving to the next proxy, relaunching chrome"
+                "relaunching chrome"
             );
             session = None;
         }
