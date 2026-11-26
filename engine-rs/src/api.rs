@@ -275,6 +275,7 @@ async fn resolve(
             code: req_code.clone(),
             track_id: track_id.clone(),
             created_at: queued_at,
+            stage: "queued".into(),
         })
         .await;
     let job = Job {
@@ -603,6 +604,7 @@ mod tests {
             queue_file: scratch.join("queue.json"),
             links_file: scratch.join("links.json"),
             resume_queue,
+            resume_running: true,
             chrome_bin: "google-chrome".into(),
             headless: true,
             profile_dir: scratch.join("profile"),
@@ -896,6 +898,7 @@ mod tests {
             code: None,
             track_id: "track-resume".into(),
             created_at: unix_now(),
+            stage: "queued".into(),
         };
         std::fs::write(
             &cfg.queue_file,
@@ -904,7 +907,7 @@ mod tests {
         .expect("queue file");
         let app = router(build(cfg));
 
-        for _ in 0..60 {
+        for _ in 0..200 {
             let (status, body) = call(
                 app.clone(),
                 Request::builder()
@@ -920,17 +923,26 @@ mod tests {
                 .map(|row| row["status"] == "failed")
                 .unwrap_or(false);
             if done {
-                let (status, job) = call(
-                    app,
-                    Request::builder()
-                        .uri("/api/v1/jobs/job-resume")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await;
-                assert_eq!(status, StatusCode::OK);
-                assert_eq!(job["status"], "failed");
-                return;
+                // The board is finished a beat before the `/jobs` view is
+                // written, so poll briefly instead of assuming one order.
+                let mut last = serde_json::json!({});
+                for _ in 0..50 {
+                    let (status, job) = call(
+                        app.clone(),
+                        Request::builder()
+                            .uri("/api/v1/jobs/job-resume")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await;
+                    assert_eq!(status, StatusCode::OK);
+                    last = job;
+                    if last["status"] == "failed" {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                panic!("job view never reached failed: {last}");
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

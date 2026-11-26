@@ -191,19 +191,22 @@ Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?ke
 |---|---|---|
 | `HOST` / `PORT` | `0.0.0.0` / `8080` | bind |
 | `API_KEY` | rỗng | bật auth |
-| `WORKERS` | `2` | số Chrome song song; mỗi worker ~1.3–1.8 GB. `WORKERS=auto` tự tính từ `MemAvailable` |
+| `WORKERS` | `2` | số Chrome song song; mỗi worker ~1.3–1.8 GB. `WORKERS=auto` tự tính từ `MemAvailable` (Linux), nơi khác fallback 1 |
 | `MAX_QUEUE` | `100` | vượt → 429 |
 | `MAX_BATCH` | `50` | số URL tối đa mỗi `/api/v1/batch` (1–500) |
 | `BATCH_CONCURRENCY` | `max(4, WORKERS)` | số request batch chạy song song (1–64) |
 | `PROXY_LIST` | rỗng | danh sách proxy inline, phân tách bởi dấu phẩy/xuống dòng |
 | `PROXY_FILE` | `data/proxies.txt` | file proxy khi không đặt `PROXY_LIST` |
 | `PROXY_ROTATE` | `0` | `1` = đổi IP sau **mỗi job** (relaunch Chrome, ~5 s) |
+| `PROXY_ROTATE_AFTER` | `4` | tự đổi exit sau N lượt thành công khi pool có >1 proxy; `0` tắt |
+| `PROXY_COOLDOWN` | `300` | giây một exit lỗi bị loại khỏi vòng xoay |
 | `JOB_TIMEOUT` | `480` | giây cho một lượt flow (quest 120 s + captcha) |
 | `CACHE_ENABLED` / `CACHE_TTL` | `true` / `21600` | cache theo `provider:alias` |
 | `CACHE_FILE` | `data/native_cache.json` | cache bền qua restart |
 | `QUEUE_FILE` | `data/queue.json` | job chờ, sống qua restart |
 | `LINKS_FILE` | `data/links.json` | 500 dòng bảng trạng thái gần nhất |
 | `QUEUE_RESUME` | `true` | `0` = không replay job chờ sau restart |
+| `QUEUE_RESUME_RUNNING` | `true` | `0` = job đang chạy lúc crash đánh `failed` |
 | `L4M_CODE_TTL` | `900` | giây sống của mã sponsor đã chứng minh |
 | `L4M_CODE_FILE` | `data/codes.json` | cache mã theo campaign |
 | `L4M_CAMPAIGN_CACHE` | `data/campaigns.json` | cache sponsor/key/referrer theo campaign |
@@ -213,6 +216,7 @@ Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?ke
 | `CHROME_BIN` | tự dò | `google-chrome`, `chromium`, `/opt/google/chrome/chrome` |
 | `CHROME_PROFILE` | `data/chrome-profile` | profile gốc; worker > 1 copy sang `-w<N>` |
 | `L4M_PYTHON` / `L4M_OCR` | `.venv/bin/python` / `tools/ocr.py` | sidecar OCR |
+| `L4M_TESSERACT` | `tesseract` | OCR fallback khi sidecar chết/thiếu |
 | `WHISPER_MODEL` | `models/ggml-tiny.en.bin` | model ASR |
 | `WHISPER_MODEL_URL` | HuggingFace tiny.en | nguồn tải khi thiếu model |
 | `ASR_THREADS` | `2` | thread whisper |
@@ -221,8 +225,10 @@ Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?ke
 ## 6.1 Proxy — phá giới hạn IP
 
 Link4M và trang sponsor rate-limit theo IP: sau vài captcha từ một địa chỉ, audio
-challenge bắt đầu fail. Engine có pool proxy, mỗi worker một exit, hoặc mỗi job
-một exit với `PROXY_ROTATE=1`.
+challenge bắt đầu fail và campaign biến mất. Engine có pool proxy, mỗi worker
+một exit. `PROXY_ROTATE=1` đổi sau mỗi job; mặc định `PROXY_ROTATE_AFTER=4`
+đổi exit sau 4 lượt thành công khi pool có nhiều hơn một proxy. Audio bị Google
+báo `automated queries` / `try again later` cũng đánh dấu exit đó cooldown.
 
 Định dạng mỗi dòng (hoặc mỗi mục trong `PROXY_LIST`):
 
@@ -277,9 +283,10 @@ Box 3.7 GB từng bị OOM vì Chrome sống sót sau khi engine bị `timeout` 
 3. systemd `KillMode=control-group` + `MemoryMax` là lưới ngoài cùng.
 
 Khuyến nghị: `WORKERS=1` trên 4 GB, `WORKERS=2` trên 8 GB. Trên box 3.7 GB đặt
-`WORKERS=auto`: engine đọc `MemAvailable`, trừ 900 MB cho hệ thống, chia 1.4 GB
-mỗi worker, kẹp 1–6. Tab sponsor chặn ảnh/video/font; tab campaign chỉ chặn
-media và font (captcha cần ảnh).
+`WORKERS=auto`: engine đọc `MemAvailable` (Linux), trừ 900 MB cho hệ thống, chia
+1.4 GB mỗi worker, kẹp 1–32. macOS/Windows không có `MemAvailable` thì fallback
+1 worker; đặt `WORKERS` số cụ thể nếu muốn nhiều hơn. Tab sponsor chặn
+ảnh/video/font; tab campaign chỉ chặn media và font (captcha cần ảnh).
 
 ## 9. Deploy (systemd + Xvfb)
 
@@ -316,17 +323,23 @@ curl -s -X POST localhost:8080/api/v1/bypass \
   lần reload. `L4M_CAMPAIGN` dùng để ghim khi cần tái lập.
 - Link4M ngừng phục vụ campaign cho một IP sau vài lượt hoàn thành: từ lúc đó
   mọi alias trả trang captcha-only. Engine vẫn lấy được destination (đường tắt
-  ở mục 4); muốn có lại đường sponsor thì đổi exit qua `PROXY_LIST` /
-  `PROXY_ROTATE=1`.
+  ở mục 4). Có pool proxy thì tự đổi exit sau `PROXY_ROTATE_AFTER` lượt thành
+  công; không có proxy thì không có exit khác để đổi.
 - Sponsor không có widget (hoặc widget chết) → probe loại domain đó và thử ứng
-  viên kế tiếp; hết ứng viên thì job trả `needs_code`.
+  viên kế tiếp; hết ứng viên thì tự lùi về trang captcha-only thay vì trả
+  `needs_code`.
 - reCAPTCHA audio bị chặn theo IP/profile: reload lấy anchor mới, thử lại trong
   budget. Khi Google trả `automated queries` / `try again later`, engine đánh
   dấu exit proxy đó là xấu và relaunch Chrome sang exit kế tiếp (nếu có pool).
-- Job còn trong hàng đợi được chạy lại sau restart; job đang chạy lúc process
-  chết bị đánh `failed` thay vì replay để tránh chạy đôi một lượt đã qua
-  captcha.
-- OCR là sidecar Python; máy không có rapidocr thì campaign `TÌM KIẾM` sẽ không
-  lấy được domain từ ảnh (campaign `TRỰC TIẾP` vẫn chạy).
+- Job còn trong hàng đợi hoặc đang chạy lúc process chết đều được chạy lại sau
+  restart; `QUEUE_RESUME_RUNNING=0` đổi job đang chạy thành `failed` nếu muốn
+  tránh chạy đôi một lượt đã qua captcha.
+- OCR ưu tiên sidecar RapidOCR; sidecar chết/thiếu thì thử `tesseract`
+  (`L4M_TESSERACT`). Thiếu cả hai thì campaign `TÌM KIẾM` không đọc được domain
+  từ ảnh (campaign `TRỰC TIẾP` vẫn chạy).
 - Một campaign chỉ có một mã tại một thời điểm; mã cũ hết hạn sẽ bị từ chối và
   engine tự harvest lại.
+- `engine-rs` build native trên Windows (taskkill + process group); Linux/WSL2
+  là môi trường đã chạy live nhiều nhất. Cross-check mingw trên Linux fail ở
+  bindgen của `whisper-rs-sys` (không phải code engine); build Windows thật cần
+  toolchain MSVC + Visual Studio Build Tools.

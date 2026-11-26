@@ -7,7 +7,10 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -19,10 +22,46 @@ pub struct ChromeProc {
     ephemeral: bool,
 }
 
-/// Kill a process and every descendant. `/proc` is the only portable-enough
-/// way here: Chrome's renderers do not carry the profile flag, so a cmdline
-/// match alone would leave them behind holding several hundred MB.
+/// Kill a process and every descendant. Linux exposes the tree through
+/// `/proc`; macOS has no procfs, so `ps` is the fallback. Chrome renderers do
+/// not carry the profile flag, so a cmdline match alone would leave them
+/// behind holding several hundred MB.
+#[cfg(unix)]
 fn kill_tree(root: i32) {
+    if std::path::Path::new("/proc").is_dir() {
+        kill_tree_proc(root);
+    } else {
+        kill_tree_ps(root);
+    }
+}
+
+#[cfg(unix)]
+fn descendants(root: i32, parents: &[(i32, i32)]) -> Vec<i32> {
+    let mut targets = vec![root];
+    let mut index = 0;
+    while index < targets.len() {
+        let parent = targets[index];
+        index += 1;
+        for (pid, ppid) in parents {
+            if *ppid == parent && !targets.contains(pid) {
+                targets.push(*pid);
+            }
+        }
+    }
+    targets
+}
+
+#[cfg(unix)]
+fn kill_all(targets: &[i32]) {
+    for pid in targets.iter().rev() {
+        unsafe {
+            libc::kill(*pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn kill_tree_proc(root: i32) {
     let mut parents: Vec<(i32, i32)> = Vec::new();
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
@@ -40,31 +79,63 @@ fn kill_tree(root: i32) {
             }
         }
     }
-    let mut targets = vec![root];
-    let mut index = 0;
-    while index < targets.len() {
-        let parent = targets[index];
-        index += 1;
-        for (pid, ppid) in &parents {
-            if *ppid == parent && !targets.contains(pid) {
-                targets.push(*pid);
-            }
-        }
-    }
-    for pid in targets.iter().rev() {
+    kill_all(&descendants(root, &parents));
+}
+
+#[cfg(unix)]
+fn kill_tree_ps(root: i32) {
+    let Ok(output) = Command::new("ps").args(["-axo", "pid=,ppid="]).output() else {
         unsafe {
-            libc::kill(*pid, libc::SIGKILL);
+            libc::kill(root, libc::SIGKILL);
+        }
+        return;
+    };
+    let mut parents: Vec<(i32, i32)> = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if let (Ok(pid), Ok(ppid)) = (pid.parse::<i32>(), ppid.parse::<i32>()) {
+            parents.push((pid, ppid));
         }
     }
+    kill_all(&descendants(root, &parents));
+}
+
+#[cfg(windows)]
+fn kill_tree(root: i32) {
+    // taskkill /T walks the child tree; /F is required for renderer processes.
+    let pid = root.to_string();
+    let _ = Command::new("taskkill")
+        .args(["/PID", pid.as_str(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// Remove Chrome instances left behind by a previous crash or a `timeout`
 /// kill that skipped `Drop`. Only profiles under `root` are touched.
+#[cfg(unix)]
 pub fn sweep(roots: &[PathBuf]) {
-    let needles: Vec<String> = roots
+    if std::path::Path::new("/proc").is_dir() {
+        sweep_proc(roots);
+    } else {
+        sweep_ps(roots);
+    }
+}
+
+#[cfg(unix)]
+fn sweep_needles(roots: &[PathBuf]) -> Vec<String> {
+    roots
         .iter()
         .map(|root| format!("--user-data-dir={}", root.display()))
-        .collect();
+        .collect()
+}
+
+#[cfg(unix)]
+fn sweep_proc(roots: &[PathBuf]) {
+    let needles = sweep_needles(roots);
     let mut killed = 0;
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
@@ -109,6 +180,90 @@ pub fn sweep(roots: &[PathBuf]) {
     if killed > 0 {
         std::thread::sleep(Duration::from_millis(400));
         eprintln!("swept {killed} stale chrome instance(s)");
+    }
+}
+
+#[cfg(unix)]
+fn sweep_ps(roots: &[PathBuf]) {
+    let needles = sweep_needles(roots);
+    let Ok(output) = Command::new("ps")
+        .args(["-axo", "pid=,ppid=,command="])
+        .output()
+    else {
+        return;
+    };
+    let mut rows: Vec<(i32, i32, String)> = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim_start();
+        let mut parts = line.splitn(3, char::is_whitespace);
+        let (Some(pid), Some(ppid), Some(command)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        if let (Ok(pid), Ok(ppid)) = (pid.parse::<i32>(), ppid.parse::<i32>()) {
+            rows.push((pid, ppid, command.trim_start().to_string()));
+        }
+    }
+    let self_pid = std::process::id() as i32;
+    let mut killed = 0;
+    for (pid, ppid, command) in &rows {
+        if *pid == self_pid
+            || !command.contains("--remote-debugging-port=0")
+            || !needles.iter().any(|needle| command.contains(needle))
+        {
+            continue;
+        }
+        // Only orphans: a parent that is still l4m-engine owns its Chrome.
+        if *ppid > 1 {
+            if let Some(parent) = rows.iter().find(|(parent_pid, _, _)| parent_pid == ppid) {
+                if parent.2.contains("l4m-engine") {
+                    continue;
+                }
+            }
+        }
+        unsafe {
+            libc::kill(*pid, libc::SIGKILL);
+        }
+        killed += 1;
+    }
+    if killed > 0 {
+        std::thread::sleep(Duration::from_millis(400));
+        eprintln!("swept {killed} stale chrome instance(s)");
+    }
+}
+
+#[cfg(windows)]
+pub fn sweep(roots: &[PathBuf]) {
+    // Read command lines through CIM and stop only Chrome processes started by
+    // this engine (remote debugging + one of our profile dirs). No WMI query
+    // means no accidental kill of the user's own browser.
+    let needles: Vec<String> = roots
+        .iter()
+        .map(|root| format!("--user-data-dir={}", root.display()).replace('\'', "''"))
+        .collect();
+    if needles.is_empty() {
+        return;
+    }
+    let clauses: Vec<String> = needles
+        .iter()
+        .map(|needle| format!("$_.CommandLine -like '*{needle}*'"))
+        .collect();
+    let script = format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | \
+         Where-Object {{ $_.CommandLine -like '*--remote-debugging-port=0*' -and ({}) }} | \
+         ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
+        clauses.join(" -or ")
+    );
+    // Windows PowerShell 5 is `powershell`; PowerShell 7 installs `pwsh` and
+    // may not keep the old alias. Try both before giving up.
+    for shell in ["powershell", "pwsh"] {
+        let status = Command::new(shell)
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if matches!(status, Ok(status) if status.success()) {
+            break;
+        }
     }
 }
 
@@ -166,6 +321,7 @@ impl ChromeProc {
         }
         // Own session: a timeout kill that takes down the engine must not leave
         // Chrome holding memory on a 3.7 GB box. Drop kills the whole group.
+        #[cfg(unix)]
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -173,6 +329,12 @@ impl ChromeProc {
                 }
                 Ok(())
             });
+        }
+        #[cfg(windows)]
+        {
+            // CREATE_NEW_PROCESS_GROUP: keeps Chrome out of the engine's
+            // console Ctrl-C group; taskkill /T handles teardown.
+            command.creation_flags(0x0000_0200);
         }
 
         let mut child = command.spawn().context("spawn chrome")?;
@@ -249,15 +411,30 @@ impl ChromeProc {
 impl Drop for ChromeProc {
     fn drop(&mut self) {
         let pid = self.child.id() as i32;
-        // Negative pid targets the group created by setsid().
+        // Negative pid targets the group created by setsid() on Unix; on
+        // Windows taskkill /T walks the tree.
+        #[cfg(unix)]
         unsafe {
             libc::kill(-pid, libc::SIGKILL);
         }
+        kill_tree(pid);
         let _ = self.child.kill();
         let _ = self.child.wait();
-        kill_tree(pid);
         if self.ephemeral {
             let _ = std::fs::remove_dir_all(&self.profile);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::descendants;
+
+    #[test]
+    fn descendants_walk_the_whole_tree() {
+        let tree = [(10, 1), (11, 10), (12, 10), (13, 11), (14, 99)];
+        let mut got = descendants(10, &tree);
+        got.sort();
+        assert_eq!(got, vec![10, 11, 12, 13]);
     }
 }

@@ -43,7 +43,7 @@ tra lại trên máy mới, nên mọi việc mới tập trung vào `engine-rs/
 
 | Thành phần | Linux | macOS | Windows |
 |---|---|---|---|
-| Rust ≥ 1.75 | `rustup` | `rustup` | `rustup` (native cho `server-rs`; `engine-rs` cần WSL2) |
+| Rust ≥ 1.75 | `rustup` | `rustup` | `rustup` (native; `engine-rs` cần MSVC hoặc dùng WSL2) |
 | Chrome/Chromium | bắt buộc | bắt buộc | bắt buộc (native hoặc trong WSL2) |
 | Python 3.11+ | bắt buộc | bắt buộc | bắt buộc |
 | Display cho Chrome headful | Xvfb nếu không có desktop | desktop có sẵn | desktop có sẵn (hoặc WSLg) |
@@ -55,8 +55,9 @@ Ghi chú nền tảng:
 - **Linux không có màn hình**: chạy Xvfb và đặt `L4M_HEADLESS=0`. Widget
   sponsor và captcha audio chỉ hoạt động đúng khi Chrome có display thật.
 - **macOS**: có desktop, đặt `L4M_HEADLESS=0`; không cần Xvfb.
-- **Windows**: `engine-rs` dùng `setsid`/`killpg` của unix nên **build native
-  Windows chưa hỗ trợ** — dùng WSL2 (Ubuntu) và làm theo hướng dẫn Linux.
+- **Windows**: `engine-rs` đã có cfg Windows (`taskkill /T`, process group, CIM
+  sweep, PowerShell/pwsh) nhưng chưa live test trên máy Windows thật và cần
+  toolchain MSVC; đường an toàn nhất vẫn là WSL2 (Ubuntu) theo hướng dẫn Linux.
   `server-rs` và engine Python chạy native Windows bình thường.
 - Đường dẫn Python trong venv khác nhau:
   - Linux/macOS: `.venv/bin/python`
@@ -172,7 +173,7 @@ Auth: nếu đặt `API_KEY`, gửi `x-api-key: <key>` hoặc `?key=`.
 
 | Biến | Default | Ý nghĩa |
 |---|---|---|
-| `WORKERS` | `2` / `auto` | số Chrome song song; `auto` = `(MemAvailable-900)/1400`, kẹp 1–32 |
+| `WORKERS` | `2` / `auto` | số Chrome song song; `auto` = `(MemAvailable-900)/1400` (Linux; nơi khác fallback 1), kẹp 1–32 |
 | `MAX_QUEUE` | `100` | hàng đợi; vượt → 429 |
 | `MAX_BATCH` | `50` | URL tối đa mỗi batch (1–500) |
 | `BATCH_CONCURRENCY` | `max(4, WORKERS)` | request batch song song (1–64) |
@@ -184,6 +185,10 @@ Auth: nếu đặt `API_KEY`, gửi `x-api-key: <key>` hoặc `?key=`.
 | `QUEUE_FILE` | `data/queue.json` | job đang chờ, sống qua restart |
 | `LINKS_FILE` | `data/links.json` | 500 dòng bảng trạng thái gần nhất |
 | `QUEUE_RESUME` | `true` | `0` = không chạy lại job chờ sau restart |
+| `QUEUE_RESUME_RUNNING` | `true` | `0` = job đang chạy lúc crash đánh `failed` thay vì chạy lại |
+| `PROXY_ROTATE_AFTER` | `4` | tự đổi exit sau N lượt thành công khi pool có >1 proxy; `0` tắt |
+| `PROXY_COOLDOWN` | `300` | giây một exit lỗi bị loại khỏi vòng xoay |
+| `L4M_TESSERACT` | `tesseract` | OCR fallback khi thiếu RapidOCR sidecar |
 | `L4M_CODE_TTL` | `900` | TTL mã sponsor |
 | `L4M_CAMPAIGN` | rỗng | ghim campaign (list id, debug) |
 | `L4M_CODE` | rỗng | truyền mã có sẵn, bỏ quest |
@@ -205,7 +210,7 @@ ra `nmkiosvn-api.nmk87201.workers.dev/claim?...`.
 ## 9. Test
 
 ```bash
-# engine-rs — 39 test (Linux/macOS/WSL2)
+# engine-rs — 43 test (Linux/macOS/WSL2)
 cd <repo>/engine-rs
 WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
 
@@ -236,18 +241,27 @@ không được sửa nội dung test.
 ## 11. Giới hạn đã biết
 
 - Link4M ngừng phục vụ campaign cho một IP sau ~4 lượt hoàn thành; từ đó mọi
-  alias trả captcha-only. Đường captcha-only vẫn ra destination; muốn có lại
-  đường sponsor phải đổi exit (`PROXY_LIST` / `PROXY_ROTATE`).
-- Máy 4 GB chỉ nên chạy 1 worker headful (Chrome 1.3–1.8 GB).
+  alias trả captcha-only. Đường captcha-only vẫn ra destination. Có pool proxy
+  thì engine tự đổi exit sau `PROXY_ROTATE_AFTER` lượt; không có proxy thì
+  không có exit khác để đổi.
+- Máy 4 GB chỉ nên chạy 1 worker headful (Chrome 1.3–1.8 GB). `WORKERS=auto`
+  đọc `MemAvailable` trên Linux (`(MemAvailable-900)/1400`, kẹp 1–32); macOS/
+  Windows fallback 1 worker, đặt `WORKERS` số cụ thể nếu muốn hơn.
 - reCAPTCHA audio bị chặn theo IP/profile: engine reload lấy anchor mới trong
   budget. Khi Google báo `automated queries` / `try again later`, engine đánh
-  dấu exit đó là xấu và chuyển sang proxy kế tiếp nếu có pool.
-- OCR là sidecar rapidocr; thiếu nó thì campaign tìm kiếm không đọc được domain
-  từ ảnh (campaign trực tiếp vẫn chạy).
-- Queue và bảng trạng thái đã persist; job **đang chạy** lúc process chết thì
-  đánh `failed` chứ không replay (tránh chạy đôi một lượt đã qua captcha).
-- `engine-rs` native Windows chưa hỗ trợ (phụ thuộc `setsid`/`killpg`); dùng
-  WSL2.
+  dấu exit đó là xấu và relaunch Chrome sang exit kế tiếp nếu có pool.
+- Campaign không có widget sống: engine thử campaign khác rồi tự lùi về trang
+  captcha-only thay vì trả `needs_code`.
+- OCR là sidecar rapidocr; thiếu nó thì engine thử `tesseract` nếu có trong
+  PATH (`L4M_TESSERACT`). Thiếu cả hai thì campaign `TÌM KIẾM` không đọc được
+  domain từ ảnh (campaign `TRỰC TIẾP` vẫn chạy).
+- Job đang chạy lúc process chết được chạy lại từ đầu (`QUEUE_RESUME_RUNNING=1`,
+  mặc định); đặt `0` nếu muốn đánh `failed` để tránh chạy đôi một lượt đã qua
+  captcha.
+- `engine-rs` build native trên Windows (taskkill + `CREATE_NEW_PROCESS_GROUP`);
+  Linux/WSL2 vẫn là môi trường đã chạy live nhiều nhất. Cross-check mingw trên
+  Linux fail ở bindgen `whisper-rs-sys` (dependency), không phải code engine;
+  build Windows thật cần toolchain MSVC.
 
 ## 12. Bản đồ repo
 
@@ -255,7 +269,7 @@ không được sửa nội dung test.
 engine-rs/            engine native Rust (chính)
   src/proxy.rs        pool + relay + agent proxy
   src/pool.rs         worker pool, session Chrome/CDP/relay
-  src/chrome.rs       launch args, setsid, killpg, sweep orphan
+  src/chrome.rs       launch args, process group/tree, sweep orphan Chrome
   src/flow.rs         flow Link4M, cache mã, re-roll campaign
   src/quest.rs        driver tab sponsor, countdown, parse mã
   src/instr.rs        OCR hướng dẫn, probe sponsor, cache campaign
@@ -295,8 +309,9 @@ Mở `http://<host>:8080/status` (thêm `?key=<API_KEY>` nếu engine có `API_K
   gần nhất. SSE bị proxy chặn thì trang tự fallback poll `/api/v1/links` 5 s/lần.
 - Cache hit và fast decode cũng lên bảng; lỗi hiện nguyên văn bên dưới link.
 - Bảng và hàng đợi sống qua restart: `data/links.json` giữ 500 dòng gần nhất,
-  `data/queue.json` giữ job chưa chạy. Job đang chạy lúc process chết được đánh
-  `failed` (không replay hai lần); job còn chờ được đẩy lại vào worker.
+  `data/queue.json` giữ cả job chờ lẫn job đang chạy. Job bị crash giữa chừng
+  được đẩy lại worker từ đầu; đặt `QUEUE_RESUME_RUNNING=0` nếu muốn đánh
+  `failed` thay vì chạy lại.
 - `/api/v1/stats` trả `recent` (20 dòng cuối) và số `queued` thật, không còn 0
   cố định.
 

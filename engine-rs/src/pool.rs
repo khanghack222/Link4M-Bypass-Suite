@@ -163,6 +163,14 @@ async fn worker_loop(
     receiver: Arc<Mutex<mpsc::Receiver<Job>>>,
 ) {
     let mut session: Option<Session> = None;
+    // Link4M stops serving sponsor campaigns after a handful of completions
+    // from one exit. Rotate proactively instead of waiting for captcha-only
+    // pages; 0 disables the counter.
+    let rotate_after = std::env::var("PROXY_ROTATE_AFTER")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(4);
+    let mut successes_on_exit = 0usize;
     loop {
         let job = {
             let mut guard = receiver.lock().await;
@@ -170,9 +178,9 @@ async fn worker_loop(
         };
         let Some(job) = job else { break };
         let started = Instant::now();
-        // Picked up: the on-disk queue no longer owns it. A crash after this
-        // point shows the row as failed instead of replaying it twice.
-        inner.queue_remove(&job.job_id).await;
+        // Picked up: keep the entry on disk, marked running, so a crash can
+        // requeue the full job (key + code) instead of losing it.
+        inner.queue_mark_running(&job.job_id).await;
         inner.link_running(&job.track_id).await;
 
         // Without the whisper model the job can never finish; fail it before
@@ -190,6 +198,7 @@ async fn worker_loop(
                 )
                 .await;
             record_failure(&inner, &job, "asr", "whisper model not loaded", elapsed_ms).await;
+            inner.queue_remove(&job.job_id).await;
             let _ = job.respond.send(JobOutcome {
                 destination: None,
                 error: Some(FlowError {
@@ -227,6 +236,7 @@ async fn worker_loop(
                         )
                         .await;
                     record_failure(&inner, &job, "browser", &err.to_string(), elapsed_ms).await;
+                    inner.queue_remove(&job.job_id).await;
                     let _ = job.respond.send(JobOutcome {
                         destination: None,
                         error: Some(FlowError {
@@ -277,16 +287,36 @@ async fn worker_loop(
                 _ => {}
             }
         }
+        let mut quota_reached = false;
+        if outcome.is_ok() {
+            successes_on_exit += 1;
+            if rotate_after > 0
+                && successes_on_exit >= rotate_after
+                && proxy::shared().map(|pool| pool.len() > 1).unwrap_or(false)
+            {
+                if let (Some(pool), Some(used)) = (proxy::shared(), active_proxy.as_ref()) {
+                    pool.mark_bad(used);
+                }
+                successes_on_exit = 0;
+                quota_reached = true;
+            }
+        }
         // PROXY_ROTATE=1 gives every job a fresh exit; the cost is a Chrome
         // relaunch (~5 s) and a fresh profile boot.
         let rotate = std::env::var("PROXY_ROTATE")
             .map(|value| value != "0")
             .unwrap_or(false);
-        if active_proxy.is_some() && (rotate || blocked) && session.is_some() {
+        if active_proxy.is_some() && (rotate || blocked || quota_reached) && session.is_some() {
             info!(
                 target: "engine",
                 worker = worker_id,
-                reason = if blocked { "captcha block" } else { "rotate" },
+                reason = if blocked {
+                    "captcha block"
+                } else if quota_reached {
+                    "proxy quota"
+                } else {
+                    "rotate"
+                },
                 "moving to the next proxy, relaunching chrome"
             );
             session = None;
@@ -330,6 +360,8 @@ async fn worker_loop(
             )
             .await;
         inner.job_put(snapshot).await;
+        // Terminal: the on-disk queue must not replay this job next boot.
+        inner.queue_remove(&job.job_id).await;
 
         let _ = job.respond.send(match outcome {
             Ok(destination) => JobOutcome { destination: Some(destination), error: None, elapsed_ms },

@@ -2,13 +2,14 @@
 
 use crate::asr::{self, SharedAsr};
 use anyhow::{anyhow, Result};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, Mutex, Semaphore};
+use tokio::sync::{broadcast, Mutex};
 use tracing::warn;
 
 #[derive(Clone, Debug)]
@@ -29,6 +30,10 @@ pub struct Config {
     /// Last 500 board rows survive a restart too.
     pub links_file: PathBuf,
     pub resume_queue: bool,
+    /// Re-run jobs that were mid-flight when the process died. A crash can
+    /// happen after a sponsor code was submitted, so this trades a possible
+    /// duplicate completion for never dropping user work.
+    pub resume_running: bool,
     pub chrome_bin: String,
     pub headless: bool,
     pub profile_dir: PathBuf,
@@ -59,6 +64,18 @@ fn env_flag(key: &str, default: bool) -> bool {
 }
 
 fn find_chrome() -> String {
+    #[cfg(windows)]
+    {
+        for key in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"] {
+            if let Ok(base) = std::env::var(key) {
+                let candidate = std::path::Path::new(&base)
+                    .join("Google\\Chrome\\Application\\chrome.exe");
+                if candidate.is_file() {
+                    return candidate.display().to_string();
+                }
+            }
+        }
+    }
     for candidate in [
         "google-chrome",
         "google-chrome-stable",
@@ -81,10 +98,17 @@ fn find_chrome() -> String {
 
 fn which(binary: &str) -> Result<String> {
     let path = std::env::var("PATH").unwrap_or_default();
-    for dir in path.split(':') {
-        let candidate = std::path::Path::new(dir).join(binary);
-        if candidate.is_file() {
-            return Ok(candidate.display().to_string());
+    for dir in std::env::split_paths(&path) {
+        let direct = dir.join(binary);
+        if direct.is_file() {
+            return Ok(direct.display().to_string());
+        }
+        #[cfg(windows)]
+        {
+            let exe = dir.join(format!("{binary}.exe"));
+            if exe.is_file() {
+                return Ok(exe.display().to_string());
+            }
         }
     }
     Err(anyhow!("{binary} not found"))
@@ -131,6 +155,7 @@ impl Config {
             queue_file: PathBuf::from(env_or("QUEUE_FILE", "data/queue.json")),
             links_file: PathBuf::from(env_or("LINKS_FILE", "data/links.json")),
             resume_queue: env_flag("QUEUE_RESUME", true),
+            resume_running: env_flag("QUEUE_RESUME_RUNNING", true),
             chrome_bin: env_or("CHROME_BIN", &find_chrome()),
             headless: match std::env::var("L4M_HEADLESS") {
                 Ok(value) => value != "0",
@@ -208,6 +233,20 @@ pub struct QueuedJob {
     pub code: Option<String>,
     pub track_id: String,
     pub created_at: u64,
+    /// `queued` or `running`. The entry stays on disk while a worker owns it,
+    /// so a crash can requeue the full job instead of losing its metadata.
+    #[serde(default)]
+    pub stage: String,
+}
+
+impl QueuedJob {
+    pub fn is_running(&self) -> bool {
+        self.stage == "running"
+    }
+
+    fn mark_running(&mut self) {
+        self.stage = "running".into();
+    }
 }
 
 #[derive(Default)]
@@ -273,7 +312,6 @@ pub struct Inner {
     pub events: broadcast::Sender<serde_json::Value>,
     pub locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub stats: Stats,
-    pub queue_slots: Semaphore,
 }
 
 /// Board history is bounded: a long-running service must not grow with traffic.
@@ -297,14 +335,28 @@ impl Inner {
         // board leaves a queued ghost for a job that is not on disk anymore.
         let before = pending.len();
         pending.retain(|job| !job.job_id.is_empty() && !job.alias.is_empty());
-        if pending.len() != before {
+        let mut queue_changed = pending.len() != before;
+        if !cfg.resume_running {
+            let before = pending.len();
+            pending.retain(|job| !job.is_running());
+            queue_changed |= pending.len() != before;
+        }
+        for job in pending.iter_mut() {
+            if job.stage != "queued" {
+                job.stage = "queued".into();
+                queue_changed = true;
+            }
+        }
+        if queue_changed {
             write_json_atomic(&cfg.queue_file, &pending.iter().cloned().collect::<Vec<_>>());
         }
-        reconcile(&mut links, &pending, cfg.resume_queue);
+        let dropped = reconcile(&mut links, &mut pending, cfg.resume_queue);
+        if dropped {
+            write_json_atomic(&cfg.queue_file, &pending.iter().cloned().collect::<Vec<_>>());
+        }
         let stats = Stats::from_links(&links);
         let (events, _) = broadcast::channel(512);
         Arc::new(Self {
-            queue_slots: Semaphore::new(cfg.max_queue),
             started: Instant::now(),
             cfg,
             asr,
@@ -425,7 +477,8 @@ impl Inner {
 
     // --- pending queue ---------------------------------------------------
 
-    pub async fn queue_push(&self, job: QueuedJob) {
+    pub async fn queue_push(&self, mut job: QueuedJob) {
+        job.stage = "queued".into();
         {
             let mut pending = self.pending.lock().await;
             pending.push_back(job);
@@ -433,9 +486,27 @@ impl Inner {
         self.persist_queue().await;
     }
 
-    /// Called by a worker the moment it takes a job. A job removed here can
-    /// only be lost by a crash while it is running; that row is reconciled to
-    /// `failed` on the next boot instead of being replayed twice.
+    /// Called by a worker the moment it takes a job. The entry stays on disk
+    /// with `stage = running` so a crash can requeue it with its key and code
+    /// intact instead of dropping the job.
+    pub async fn queue_mark_running(&self, job_id: &str) {
+        let changed = {
+            let mut pending = self.pending.lock().await;
+            match pending.iter_mut().find(|job| job.job_id == job_id) {
+                Some(job) if !job.is_running() => {
+                    job.mark_running();
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.persist_queue().await;
+        }
+    }
+
+    /// Terminal state reached: stop tracking the job on disk. A crash before
+    /// this point resumes it; a crash after it cannot replay a finished job.
     pub async fn queue_remove(&self, job_id: &str) {
         let removed = {
             let mut pending = self.pending.lock().await;
@@ -561,27 +632,57 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) {
         return;
     };
     let tmp = path.with_extension("tmp");
-    if let Err(err) = std::fs::write(&tmp, body) {
+    // Write + fsync before rename: a host crash must not leave the previous
+    // snapshot truncated. The rename itself is atomic on both Unix and Windows.
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(body.as_bytes())?;
+        file.sync_all()
+    };
+    if let Err(err) = write() {
         warn!(target: "engine", path = %tmp.display(), %err, "cannot write snapshot");
         return;
     }
     if let Err(err) = std::fs::rename(&tmp, path) {
         warn!(target: "engine", path = %path.display(), %err, "cannot replace snapshot");
+        return;
+    }
+    // Persist the directory entry too; without it a power loss can drop the
+    // rename even though the file contents were flushed.
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
     }
 }
 
+/// Parse `path`, falling back to the `.tmp` file a crashed writer left behind.
+fn read_json_lenient<T: DeserializeOwned>(path: &Path) -> Option<T> {
+    for candidate in [path.to_path_buf(), path.with_extension("tmp")] {
+        let Ok(body) = std::fs::read_to_string(&candidate) else {
+            continue;
+        };
+        match serde_json::from_str::<T>(&body) {
+            Ok(value) => return Some(value),
+            Err(err) if candidate.as_path() == path => {
+                warn!(target: "engine", path = %candidate.display(), %err, "snapshot unreadable, trying tmp");
+            }
+            Err(_) => {}
+        }
+    }
+    None
+}
+
 pub fn load_pending(path: &PathBuf) -> VecDeque<QueuedJob> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|body| serde_json::from_str::<Vec<QueuedJob>>(&body).ok())
+    read_json_lenient::<Vec<QueuedJob>>(path)
         .map(VecDeque::from)
         .unwrap_or_default()
 }
 
 pub fn load_links(path: &PathBuf) -> VecDeque<LinkEntry> {
-    let mut links: VecDeque<LinkEntry> = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|body| serde_json::from_str::<Vec<LinkEntry>>(&body).ok())
+    let mut links: VecDeque<LinkEntry> = read_json_lenient::<Vec<LinkEntry>>(path)
         .map(VecDeque::from)
         .unwrap_or_default();
     while links.len() > LINK_HISTORY {
@@ -590,10 +691,25 @@ pub fn load_links(path: &PathBuf) -> VecDeque<LinkEntry> {
     links
 }
 
-/// Rows that were in flight when the last process died are not in the pending
-/// queue: a worker had already taken them. Report those as failed instead of
-/// leaving a permanent `running` ghost on the board.
-fn reconcile(links: &mut VecDeque<LinkEntry>, pending: &VecDeque<QueuedJob>, resume: bool) {
+/// Reconcile the board with the on-disk queue after a restart.
+///
+/// A job still in the queue is requeued; a row with no queue entry was
+/// interrupted and becomes `failed` (or stays terminal if it already finished).
+/// Queue entries whose board row is already `success`/`failed` are dropped:
+/// the worker finished, then crashed before removing the disk entry.
+fn reconcile(
+    links: &mut VecDeque<LinkEntry>,
+    pending: &mut VecDeque<QueuedJob>,
+    resume: bool,
+) -> bool {
+    let terminal: HashSet<String> = links
+        .iter()
+        .filter(|entry| entry.status == "success" || entry.status == "failed")
+        .map(|entry| entry.id.clone())
+        .collect();
+    let before = pending.len();
+    pending.retain(|job| !terminal.contains(&job.track_id));
+    let dropped = pending.len() != before;
     let queued: HashSet<&str> = pending.iter().map(|job| job.track_id.as_str()).collect();
     let now = unix_now();
     for entry in links.iter_mut() {
@@ -631,6 +747,7 @@ fn reconcile(links: &mut VecDeque<LinkEntry>, pending: &VecDeque<QueuedJob>, res
             links.pop_back();
         }
     }
+    dropped
 }
 
 pub fn new_job_id() -> String {
@@ -667,6 +784,7 @@ mod tests {
             queue_file: dir.join("queue.json"),
             links_file: dir.join("links.json"),
             resume_queue: resume,
+            resume_running: true,
             chrome_bin: "google-chrome".into(),
             headless: true,
             profile_dir: dir.join("profile"),
@@ -698,7 +816,19 @@ mod tests {
             code: None,
             track_id: track_id.into(),
             created_at: unix_now(),
+            stage: "queued".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn corrupt_snapshot_recovers_from_tmp() {
+        let dir = scratch("tmp-recover");
+        let cfg = test_cfg(&dir, true);
+        std::fs::write(&cfg.queue_file, "{not json").expect("write corrupt queue");
+        let valid = serde_json::to_string(&vec![sample_job("track-tmp")]).expect("serialize job");
+        std::fs::write(cfg.queue_file.with_extension("tmp"), valid).expect("write tmp");
+        let inner = Inner::new(cfg, None);
+        assert_eq!(inner.queue_len().await, 1);
     }
 
     #[tokio::test]
@@ -718,11 +848,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interrupted_row_becomes_failed_after_restart() {
+    async fn interrupted_job_is_requeued_after_restart() {
         let dir = scratch("interrupted");
         let cfg = test_cfg(&dir, true);
         let first = Inner::new(cfg.clone(), None);
         let track = first.link_begin("https://link4m.net/go/abc", Some("link4m")).await;
+        first.queue_push(sample_job(&track)).await;
+        first.queue_mark_running(&format!("job-{track}")).await;
         first.link_running(&track).await;
         // The running transition must be on disk, otherwise a crash leaves the
         // previous `queued` snapshot and the reconciler cannot tell the truth.
@@ -730,13 +862,36 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&cfg.links_file).expect("links file"))
                 .expect("links json");
         assert_eq!(on_disk[0].status, "running");
+        let queue: Vec<QueuedJob> =
+            serde_json::from_str(&std::fs::read_to_string(&cfg.queue_file).expect("queue file"))
+                .expect("queue json");
+        assert_eq!(queue[0].stage, "running");
 
         let second = Inner::new(cfg, None);
+        assert_eq!(second.queue_len().await, 1);
+        let links = second.links_snapshot().await;
+        let row = links.iter().find(|entry| entry.id == track).expect("row");
+        assert_eq!(row.status, "queued");
+        assert!(row.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn resume_running_disabled_marks_interrupted_rows_failed() {
+        let dir = scratch("no-running");
+        let cfg = test_cfg(&dir, true);
+        let first = Inner::new(cfg.clone(), None);
+        let track = first.link_begin("https://link4m.net/go/abc", Some("link4m")).await;
+        first.queue_push(sample_job(&track)).await;
+        first.queue_mark_running(&format!("job-{track}")).await;
+        first.link_running(&track).await;
+
+        let mut no_running = test_cfg(&dir, true);
+        no_running.resume_running = false;
+        let second = Inner::new(no_running, None);
         assert_eq!(second.queue_len().await, 0);
         let links = second.links_snapshot().await;
         let row = links.iter().find(|entry| entry.id == track).expect("row");
         assert_eq!(row.status, "failed");
-        assert!(row.error.as_deref().unwrap().contains("restarted"));
     }
 
     #[tokio::test]
@@ -752,6 +907,31 @@ mod tests {
 
         let second = Inner::new(cfg, None);
         assert_eq!(second.queue_len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn finished_row_is_not_replayed_from_a_stale_queue_entry() {
+        let dir = scratch("finished");
+        let cfg = test_cfg(&dir, true);
+        let first = Inner::new(cfg.clone(), None);
+        let track = first.link_begin("https://link4m.net/go/abc", Some("link4m")).await;
+        first.queue_push(sample_job(&track)).await;
+        first.queue_mark_running(&format!("job-{track}")).await;
+        first
+            .link_finish(
+                &track,
+                "success",
+                Some("https://example.com/done".into()),
+                None,
+                12.0,
+                false,
+            )
+            .await;
+
+        let second = Inner::new(cfg, None);
+        assert_eq!(second.queue_len().await, 0);
+        let rows = second.links_snapshot().await;
+        assert_eq!(rows[0].status, "success");
     }
 
     #[tokio::test]

@@ -275,6 +275,17 @@ impl<'a> Flow<'a> {
             }
         }
         if !state.password && !state.captcha {
+            // An error/interstitial page can parse cleanly and still carry no
+            // form. One more navigation is cheap compared with failing work
+            // that has budget left.
+            if self.remaining() > Duration::from_secs(60) {
+                warn!(target: "engine", alias = %self.alias, "page has no form, renavigating once");
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                self.navigate(&url).await?;
+                state = self.wait_for_page().await?;
+            }
+        }
+        if !state.password && !state.captcha {
             return Err(FlowError::new("page", "no captcha or code form on page"));
         }
         // `prepared` holds (campaign id, code) while the page wants a sponsor
@@ -384,11 +395,37 @@ impl<'a> Flow<'a> {
                     warn!(target: "engine", attempt = attempt + 1, "campaign has no usable sponsor: {err}");
                     last = Some(err);
                     if attempt < 2 {
+                        // Each roll costs a full navigation + campaign fetch;
+                        // do not start one the deadline cannot cover.
+                        if self.remaining() < Duration::from_secs(120) {
+                            break;
+                        }
                         self.navigate(url).await?;
                         tokio::time::sleep(Duration::from_millis(2500)).await;
                     }
                 }
                 Err(err) => return Err(err),
+            }
+        }
+        // Some campaigns point at dead sponsor widgets. Link4M also serves a
+        // captcha-only page that releases the destination without a code, so
+        // roll a few more times instead of failing work that can still finish.
+        for _ in 0..5 {
+            if self.remaining() < Duration::from_secs(75) {
+                break;
+            }
+            self.navigate(url).await?;
+            tokio::time::sleep(Duration::from_millis(1800)).await;
+            let state = match self.wait_for_page().await {
+                Ok(state) => state,
+                Err(err) => {
+                    debug!(target: "engine", "captcha-only roll skipped: {err}");
+                    continue;
+                }
+            };
+            if state.captcha && !state.password {
+                info!(target: "engine", alias = %self.alias, "no usable sponsor, falling back to captcha-only page");
+                return Ok(None);
             }
         }
         Err(last.unwrap_or_else(|| FlowError::new("needs_code", "no campaign served a code")))

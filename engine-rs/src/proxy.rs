@@ -19,8 +19,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
-const COOLDOWN: Duration = Duration::from_secs(300);
 const MAX_HEAD: usize = 32 * 1024;
+
+/// How long a failed exit stays out of rotation. Configurable because a proxy
+/// that only tripped a soft captcha can recover long before the default.
+fn cooldown() -> Duration {
+    static COOLDOWN: OnceLock<Duration> = OnceLock::new();
+    *COOLDOWN.get_or_init(|| {
+        std::env::var("PROXY_COOLDOWN")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|secs| *secs > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(300))
+    })
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proxy {
@@ -148,7 +161,7 @@ impl ProxyPool {
 
     pub fn mark_bad(&self, proxy: &Proxy) {
         if let Ok(mut guard) = self.cooldown.lock() {
-            guard.insert(proxy.key(), Instant::now() + COOLDOWN);
+            guard.insert(proxy.key(), Instant::now() + cooldown());
         }
     }
 

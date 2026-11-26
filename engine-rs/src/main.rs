@@ -38,6 +38,8 @@ async fn main() -> Result<()> {
 
     let mut sweep_roots = vec![cfg.profile_dir.clone()];
     sweep_roots.push(std::env::temp_dir().join("l4m-once"));
+    // Prefix match: `l4m-check-<pid>` from a killed --check run still matches.
+    sweep_roots.push(std::env::temp_dir().join("l4m-check"));
     l4m_engine::chrome::sweep(&sweep_roots);
 
     if !std::path::Path::new(&cfg.chrome_bin).exists() {
@@ -87,8 +89,33 @@ async fn main() -> Result<()> {
     let state = Arc::new(ApiState { inner, pool });
     let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
     info!(target: "engine", "listening on http://{}:{}", cfg.host, cfg.port);
-    axum::serve(listener, router(state)).await?;
+    let server = axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown_signal());
+    if tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .is_err()
+    {
+        warn!(target: "engine", "shutdown timed out, dropping open sessions");
+    }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    info!(target: "engine", "shutdown signal, closing sessions");
 }
 
 async fn run_once(cfg: Config, asr: Arc<Asr>, target: &str) -> Result<()> {

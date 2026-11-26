@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +191,13 @@ fn ocr_binary() -> PathBuf {
             return path;
         }
     }
+    #[cfg(windows)]
+    for candidate in [".venv\\Scripts\\python.exe", "..\\.venv\\Scripts\\python.exe"] {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            return path;
+        }
+    }
     PathBuf::from("python3")
 }
 
@@ -236,24 +243,113 @@ fn run_ocr(images: &[String]) -> Vec<String> {
     if files.is_empty() {
         return Vec::new();
     }
-    let output = std::process::Command::new("timeout")
-        .arg("120")
-        .arg(ocr_binary())
-        .arg(ocr_script())
-        .args(&files)
-        .output();
-    let Ok(output) = output else {
-        warn!(target: "engine", "ocr sidecar failed to start");
-        return Vec::new();
-    };
-    if !output.status.success() {
-        warn!(target: "engine", status = ?output.status.code(), "ocr sidecar exited non-zero");
-        return Vec::new();
-    }
-    let parsed: Vec<Vec<String>> = serde_json::from_slice(&output.stdout).unwrap_or_default();
+    // The Python sidecar is the best reader, but it is optional. Timeout is
+    // enforced in-process so Windows does not need GNU `timeout`, and a
+    // missing/broken sidecar falls back to a tesseract binary when present.
+    let mut command = std::process::Command::new(ocr_binary());
+    command.arg(ocr_script()).args(&files);
+    let sidecar = run_with_timeout(command, Duration::from_secs(120));
     let mut lines = Vec::new();
-    for block in parsed {
-        lines.extend(block);
+    match sidecar {
+        Some(output) if output.status.success() => {
+            let parsed: Vec<Vec<String>> =
+                serde_json::from_slice(&output.stdout).unwrap_or_default();
+            for block in parsed {
+                lines.extend(block);
+            }
+        }
+        Some(output) => {
+            warn!(target: "engine", status = ?output.status.code(), "ocr sidecar exited non-zero");
+        }
+        None => {
+            warn!(target: "engine", "ocr sidecar missing or timed out");
+        }
+    }
+    if lines.is_empty() {
+        lines = tesseract_ocr(&files);
+    }
+    lines
+}
+
+fn run_with_timeout(
+    mut command: std::process::Command,
+    limit: Duration,
+) -> Option<std::process::Output> {
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    // Drain both pipes while waiting: OCR output can exceed a pipe buffer, and
+    // a child blocked on write would never reach try_wait().
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+    status.map(|status| std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn tesseract_ocr(files: &[PathBuf]) -> Vec<String> {
+    let binary = std::env::var("L4M_TESSERACT").unwrap_or_else(|_| "tesseract".into());
+    let language = std::env::var("L4M_TESSERACT_LANG").unwrap_or_else(|_| "eng".into());
+    let mut lines = Vec::new();
+    for file in files {
+        let mut command = std::process::Command::new(&binary);
+        command
+            .arg(file)
+            .arg("stdout")
+            .arg("-l")
+            .arg(&language);
+        let Some(output) = run_with_timeout(command, Duration::from_secs(45)) else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                lines.push(line.to_string());
+            }
+        }
+    }
+    if !lines.is_empty() {
+        debug!(target: "engine", lines = lines.len(), "tesseract fallback OCR");
     }
     lines
 }
