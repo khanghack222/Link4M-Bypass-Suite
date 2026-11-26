@@ -5,6 +5,7 @@
 use crate::cdp::Cdp;
 use crate::chrome::ChromeProc;
 use crate::flow::{run_alias, FlowError};
+use crate::proxy::{self, Proxy, Relay};
 use crate::state::{unix_now, Inner, JobView};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -56,12 +57,19 @@ impl Pool {
     }
 }
 
+struct Session {
+    chrome: ChromeProc,
+    cdp: Arc<Cdp>,
+    _relay: Option<Relay>,
+    proxy: Option<Proxy>,
+}
+
 async fn worker_loop(
     worker_id: usize,
     inner: Arc<Inner>,
     receiver: Arc<Mutex<mpsc::Receiver<Job>>>,
 ) {
-    let mut session: Option<(ChromeProc, Arc<Cdp>)> = None;
+    let mut session: Option<Session> = None;
     loop {
         let job = {
             let mut guard = receiver.lock().await;
@@ -72,9 +80,15 @@ async fn worker_loop(
 
         if session.is_none() {
             match start_session(&inner, worker_id).await {
-                Ok(pair) => {
-                    info!(target: "engine", worker = worker_id, port = pair.0.port, "chrome ready");
-                    session = Some(pair);
+                Ok(ready) => {
+                    info!(
+                        target: "engine",
+                        worker = worker_id,
+                        port = ready.chrome.port,
+                        proxy = %ready.proxy.as_ref().map(|p| format!("{}:{}", p.host, p.port)).unwrap_or_else(|| "direct".into()),
+                        "chrome ready"
+                    );
+                    session = Some(ready);
                 }
                 Err(err) => {
                     error!(target: "engine", worker = worker_id, "chrome failed: {err}");
@@ -92,7 +106,10 @@ async fn worker_loop(
             }
         }
 
-        let Some((_, cdp)) = session.as_ref() else { continue };
+        let Some(active) = session.as_ref() else { continue };
+        let chrome_port = active.chrome.port;
+        let cdp = active.cdp.clone();
+        let active_proxy = active.proxy.clone();
         let Some(asr) = inner.asr.clone() else {
             let _ = job.respond.send(JobOutcome {
                 destination: None,
@@ -105,10 +122,11 @@ async fn worker_loop(
             continue;
         };
         let outcome = run_alias(
-            cdp,
+            &cdp,
             &asr,
             &job.alias,
             job.code.as_deref(),
+            chrome_port,
             inner.cfg.job_timeout,
         )
         .await;
@@ -120,6 +138,22 @@ async fn worker_loop(
         };
         if dead {
             warn!(target: "engine", worker = worker_id, "browser died, dropping session");
+            session = None;
+        }
+        if let (Some(pool), Some(bad)) = (proxy::shared(), active_proxy.as_ref()) {
+            match &outcome {
+                Err(err) if matches!(err.kind, "cdp" | "browser" | "timeout") => pool.mark_bad(bad),
+                Ok(_) => pool.mark_good(bad),
+                _ => {}
+            }
+        }
+        // PROXY_ROTATE=1 gives every job a fresh exit; the cost is a Chrome
+        // relaunch (~5 s) and a fresh profile boot.
+        let rotate = std::env::var("PROXY_ROTATE")
+            .map(|value| value != "0")
+            .unwrap_or(false);
+        if rotate && active_proxy.is_some() && session.is_some() {
+            info!(target: "engine", worker = worker_id, "rotating proxy, relaunching chrome");
             session = None;
         }
 
@@ -173,10 +207,7 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()>
     Ok(())
 }
 
-async fn start_session(
-    inner: &Arc<Inner>,
-    worker_id: usize,
-) -> anyhow::Result<(ChromeProc, Arc<Cdp>)> {
+async fn start_session(inner: &Arc<Inner>, worker_id: usize) -> anyhow::Result<Session> {
     let binary = inner.cfg.chrome_bin.clone();
     let headless = inner.cfg.headless;
     let base = inner.cfg.profile_dir.clone();
@@ -195,11 +226,18 @@ async fn start_session(
         let (from, to) = (base.clone(), profile.clone());
         let _ = tokio::task::spawn_blocking(move || copy_dir(&from, &to)).await;
     }
+    let pool = proxy::shared();
+    let chosen = pool.as_ref().and_then(|pool| pool.next());
+    let relay = match &chosen {
+        Some(upstream) => Some(proxy::start_relay(upstream.clone()).await?),
+        None => None,
+    };
+    let proxy_port = relay.as_ref().map(|relay| relay.port);
     let chrome = tokio::task::spawn_blocking(move || {
-        ChromeProc::launch(&binary, headless, profile, false)
+        ChromeProc::launch(&binary, headless, profile, false, proxy_port)
     })
     .await??;
     let ws = chrome.page_ws()?;
     let cdp = Cdp::connect(&ws).await?;
-    Ok((chrome, cdp))
+    Ok(Session { chrome, cdp, _relay: relay, proxy: chosen })
 }

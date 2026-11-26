@@ -1,30 +1,47 @@
-# l4m-engine (Rust) — Link4M native
+# l4m-engine (Rust) — Link4M native, tự chủ toàn bộ
 
 Binary Rust chạy trọn flow Link4M trong một process: Chrome qua CDP, đọc form,
-giải reCAPTCHA audio bằng whisper.cpp chạy local, trả link đích. Không Playwright,
-không Python, không API captcha, không phí mỗi lượt.
+OCR ảnh hướng dẫn, tự đi quest lấy mã sponsor, giải reCAPTCHA audio bằng
+whisper.cpp chạy local, trả link đích. Không Playwright, không Python, không API
+captcha, không phí mỗi lượt, không cần người bấm.
 
 ```
 client ──HTTP──▶ l4m-engine (axum)
-                   │  fast_decode (base64/percent)  → trả ngay
+                   │  fast_decode (base64/percent)      → trả ngay
                    │  cache theo provider:alias
-                   └─▶ worker (Chrome + CDP) ──▶ whisper.cpp ──▶ destination
+                   │  cache mã theo campaign_id (mã đã chứng minh)
+                   └─▶ worker (Chrome + CDP)
+                         ├─ trang link4m: campaign + ảnh hướng dẫn
+                         ├─ OCR (rapidocr sidecar) → sponsor + keyword
+                         ├─ probe sponsor → widget key + kiểu referrer
+                         ├─ tab sponsor: quest 2 bước → mã KM
+                         ├─ whisper.cpp: reCAPTCHA audio → token
+                         └─ POST /links/get-link-info → destination
 ```
 
-Khác với `server-rs/` (façade HTTP gọi engine Python), crate này **tự lái browser**.
-`server-rs/` dùng khi cần đủ 6 provider; crate này chỉ chạy Link4M.
+Khác với `server-rs/` (façade HTTP gọi engine Python), crate này **tự lái
+browser** và chỉ chạy Link4M.
 
 ## 1. Yêu cầu
 
 | Thành phần | Ghi chú |
 |---|---|
 | Rust ≥ 1.75 | `cargo build --release` |
-| Chrome/Chromium | bắt buộc, engine mở bằng CDP |
-| Model whisper | `models/ggml-tiny.en.bin` (~77 MB); tự tải lần đầu nếu thiếu |
-| RAM | mỗi worker ≈ 1 Chrome + model ≈ 700 MB–1 GB |
+| Chrome/Chromium | bắt buộc; engine mở bằng CDP |
+| X display | **bắt buộc** cho quest: widget và reCAPTCHA audio chỉ chạy đúng khi tab thật sự foreground. Dùng Xvfb trên server |
+| Model whisper | `models/ggml-tiny.en.bin` (~77 MB), tự tải lần đầu nếu thiếu |
+| Python venv + rapidocr | sidecar `tools/ocr.py`; chỉ dùng khi campaign giấu hướng dẫn trong ảnh |
+| RAM | 1 worker ≈ 1 Chrome headful + whisper ≈ 1.3–1.8 GB |
 
 Model tải từ `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin`
 (`WHISPER_MODEL_URL` đổi được). Đặt sẵn vào `models/` nếu máy không ra internet.
+
+OCR sidecar:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install rapidocr_onnxruntime opencv-python-headless pillow
+```
 
 ## 2. Build
 
@@ -40,9 +57,6 @@ Binary: `target/release/l4m-engine`.
 không có và build chết ở `Unable to find libclang`. Bindings đóng sẵn trong
 crate dùng được, chỉ cần `cmake` + `g++` để dịch whisper.cpp.
 
-Build sạch trên box này (Rust 1.9x, cmake từ `pip install cmake`, `g++` 14):
-release mất **~3 phút** với LTO, binary **7.1 MB**.
-
 ## 2.1 Test
 
 ```bash
@@ -50,18 +64,9 @@ cd engine-rs
 WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
 ```
 
-**18 test**, không cần Chrome, không cần model — gồm 5 test HTTP contract dựng
-`ApiState` với `asr = None`:
-
-| Test | Nội dung |
-|---|---|
-| `health_and_supported_need_no_browser` | `/health`, `/api/v1/supported` đủ 7 key |
-| `post_decode_and_get_with_lenient_wait` | POST decode + `?wait=1` (không 400) |
-| `unknown_host_is_400_and_foreign_provider_is_501` | host lạ 400, GTraffic 501 |
-| `auth_accepts_header_and_query_key` | 401 thiếu key, `x-api-key`, `?key=` |
-| `missing_job_is_404_and_batch_is_capped` | job lạ 404, batch > 50 → 400 |
-
-`cargo clippy --all-targets` sạch (cần cùng hai biến môi trường như build).
+Test không cần Chrome, không cần model. Gồm HTTP contract (dựng `ApiState` với
+`asr = None`), parser campaign (`instr`), parser mã widget (`quest`), cache mã
+(`codes`).
 
 ## 3. Chạy
 
@@ -70,31 +75,60 @@ WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
 ./target/release/l4m-engine --check
 
 # chạy một alias, in JSON, không mở server
-./target/release/l4m-engine --once https://link4m.net/go/2kCcIqn
+L4M_HEADLESS=0 ./target/release/l4m-engine --once https://link4m.net/go/2kCcIqn
 
 # chạy server
 PORT=8080 ./target/release/l4m-engine
 ```
 
-`--check` in `check ok: chrome + cdp + whisper` rồi thoát 0. Trên box này (Chrome
-158, model tiny.en, 2 thread) mất ~18 s cho lần đầu (whisper load + Chrome cold
-start), các lần sau nhanh hơn.
-
 `--once` in đúng một dòng JSON:
 
 ```json
-{"status":"success","alias":"2kCcIqn","destination_url":"https://...","elapsed_ms":12345.6}
+{"status":"success","alias":"LQUTiu","destination_url":"https://...","elapsed_ms":245767.8}
 ```
 
 Lỗi:
 
 ```json
-{"status":"failed","alias":"2kCcIqn","error":"...","kind":"needs_code","elapsed_ms":11844.6}
+{"status":"failed","alias":"LQUTiu","error":"...","kind":"needs_code","elapsed_ms":53397.2}
 ```
 
-`kind` nhận: `page`, `cdp`, `audio`, `destination`, `needs_code`, `timeout`.
+`kind` nhận: `page`, `cdp`, `audio`, `destination`, `needs_code`, `campaign`,
+`timeout`.
 
-## 4. API
+## 4. Flow thật (những gì engine tự làm)
+
+1. **Trang link4m** — chờ form thật hiện ra (không nhầm
+   `#captcha-html-wrapper` của trang khung), đọc `campaign_id`, `data-code`,
+   tiêu đề. Nếu trang chỉ có captcha (Link4M không phục vụ campaign cho IP
+   này), engine bỏ qua toàn bộ bước 2–6 và đi thẳng captcha — lượt chạy còn
+   ~15–40 s.
+2. **Lọc campaign** — `L4M_CAMPAIGN=<id>` buộc re-roll tới đúng campaign
+   (tối đa 24 lần, nhận danh sách id phân tách bởi dấu phẩy). Không đặt thì
+   lấy campaign đang phục vụ. Trang captcha-only không có campaign để khớp nên
+   bước ghim tự bỏ qua.
+3. **Hướng dẫn** — đọc block `HƯỚNG DẪN LẤY MÃ`: chữ + ảnh. Campaign
+   `TRỰC TIẾP` có domain trong chữ; campaign `TÌM KIẾM TỪ KHOÁ` giấu keyword và
+   domain trong ảnh → OCR (rapidocr, downscale 800 px, hai lượt: strip bước 1–4
+   trước, screenshot sau) rồi cache theo `campaign_id`.
+4. **Xác minh sponsor** — mọi domain ứng viên được fetch song song (4 một lô,
+   giữ thứ tự OCR); chỉ domain có `/widget/…?key=` mới được chọn. Key + kiểu
+   referrer (`ref_domain_list` rỗng → điều hướng trần; danh sách Google → phải
+   có referrer Google) lưu vào `data/campaigns.json`.
+5. **Quest sponsor** — tab mới, UA mobile, viewport 390×844, touch, chặn
+   `disable-devtool` + media/font, `Page.bringToFront` + focus emulation (tab
+   background bị throttle timer, countdown 70 s sẽ trôi thành 10 phút).
+   Bấm `LẤY MÃ`, chờ hết bước 1, reload, bấm lại, đọc `Mã KM: XXXXXX`.
+6. **Điền mã** — set `input[name=password]` + dispatch `input`/`change`.
+7. **Captcha** — click anchor, nếu audio challenge mở thì tải clip, whisper.cpp
+   giải, điền `audio-response`, verify; token dài > 50 ký tự được chấp nhận.
+8. **Chốt** — POST chính form của trang tới `{api}/links/get-link-info`; đọc
+   `url`/`link` trong JSON. Không navigate, không race với nút của trang.
+9. **Cache mã** — chỉ mã đã tạo ra destination mới được ghi
+   `campaign_id → code`; mã bị từ chối (`Mã không hợp lệ`, `Sai url`) bị xoá và
+   harvest lại.
+
+## 5. API
 
 | Method | Path | Ghi chú |
 |---|---|---|
@@ -112,10 +146,9 @@ Envelope giống `service/app.py`: `status`, `url`, `destination_url`, `provider
 400 / 401 / 404 / 429 / 501.
 
 - `401` khi đặt `API_KEY` mà thiếu/sai `x-api-key`, `Authorization: Bearer`, `?key=`.
-- `429` khi hàng đợi đầy; job vừa tạo được xoá khỏi bảng job luôn, không để lại
-  job "running" ma.
-- `501` cho provider khác Link4M — dùng `server-rs/` hoặc
-  `python -m src.bypass_api` cho BBMKTS/GTRAFFIC/LAYMA/TRAFFICVN/OCTOLINK.
+- `429` khi hàng đợi đầy.
+- `501` cho provider khác Link4M — dùng `server-rs/` cho BBMKTS/GTRAFFIC/LAYMA/
+  TRAFFICVN/OCTOLINK.
 - `wait` nhận `1/true/yes/on` và `?wait` trần.
 
 Ví dụ:
@@ -123,66 +156,145 @@ Ví dụ:
 ```bash
 curl -s -X POST localhost:8080/api/v1/bypass \
   -H 'content-type: application/json' \
-  -d '{"url":"https://bbmkts.com/go/file/aHR0cHM6Ly9leGFtcGxlLmNvbS94","wait":true}'
-# → {"status":"success","destination_url":"https://example.com/x","provider":"decode",...}
+  -d '{"url":"https://link4m.net/go/2kCcIqn","wait":true}'
+# → {"status":"success","destination_url":"https://...","provider":"link4m",...}
 ```
 
-## 5. Cấu hình
+## 6. Cấu hình
 
 | Biến | Default | Ý nghĩa |
 |---|---|---|
 | `HOST` / `PORT` | `0.0.0.0` / `8080` | bind |
 | `API_KEY` | rỗng | bật auth |
-| `WORKERS` | `2` | số Chrome chạy song song; mỗi worker ~700 MB |
+| `WORKERS` | `2` | số Chrome song song; mỗi worker ~1.3–1.8 GB. `WORKERS=auto` tự tính từ `MemAvailable` |
 | `MAX_QUEUE` | `100` | vượt → 429 |
-| `JOB_TIMEOUT` | `300` | giây cho một lượt flow |
+| `MAX_BATCH` | `50` | số URL tối đa mỗi `/api/v1/batch` (1–500) |
+| `BATCH_CONCURRENCY` | `max(4, WORKERS)` | số request batch chạy song song (1–64) |
+| `PROXY_LIST` | rỗng | danh sách proxy inline, phân tách bởi dấu phẩy/xuống dòng |
+| `PROXY_FILE` | `data/proxies.txt` | file proxy khi không đặt `PROXY_LIST` |
+| `PROXY_ROTATE` | `0` | `1` = đổi IP sau **mỗi job** (relaunch Chrome, ~5 s) |
+| `JOB_TIMEOUT` | `480` | giây cho một lượt flow (quest 120 s + captcha) |
 | `CACHE_ENABLED` / `CACHE_TTL` | `true` / `21600` | cache theo `provider:alias` |
 | `CACHE_FILE` | `data/native_cache.json` | cache bền qua restart |
+| `L4M_CODE_TTL` | `900` | giây sống của mã sponsor đã chứng minh |
+| `L4M_CODE_FILE` | `data/codes.json` | cache mã theo campaign |
+| `L4M_CAMPAIGN_CACHE` | `data/campaigns.json` | cache sponsor/key/referrer theo campaign |
+| `L4M_CAMPAIGN` | rỗng | buộc một campaign id (debug/repro) |
+| `L4M_CODE` | rỗng | truyền mã có sẵn, bỏ qua quest |
+| `L4M_HEADLESS` | `1` khi không có `DISPLAY` | **đặt `0`** khi có Xvfb |
 | `CHROME_BIN` | tự dò | `google-chrome`, `chromium`, `/opt/google/chrome/chrome` |
-| `L4M_HEADLESS` | `1` khi không có `DISPLAY` | `0` để xem cửa sổ |
-| `CHROME_PROFILE` | `data/chrome-profile` | profile riêng, giữ cookie giữa các lượt |
+| `CHROME_PROFILE` | `data/chrome-profile` | profile gốc; worker > 1 copy sang `-w<N>` |
+| `L4M_PYTHON` / `L4M_OCR` | `.venv/bin/python` / `tools/ocr.py` | sidecar OCR |
 | `WHISPER_MODEL` | `models/ggml-tiny.en.bin` | model ASR |
 | `WHISPER_MODEL_URL` | HuggingFace tiny.en | nguồn tải khi thiếu model |
 | `ASR_THREADS` | `2` | thread whisper |
 | `RUST_LOG` | `l4m_engine=info,engine=info` | mức log |
 
-## 6. Phạm vi hiện tại — đọc trước khi dùng
+## 6.1 Proxy — phá giới hạn IP
 
-Engine chạy **fast path**: trang đã ở bước nhập mã (hoặc bước captcha sau khi mã
-đã nhập trong phiên trước).
+Link4M và trang sponsor rate-limit theo IP: sau vài captcha từ một địa chỉ, audio
+challenge bắt đầu fail. Engine có pool proxy, mỗi worker một exit, hoặc mỗi job
+một exit với `PROXY_ROTATE=1`.
 
-- Trang có ô `input[name=password]` mà request không kèm mã → trả
-  `needs_code` trong ~12 s.
-- Trang đã sang captcha → giải audio bằng whisper, POST `/links/get-link-info`,
-  đọc link đích.
-- Trang mới tinh cần chọn sponsor + lấy mã (quest nhiều bước, ảnh hướng dẫn +
-  OCR) → **chưa có trong crate này**. Dùng `src/core/link4m_engine.py` cho quest,
-  hoặc truyền mã có sẵn:
+Định dạng mỗi dòng (hoặc mỗi mục trong `PROXY_LIST`):
 
-```bash
-L4M_CODE=DTsiYu ./target/release/l4m-engine --once https://link4m.net/go/2kCcIqn
-curl -s -X POST localhost:8080/api/v1/bypass \
-  -H 'content-type: application/json' \
-  -d '{"url":"https://link4m.net/go/2kCcIqn","code":"DTsiYu","wait":true}'
+```
+host:port
+user:pass@host:port
+http://user:pass@host:port
+host:port:user:pass
 ```
 
-Đo trên box này, 2026-11-26:
+Chrome không nhận credential trong `--proxy-server`, nên engine dựng một relay
+127.0.0.1 cho mỗi session: Chrome → relay → proxy thật, relay chèn
+`Proxy-Authorization`. Relay chết cùng session, không mở ra ngoài loopback.
 
-| Tình huống | Kết quả |
-|---|---|
-| `--check` | `check ok: chrome + cdp + whisper`, ~18 s |
-| `--once 2kCcIqn` (campaign mới, chưa có mã) | `needs_code` sau **10 s** (release) / 11.8 s (debug) |
-| Cùng link trước khi sửa nhận diện trang | captcha giải 4 token (2382–2510 ký tự) rồi fail sau **4 m 55 s** — token không thể mở khoá vì thiếu mã |
+```bash
+PROXY_LIST='user:pass@1.2.3.4:8000,5.6.7.8:3128' PROXY_ROTATE=1 \
+  L4M_HEADLESS=0 ./target/release/l4m-engine --once https://link4m.org/go/<alias>
+```
 
-Lỗi cũ: `#captcha-html-wrapper` xuất hiện cả trên trang khung trước khi form mã
-được render, nên engine tưởng đã tới bước captcha. Nay chỉ coi là sẵn sàng khi
-`input[name=password]` hiển thị, hoặc form đã có **và** wrapper có mặt.
+Exit lỗi (`cdp`, `browser`, `timeout`) bị đánh dấu cooldown 300 s; exit thành
+công được xoá cooldown. Khi tất cả đang cooldown, engine vẫn dùng entry cũ nhất
+thay vì dừng — một exit xấu vẫn hơn không có exit.
 
-## 7. Vận hành
+Đo trên box này: Chrome thật đi qua relay, log upstream ghi
+`CONNECT link4m.net:443`, `CONNECT www.google.com:443`, quest + captcha chạy
+bình thường.
 
-- Job treo: `GET /api/v1/jobs/{id}` xem `elapsed_ms`; quá `JOB_TIMEOUT` worker
-  huỷ Chrome và trả lỗi timeout.
-- Chrome chết: `/health` vẫn 200; lượt sau worker mở lại Chrome.
-- Hết RAM: hạ `WORKERS=1`, đặt `MemoryMax` nếu chạy systemd.
-- Cache: một alias chỉ chạy một lần trong `CACHE_TTL`; request trùng nhận
-  `cached: true`.
+## 7. Cache mã sponsor
+
+Mã `Mã KM` do widget phát **theo campaign**, không theo visitor: cùng một
+campaign phục vụ nhiều alias và cùng một mã. Vì vậy sau khi một mã mở được
+destination, engine ghi `campaign_id → code` và các alias sau trên campaign đó
+bỏ qua toàn bộ quest (tiết kiệm ~2–3 phút/lượt).
+
+- Chỉ mã **đã chứng minh** mới vào cache (`put` sau khi có destination).
+- TTL `L4M_CODE_TTL` (mặc định 900 s); hết hạn thì harvest lại.
+- Single-flight: `lock_for(campaign)` — nhiều job cùng campaign chỉ chạy một
+  quest, các job còn lại chờ rồi đọc cache.
+- Mã bị từ chối → `invalidate(campaign)`, xoá `self.code`, harvest lại trong
+  cùng job.
+
+## 8. RAM, worker và vòng đời Chrome
+
+Box 3.7 GB từng bị OOM vì Chrome sống sót sau khi engine bị `timeout` giết.
+Đã xử lý ba lớp:
+
+1. Chrome chạy trong session riêng (`setsid`); `Drop` gửi `SIGKILL` vào cả
+   process group.
+2. `chrome::sweep()` lúc khởi động: quét `/proc`, chỉ giết Chrome **orphan**
+   (ppid = 1 hoặc cha không còn là `l4m-engine`) có `--user-data-dir` dưới
+   `data/`. Engine khác đang chạy không bị đụng.
+3. systemd `KillMode=control-group` + `MemoryMax` là lưới ngoài cùng.
+
+Khuyến nghị: `WORKERS=1` trên 4 GB, `WORKERS=2` trên 8 GB. Trên box 3.7 GB đặt
+`WORKERS=auto`: engine đọc `MemAvailable`, trừ 900 MB cho hệ thống, chia 1.4 GB
+mỗi worker, kẹp 1–6. Tab sponsor chặn ảnh/video/font; tab campaign chỉ chặn
+media và font (captcha cần ảnh).
+
+## 9. Deploy (systemd + Xvfb)
+
+```bash
+sudo useradd -r -m -d /opt/l4m-engine l4m
+sudo rsync -a engine-rs/ /opt/l4m-engine/
+cd /opt/l4m-engine && ./build.sh
+
+sudo cp deploy/l4m-engine.service /etc/systemd/system/
+sudo cp deploy/l4m-engine.env.example /etc/l4m-engine.env
+sudo editor /etc/l4m-engine.env
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now l4m-engine
+journalctl -u l4m-engine -f
+```
+
+Unit đã bọc `xvfb-run -a -s "-screen 0 1280x1000x24"` và đặt
+`L4M_HEADLESS=0`. Không có display thì widget không render nút và countdown bị
+throttle — quest sẽ fail dù mọi thứ khác đúng.
+
+Kiểm tra nhanh sau deploy:
+
+```bash
+curl -s localhost:8080/health | jq
+curl -s -X POST localhost:8080/api/v1/bypass \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://link4m.net/go/<alias>","wait":true}' | jq
+```
+
+## 10. Giới hạn đã biết
+
+- Campaign đổi theo từng lần fetch; alias có thể rơi vào campaign khác giữa hai
+  lần reload. `L4M_CAMPAIGN` dùng để ghim khi cần tái lập.
+- Link4M ngừng phục vụ campaign cho một IP sau vài lượt hoàn thành: từ lúc đó
+  mọi alias trả trang captcha-only. Engine vẫn lấy được destination (đường tắt
+  ở mục 4); muốn có lại đường sponsor thì đổi exit qua `PROXY_LIST` /
+  `PROXY_ROTATE=1`.
+- Sponsor không có widget (hoặc widget chết) → probe loại domain đó và thử ứng
+  viên kế tiếp; hết ứng viên thì job trả `needs_code`.
+- reCAPTCHA audio bị chặn theo IP/profile: reload lấy anchor mới, thử lại trong
+  budget.
+- OCR là sidecar Python; máy không có rapidocr thì campaign `TÌM KIẾM` sẽ không
+  lấy được domain từ ảnh (campaign `TRỰC TIẾP` vẫn chạy).
+- Một campaign chỉ có một mã tại một thời điểm; mã cũ hết hạn sẽ bị từ chối và
+  engine tự harvest lại.

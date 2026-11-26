@@ -17,6 +17,8 @@ pub struct Config {
     pub api_key: String,
     pub workers: usize,
     pub max_queue: usize,
+    pub max_batch: usize,
+    pub batch_concurrency: usize,
     pub job_timeout: Duration,
     pub cache_ttl: Duration,
     pub cache_file: PathBuf,
@@ -72,15 +74,41 @@ fn which(binary: &str) -> Result<String> {
     Err(anyhow!("{binary} not found"))
 }
 
+/// `WORKERS=auto` sizes the pool from MemAvailable: one headful Chrome plus
+/// its share of whisper costs ~1.4 GB, and the box needs ~900 MB to breathe.
+fn parse_workers() -> usize {
+    let raw = std::env::var("WORKERS").unwrap_or_else(|_| "2".into());
+    if raw.trim().eq_ignore_ascii_case("auto") {
+        let available_mb = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .find(|line| line.starts_with("MemAvailable:"))
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .and_then(|kb| kb.parse::<u64>().ok())
+            })
+            .map(|kb| kb / 1024)
+            .unwrap_or(2048);
+        let workers = available_mb.saturating_sub(900) / 1400;
+        return (workers as usize).clamp(1, 32);
+    }
+    raw.trim().parse::<usize>().unwrap_or(2).max(1)
+}
+
 impl Config {
     pub fn from_env() -> Self {
+        let workers = parse_workers();
         Self {
             host: env_or("HOST", "0.0.0.0"),
             port: env_num("PORT", 8080u16),
             api_key: env_or("API_KEY", ""),
-            workers: env_num("WORKERS", 2usize).max(1),
+            workers,
+            max_batch: env_num("MAX_BATCH", 50usize).clamp(1, 500),
+            // Batch fan-out follows the pool: on a one-worker box the old
+            // fixed 4 only queued work that could not run in parallel.
+            batch_concurrency: env_num("BATCH_CONCURRENCY", workers.max(4)).clamp(1, 64),
             max_queue: env_num("MAX_QUEUE", 100usize).max(1),
-            job_timeout: Duration::from_secs(env_num("JOB_TIMEOUT", 300u64).max(30)),
+            job_timeout: Duration::from_secs(env_num("JOB_TIMEOUT", 480u64).max(30)),
             cache_ttl: Duration::from_secs(env_num("CACHE_TTL", 21_600u64)),
             cache_file: PathBuf::from(env_or("CACHE_FILE", "data/native_cache.json")),
             cache_enabled: env_or("CACHE_ENABLED", "true") != "false",

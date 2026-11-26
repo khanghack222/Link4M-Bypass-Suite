@@ -36,6 +36,10 @@ async fn main() -> Result<()> {
     let cfg = Config::from_env();
     info!(target: "engine", workers = cfg.workers, "starting l4m-engine");
 
+    let mut sweep_roots = vec![cfg.profile_dir.clone()];
+    sweep_roots.push(std::env::temp_dir().join("l4m-once"));
+    l4m_engine::chrome::sweep(&sweep_roots);
+
     if !std::path::Path::new(&cfg.chrome_bin).exists() {
         return Err(anyhow!(
             "chrome binary not found: {} (set CHROME_BIN)",
@@ -62,6 +66,7 @@ async fn main() -> Result<()> {
                 headless,
                 std::env::temp_dir().join(format!("l4m-check-{}", std::process::id())),
                 true,
+                None,
             )
         })
         .await??;
@@ -91,20 +96,30 @@ async fn run_once(cfg: Config, asr: Arc<Asr>, target: &str) -> Result<()> {
         .ok_or_else(|| anyhow!("cannot read link4m alias from {target}"))?;
     let binary = cfg.chrome_bin.clone();
     let headless = cfg.headless;
+    // One-shot jobs use the same proxy path as the pool so a pinned exit can
+    // be verified without starting the server.
+    let proxy = l4m_engine::proxy::shared().and_then(|pool| pool.next());
+    let relay = match &proxy {
+        Some(upstream) => Some(l4m_engine::proxy::start_relay(upstream.clone()).await?),
+        None => None,
+    };
+    let proxy_port = relay.as_ref().map(|relay| relay.port);
     let chrome = tokio::task::spawn_blocking(move || {
         ChromeProc::launch(
             &binary,
             headless,
             std::env::temp_dir().join(format!("l4m-once-{}", std::process::id())),
             true,
+            proxy_port,
         )
     })
     .await??;
+    let _relay = relay;
     let ws = chrome.page_ws()?;
     let cdp = Cdp::connect(&ws).await?;
     let started = std::time::Instant::now();
     let code = std::env::var("L4M_CODE").ok().filter(|c| !c.trim().is_empty());
-    let result = run_alias(&cdp, &asr, &alias, code.as_deref(), cfg.job_timeout).await;
+    let result = run_alias(&cdp, &asr, &alias, code.as_deref(), chrome.port, cfg.job_timeout).await;
     let elapsed = started.elapsed().as_secs_f64() * 1000.0;
     match result {
         Ok(destination) => {

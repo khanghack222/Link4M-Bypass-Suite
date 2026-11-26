@@ -315,11 +315,13 @@ async fn batch(
     Json(req): Json<BatchReq>,
 ) -> Result<Json<Value>, ApiError> {
     check_auth(&state.inner, &headers, None)?;
-    if req.urls.len() > 50 {
-        return Err(ApiError::bad("Tối đa 50 URL mỗi batch"));
+    let cap = state.inner.cfg.max_batch;
+    if req.urls.len() > cap {
+        return Err(ApiError::bad(format!("Tối đa {cap} URL mỗi batch")));
     }
     let wait = req.wait.unwrap_or(true);
     let timeout = clamp_timeout(req.timeout);
+    let concurrency = state.inner.cfg.batch_concurrency;
     let results: Vec<Value> = stream::iter(req.urls.into_iter().map(|url| {
         let state = state.clone();
         async move {
@@ -338,7 +340,7 @@ async fn batch(
             }
         }
     }))
-    .buffer_unordered(4)
+    .buffer_unordered(concurrency)
     .collect()
     .await;
     Ok(Json(json!({ "count": results.len(), "results": results })))
@@ -427,6 +429,8 @@ mod tests {
             api_key: api_key.into(),
             workers,
             max_queue,
+            max_batch: 50,
+            batch_concurrency: 4,
             job_timeout: Duration::from_secs(30),
             cache_ttl: Duration::from_secs(60),
             cache_file: scratch.join("cache.json"),

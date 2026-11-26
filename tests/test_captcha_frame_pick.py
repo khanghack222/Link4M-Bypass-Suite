@@ -108,9 +108,13 @@ def main():
     picked = find_challenge(page)
     check("frame hiển thị có tile được ưu tiên", picked is page.frames[1])
 
-    # 3. Chỉ còn widget ẩn: coi như không có thử thách, đừng treo job.
+    # 3. Chỉ còn widget ẩn (khung lưới rỗng, không tile, không ô audio).
     page = FakePage([hidden_frame(grid=1)])
-    check("chỉ có frame ẩn -> None", find_challenge(page) is None)
+    check("frame ẩn rỗng -> None", find_challenge(page) is None)
+
+    # 3b. Thử thách thật bị đặt ngoài viewport (headless) vẫn phải được chọn.
+    page = FakePage([hidden_frame(grid=1), hidden_frame(grid=1, tiles=9)])
+    check("frame ngoài viewport có tile -> vẫn chọn", find_challenge(page) is page.frames[1])
 
     # 4. Không có bframe nào.
     page = FakePage([FakeFrame("https://link4m.net/go/abc", FakeBox(0, 0, 1280, 800))])

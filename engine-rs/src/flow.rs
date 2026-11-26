@@ -5,6 +5,9 @@
 //! page itself and Google's reCAPTCHA, exactly like a normal browser.
 
 use crate::asr::Asr;
+use crate::codes;
+use crate::instr;
+use crate::quest;
 use std::sync::Arc;
 use crate::cdp::Cdp;
 use base64::Engine;
@@ -38,6 +41,7 @@ const STATE_JS: &str = r#"(() => {
   const form = document.getElementById('main-form') || document.getElementById('main-form-2');
   const pw = form ? form.querySelector('input[name=password]') : null;
   const codeInput = form ? form.querySelector('input[name=code]') : null;
+  const campInput = form ? form.querySelector('input[name=campaign_id]') : null;
   const wrapper = document.getElementById('captcha-html-wrapper');
   const pwVisible = !!(pw && (pw.offsetWidth || pw.offsetHeight));
   return {
@@ -45,6 +49,7 @@ const STATE_JS: &str = r#"(() => {
     captcha: !!wrapper && !pwVisible,
     password: pwVisible,
     code: codeInput ? codeInput.value : (wrapper ? (wrapper.getAttribute('data-code') || '') : ''),
+    campaign: campInput ? campInput.value : '',
     title: document.title || ''
   };
 })()"#;
@@ -185,6 +190,7 @@ pub struct Flow<'a> {
     asr: Arc<Asr>,
     alias: String,
     code: Option<String>,
+    port: u16,
     deadline: Instant,
 }
 
@@ -194,6 +200,7 @@ impl<'a> Flow<'a> {
         asr: Arc<Asr>,
         alias: &str,
         code: Option<String>,
+        port: u16,
         budget: Duration,
     ) -> Self {
         Self {
@@ -201,6 +208,7 @@ impl<'a> Flow<'a> {
             asr,
             alias: alias.to_string(),
             code,
+            port,
             deadline: Instant::now() + budget,
         }
     }
@@ -222,20 +230,45 @@ impl<'a> Flow<'a> {
         let url = format!("https://link4m.net/go/{}", self.alias);
         self.navigate(&url).await?;
 
-        let state = self.wait_for_page().await?;
+        let mut state = self.wait_for_page().await?;
+        // Test/debug aid: keep reloading until the page serves a given campaign.
+        // When Link4M serves a captcha-only page there is no campaign to match,
+        // so pinning is skipped instead of burning 24 reloads on a mismatch.
         if state.password {
-            let Some(code) = self.code.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
-                return Err(FlowError::new(
-                    "needs_code",
-                    "link asks for a campaign code; supply code in the request",
-                ));
-            };
-            self.fill_code(code).await?;
-            info!(target: "engine", alias = %self.alias, "campaign code filled");
-            tokio::time::sleep(Duration::from_millis(1200)).await;
-        } else if !state.captcha {
+            if let Ok(want) = std::env::var("L4M_CAMPAIGN") {
+            // Comma-separated list: pin a set (e.g. every campaign that already
+            // has a proven code) instead of one rotating id.
+            let wanted: Vec<&str> = want
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .collect();
+            if !wanted.is_empty() {
+                let mut tries = 0;
+                while !wanted.contains(&state.campaign.as_str()) && tries < 24 {
+                    tries += 1;
+                    debug!(target: "engine", want = %want, got = %state.campaign, tries, "campaign mismatch, re-rolling");
+                    self.navigate(&url).await?;
+                    tokio::time::sleep(Duration::from_millis(1800)).await;
+                    state = self.wait_for_page().await?;
+                }
+                if !wanted.contains(&state.campaign.as_str()) {
+                    return Err(FlowError::new("campaign", format!("never landed on campaign {want}")));
+                }
+            }
+            }
+        }
+        if !state.password && !state.captcha {
             return Err(FlowError::new("page", "no captcha or code form on page"));
         }
+        // `prepared` holds (campaign id, code) while the page wants a sponsor
+        // code. A code that unlocks a destination is cached for the next alias
+        // on the same campaign; a rejected one is dropped and re-harvested.
+        let mut prepared = self.ensure_code_roll(&url).await?;
+        if let Some((_, code)) = &prepared {
+            info!(target: "engine", alias = %self.alias, code = %code, "campaign code filled");
+        }
+        tokio::time::sleep(Duration::from_millis(1200)).await;
         info!(target: "engine", alias = %self.alias, "captcha step");
 
         let mut attempt = 0;
@@ -245,6 +278,7 @@ impl<'a> Flow<'a> {
             if attempt > 1 {
                 debug!(target: "engine", attempt, "reloading page for a fresh anchor");
                 self.reload().await?;
+                prepared = self.ensure_code_roll(&url).await?;
             }
             if !self.click_anchor().await? {
                 warn!(target: "engine", "anchor not found");
@@ -299,14 +333,121 @@ impl<'a> Flow<'a> {
             let Some(token) = token else { continue };
             debug!(target: "engine", len = token.len(), "token ready");
             match self.finish(token).await {
-                Ok(destination) => return Ok(destination),
+                Ok(destination) => {
+                    if let Some((campaign, code)) = &prepared {
+                        codes::put(campaign, code);
+                    }
+                    return Ok(destination);
+                }
                 Err(err) => {
                     warn!(target: "engine", "token did not unlock: {err}");
+                    if err.kind == "code" {
+                        if let Some((campaign, _)) = &prepared {
+                            warn!(target: "engine", campaign = %campaign, "cached code rejected, invalidating");
+                            codes::invalidate(campaign);
+                        }
+                        self.code = None;
+                        prepared = None;
+                    }
                     last_err = Some(err);
                 }
             }
         }
         Err(last_err.unwrap_or_else(|| FlowError::new("captcha", "captcha not solved in budget")))
+    }
+
+    /// Campaigns rotate and some of them have no usable sponsor (dead widget,
+    /// masked domain OCR cannot resolve). Instead of failing the job, roll a
+    /// fresh campaign and try again.
+    async fn ensure_code_roll(&mut self, url: &str) -> FlowResult<Option<(String, String)>> {
+        let mut last: Option<FlowError> = None;
+        for attempt in 0..3 {
+            match self.ensure_code().await {
+                Ok(prepared) => return Ok(prepared),
+                Err(err) if err.kind == "needs_code" => {
+                    warn!(target: "engine", attempt = attempt + 1, "campaign has no usable sponsor: {err}");
+                    last = Some(err);
+                    if attempt < 2 {
+                        self.navigate(url).await?;
+                        tokio::time::sleep(Duration::from_millis(2500)).await;
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last.unwrap_or_else(|| FlowError::new("needs_code", "no campaign served a code")))
+    }
+
+    /// Resolve the sponsor code for the campaign currently on screen: the CLI
+    /// override first, then a proven code from the cache, then a fresh harvest
+    /// behind a per-campaign lock so concurrent jobs share one quest.
+    async fn ensure_code(&mut self) -> FlowResult<Option<(String, String)>> {
+        let state = self.wait_for_page().await?;
+        if !state.password {
+            return Ok(None);
+        }
+        let campaign = state.campaign.clone();
+        if let Some(code) = self
+            .code
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+        {
+            self.fill_code(&code).await?;
+            return Ok(Some((campaign, code)));
+        }
+        if let Some(code) = codes::get(&campaign) {
+            info!(target: "engine", campaign = %campaign, "campaign code cache hit");
+            self.fill_code(&code).await?;
+            self.code = Some(code.clone());
+            return Ok(Some((campaign, code)));
+        }
+        let lock = codes::lock_for(&campaign).await;
+        let _guard = lock.lock().await;
+        if let Some(code) = codes::get(&campaign) {
+            info!(target: "engine", campaign = %campaign, "campaign code cache hit after wait");
+            self.fill_code(&code).await?;
+            self.code = Some(code.clone());
+            return Ok(Some((campaign, code)));
+        }
+        let Some(code) = self.harvest_code().await else {
+            return Err(FlowError::new(
+                "needs_code",
+                "campaign code unavailable: sponsor widget did not return one",
+            ));
+        };
+        self.fill_code(&code).await?;
+        self.code = Some(code.clone());
+        Ok(Some((campaign, code)))
+    }
+
+    /// Ask the sponsored page for its campaign code.
+    async fn harvest_code(&self) -> Option<String> {
+        let campaign = instr::discover(self.cdp).await?;
+        let budget = self.remaining().min(Duration::from_secs(260));
+        if budget.as_secs() < 60 {
+            return None;
+        }
+        let keyword = if campaign.keyword.is_empty() {
+            campaign
+                .sponsor
+                .split('.')
+                .rev()
+                .nth(1)
+                .unwrap_or("")
+                .to_string()
+        } else {
+            campaign.keyword.clone()
+        };
+        info!(target: "engine", alias = %self.alias, sponsor = %campaign.sponsor, keyword = %keyword, "harvesting sponsor code");
+        match quest::harvest(self.port, &format!("https://{}/", campaign.sponsor), &keyword, &campaign.key, &campaign.refs, budget).await {
+            Ok(code) => Some(code),
+            Err(err) => {
+                warn!(target: "engine", "sponsor harvest failed: {err}");
+                None
+            }
+        }
     }
 
     async fn fill_code(&self, code: &str) -> FlowResult<()> {
@@ -832,6 +973,7 @@ impl<'a> Flow<'a> {
                 match self.post_link_info().await {
                     Ok(Some(destination)) => return Ok(destination),
                     Ok(None) => debug!(target: "engine", "direct post returned no url"),
+                    Err(err) if err.kind == "code" => return Err(err),
                     Err(err) => debug!(target: "engine", "direct post failed: {err}"),
                 }
             }
@@ -893,6 +1035,14 @@ impl<'a> Flow<'a> {
             }
         }
         debug!(target: "engine", reply = %text.chars().take(200).collect::<String>(), "link-info reply");
+        if let Some(info) = value.get("info").and_then(Value::as_str) {
+            if info.contains("Mã không hợp lệ")
+                || info.contains("Sai url")
+                || info.contains("Không lấy được code")
+            {
+                return Err(FlowError::new("code", info.to_string()));
+            }
+        }
         Ok(None)
     }
 
@@ -959,6 +1109,7 @@ struct PageState {
     password: bool,
     #[allow(dead_code)]
     code: String,
+    campaign: String,
     title: String,
 }
 
@@ -977,6 +1128,7 @@ impl PageState {
             captcha: value.get("captcha").and_then(Value::as_bool).unwrap_or(false),
             password: value.get("password").and_then(Value::as_bool).unwrap_or(false),
             code: value.get("code").and_then(Value::as_str).unwrap_or("").to_string(),
+            campaign: value.get("campaign").and_then(Value::as_str).unwrap_or("").to_string(),
             title: value.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
         }
     }
@@ -1033,9 +1185,10 @@ pub async fn run_alias(
     asr: &Arc<Asr>,
     alias: &str,
     code: Option<&str>,
+    port: u16,
     budget: Duration,
 ) -> FlowResult<String> {
-    let mut flow = Flow::new(cdp, asr.clone(), alias, code.map(str::to_string), budget);
+    let mut flow = Flow::new(cdp, asr.clone(), alias, code.map(str::to_string), port, budget);
     flow.run().await
 }
 

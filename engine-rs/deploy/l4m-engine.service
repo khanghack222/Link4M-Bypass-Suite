@@ -1,0 +1,31 @@
+[Unit]
+Description=l4m-engine — Link4M native bypass (Chrome + whisper.cpp)
+Documentation=file:/opt/l4m-engine/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=l4m
+Group=l4m
+WorkingDirectory=/opt/l4m-engine
+EnvironmentFile=/etc/l4m-engine.env
+# Headful Chrome under a virtual X server: the sponsor widget and the audio
+# challenge both behave like a real phone only when a display exists.
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1280x1000x24 -nolisten tcp" /opt/l4m-engine/l4m-engine
+Restart=always
+RestartSec=5
+# KillMode=control-group is the outer safety net: even if the engine is killed
+# with SIGKILL, systemd reaps every Chrome process in the cgroup. The engine
+# itself also puts Chrome in its own session and sweeps orphans on start.
+KillMode=control-group
+TimeoutStopSec=20
+# One worker ≈ 1 Chrome + whisper context. On a 3.7 GB box keep WORKERS=1 and
+# let the kernel reclaim before the OOM killer fires.
+MemoryHigh=2400M
+MemoryMax=3200M
+TasksMax=4096
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
