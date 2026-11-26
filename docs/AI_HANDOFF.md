@@ -38,6 +38,8 @@ Quy ước trả lời:
   (nó giết shell của mình). Quét /proc theo cmdline, bỏ qua parent PID.
 - Không xoá data/ khi chưa hỏi; cache và mã đã chứng minh nằm ở đó.
 - Không commit proxy, API key, cookie, token vào git.
+- Trạng thái thành phần: đọc `docs/COMPONENTS.md`. `legacy/` và
+  `docs/archive/` chỉ đọc; userscript/extension cũ đã bị xoá, không hồi sinh.
 
 Lệnh chuẩn (Linux/macOS/WSL2):
   cd engine-rs
@@ -76,7 +78,22 @@ Khi nhận yêu cầu: đọc file liên quan trước, sửa đúng chỗ, buil
 | Cache | `engine-rs/data/native_cache.json`, `codes.json`, `campaigns.json` |
 | Deploy | `engine-rs/deploy/l4m-engine.service`, `l4m-engine.env.example` |
 | Scale | `engine-rs/docs/SCALE.md` |
+| Trạng thái thành phần | `docs/COMPONENTS.md` |
+| Mã cũ | `legacy/` — chỉ đọc, không dùng production |
 | Tổng quan | `README.md` |
+
+### Trạng thái thành phần (tóm tắt)
+
+| Nhóm | Trạng thái | Quy tắc |
+|---|---|---|
+| `engine-rs/`, `server-rs/` | ACTIVE | Nơi làm tính năng mới |
+| `src/` (engine Python, `src/bypass_api.py`) | COMPAT | `server-rs` vẫn gọi; sửa phải giữ stdout `__BYPASS_JSON__{...}` |
+| `api_server.py`, `auto_bypass.py`, `src/cli.py`, `service/` | LEGACY | Không sửa trừ khi được yêu cầu |
+| `legacy/`, `docs/archive/` | ARCHIVE | Chỉ đọc |
+| 5 file test đóng băng | CONTRACT | Không sửa |
+| Userscript, `extension/`, `community_bypass.js`, `universal_bypass.py` | REMOVED | Không hồi sinh nếu không có yêu cầu |
+
+Chi tiết đầy đủ: `docs/COMPONENTS.md`.
 
 ### Hợp đồng không được phá
 

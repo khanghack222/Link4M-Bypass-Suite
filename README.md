@@ -25,6 +25,11 @@ Chọn nhanh:
 - Cần một endpoint cho nhiều loại link, engine Python đã kiểm chứng → `server-rs`.
 - Cần CLI/GUI/bot cũ → Python gốc.
 
+Trạng thái từng thành phần (mới / compat / legacy / đã xoá): xem
+[`docs/COMPONENTS.md`](docs/COMPONENTS.md). Tóm tắt: chỉ `engine-rs` và
+`server-rs` là engine mới; `src/` là lớp **COMPAT** mà `server-rs` vẫn gọi;
+`legacy/` và `docs/archive/` chỉ để tham khảo, không sửa.
+
 ## 2. Yêu cầu theo hệ điều hành
 
 | Thành phần | Linux | macOS | Windows |
@@ -243,10 +248,12 @@ engine-rs/            engine native Rust (chính)
   deploy/             systemd, env mẫu
   docs/SCALE.md       dung lượng + scale ngang
 server-rs/            façade HTTP Rust gọi engine Python
-src/                  engine Python gốc (Playwright), registry provider
+src/                  engine Python gốc (Playwright), registry provider — COMPAT
 tests/                contract tests Python (đóng băng)
-service/, deploy/, scripts/, tools/, extension/
+service/, deploy/     service FastAPI + Docker/systemd cũ — LEGACY
+legacy/               mã cũ đã dời: api_server_slim, windows/, scripts/, tools/
 docs/                 tài liệu dự án
+  COMPONENTS.md             trạng thái mới/legacy/đã xoá
   README_PYTHON_LEGACY.md   bản Python cũ
   AI_HANDOFF.md             brief cho AI bên thứ ba
   API_DOCUMENTATION.md      API Python cũ

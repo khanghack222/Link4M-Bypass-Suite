@@ -3,6 +3,7 @@
 | File | Nội dung | Đối tượng |
 |---|---|---|
 | [`../README.md`](../README.md) | Tổng quan toàn repo, quickstart, API, env, bằng chứng live, giới hạn | Mọi người |
+| [`COMPONENTS.md`](COMPONENTS.md) | Trạng thái từng thành phần: ACTIVE / COMPAT / LEGACY / REMOVED, quy tắc sửa | Người và AI |
 | [`AI_HANDOFF.md`](AI_HANDOFF.md) | Brief dán vào context AI khác: sự thật dự án, hợp đồng, giọng nói, checklist | Người bàn giao cho AI |
 | [`API_DOCUMENTATION.md`](API_DOCUMENTATION.md) | API bản Python cũ (FastAPI) | Dev legacy |
 | [`TEST_INFRA.md`](TEST_INFRA.md) | Hạ tầng test Python, phân tầng test | Dev legacy |
@@ -13,6 +14,7 @@
 | [`../engine-rs/README.md`](../engine-rs/README.md) | Engine native Rust: flow, env, deploy, giới hạn | Dev/Ops |
 | [`../engine-rs/docs/SCALE.md`](../engine-rs/docs/SCALE.md) | Công thức dung lượng, nút thắt, scale ngang | Ops |
 | [`../server-rs/README.md`](../server-rs/README.md) | Façade HTTP đa provider | Dev/Ops |
+| [`../legacy/README.md`](../legacy/README.md) | Mã cũ đã dời; không dùng cho production | Tham khảo |
 | [`archive/`](archive/) | Báo cáo nghiên cứu, kế hoạch, tài liệu lịch sử | Tham khảo |
 
 Quy ước:
