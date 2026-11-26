@@ -212,7 +212,7 @@ ra `nmkiosvn-api.nmk87201.workers.dev/claim?...`.
 ## 9. Test
 
 ```bash
-# engine-rs — 50 test (Linux/macOS/WSL2)
+# engine-rs — 51 test (Linux/macOS/WSL2)
 cd <repo>/engine-rs
 WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
 
