@@ -1,9 +1,9 @@
 import sys, os
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# Tu dong chuyen sang Python 3.11 neu dang chay o Python khac ma thieu thu vien
-PYTHON_311 = r"C:\Users\XUAN\AppData\Local\Programs\Python\Python311\python.exe"
-if os.path.exists(PYTHON_311) and sys.executable.lower() != PYTHON_311.lower():
+# Tu dong chuyen sang interpreter khac neu PYTHON_311 duoc dat va ton tai.
+PYTHON_311 = os.environ.get("PYTHON_311", "").strip()
+if PYTHON_311 and os.path.exists(PYTHON_311) and sys.executable.lower() != PYTHON_311.lower():
     import subprocess
     cmd = [PYTHON_311] + sys.argv
     res = subprocess.run(cmd)

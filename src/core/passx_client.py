@@ -11,7 +11,7 @@ import random
 import urllib.request
 from typing import Optional
 
-PASSX_KEY = os.environ.get("PASSX_KEY", "WzN86focyACYU0sUiwF4T-ThdW0Mlrh17NPYbYSXqb0")
+PASSX_KEY = os.environ.get("PASSX_KEY", "").strip()
 PASSX_API_URL = "https://www.passxapi.com"
 
 
@@ -20,7 +20,6 @@ def get_random_project_proxy() -> Optional[str]:
     candidates = [
         os.path.join(os.path.dirname(__file__), "..", "..", "proxies.txt"),
         os.path.join(os.getcwd(), "proxies.txt"),
-        r"C:\Users\XUAN\.gemini\antigravity\scratch\Link4M_Bypass_Suite\proxies.txt"
     ]
     lines = []
     for c in candidates:

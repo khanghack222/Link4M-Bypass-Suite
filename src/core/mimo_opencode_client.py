@@ -4,6 +4,7 @@ import time
 import subprocess
 import os
 import random
+import shutil
 import uuid
 import base64
 from typing import List, Optional
@@ -28,7 +29,6 @@ def load_proxies() -> List[str]:
     candidates = [
         os.path.join(os.path.dirname(__file__), "..", "..", "proxies.txt"),
         os.path.join(os.getcwd(), "proxies.txt"),
-        r"C:\Users\XUAN\.gemini\antigravity\scratch\Link4M_Bypass_Suite\proxies.txt"
     ]
     loaded = []
     for c in candidates:
@@ -71,9 +71,11 @@ def ensure_opencode_daemon() -> bool:
         pass
 
     try:
-        opencode_bin = r"C:\Users\XUAN\AppData\Roaming\npm\opencode.cmd"
-        if not os.path.exists(opencode_bin):
-            opencode_bin = "opencode.cmd" if os.name == "nt" else "opencode"
+        opencode_bin = (
+            os.environ.get("OPENCODE_BIN")
+            or shutil.which("opencode")
+            or ("opencode.cmd" if os.name == "nt" else "opencode")
+        )
 
         env = os.environ.copy()
         # Clean environment to prevent proxy redirection loops on localhost

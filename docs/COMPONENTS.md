@@ -86,6 +86,7 @@ Tài liệu này là nguồn sự thật duy nhất về việc **được dùng
 | `api_server_slim.py` | **LEGACY** | `legacy/api_server_slim.py` |
 | `scripts/*.ps1`, `scripts/*.bat`, `scripts/Launcher.cs` | **LEGACY** | `legacy/windows/` |
 | `scripts/decode_link.py`, `final_bypass_100.py`, `shortlink_factory.py` | **LEGACY** | `legacy/scripts/` |
+| `src/core/final_bypass_100.py` (bản trùng của `legacy/scripts/final_bypass_100.py`) | **REMOVED** | Lịch sử git |
 | `tools/` (script khảo sát DOM, solver vendored) | **LEGACY** | `legacy/tools/` |
 | `.aider*`, `.clinerules`, `.crushrules`, `.crush`, `CONVENTIONS.md`, `AGENTS.md.veta-disabled` | **LOCAL** | `_local/`, gitignore |
 
@@ -100,3 +101,6 @@ Tài liệu này là nguồn sự thật duy nhất về việc **được dùng
    nhánh mới và ghi rõ lý do.
 6. File cá nhân đặt trong `_local/`; không commit.
 7. Đường dẫn trong tài liệu tính từ thư mục gốc repo, không hardcode máy.
+8. Không hardcode API key/token trong code: đọc từ env (`OCILAR_API_KEY`,
+   `PASSX_KEY`, `DISCORD_TOKEN`, ...). Key từng lộ trong git phải được thu hồi
+   và cấp lại, xoá khỏi code không đủ.

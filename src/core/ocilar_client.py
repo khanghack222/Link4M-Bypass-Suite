@@ -13,10 +13,7 @@ import requests
 from typing import Optional, Dict, Any
 
 OCILAR_BASE_URL = "https://api.ocilar.com/api/v1"
-OCILAR_API_KEY = os.environ.get(
-    "OCILAR_API_KEY",
-    "sk-914f1c7c466c1109b0f6a20044efad9266d624d87cc8bb70"
-)
+OCILAR_API_KEY = os.environ.get("OCILAR_API_KEY", "").strip()
 
 _SESSION = requests.Session()
 _HEADERS = {

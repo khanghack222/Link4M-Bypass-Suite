@@ -155,7 +155,9 @@ def get_clipboard() -> str:
         pass
     return ""
 
-INOOJS_EXT_PATH = os.environ.get("INOOJS_EXT_PATH", r"C:\Users\XUAN\Documents\iNooJS\iNooJS")
+# Đường dẫn extension iNooJS (tuỳ chọn). Không đặt mặc định vì repo không
+# chứa extension này nữa; chỉ dùng khi người dùng trỏ env vào bản có sẵn.
+INOOJS_EXT_PATH = os.environ.get("INOOJS_EXT_PATH", "").strip()
 
 def get_browser_launch_args(extra_args: list = None) -> list:
     args = [
