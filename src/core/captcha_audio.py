@@ -59,10 +59,14 @@ def _on_screen(pg, frame) -> bool:
 
 
 def find_challenge(pg):
-    """Frame bframe đang hiện thử thách thật (lưới ảnh hoặc ô audio).
+    """Frame bframe của thử thách **đang hoạt động**.
 
-    Ưu tiên frame nằm trên màn hình và đã có tile; frame ẩn chỉ được trả về khi
-    không còn ứng viên nào khác — và khi đó engine coi như không có thử thách.
+    reCAPTCHA tạo một bframe cho mỗi widget trên trang, kể cả widget bị ẩn.
+    Bframe ẩn chỉ có khung `#rc-imageselect-target` rỗng: chưa render tile và
+    không có ô trả lời audio. Thử thách thật thì có tile (lưới) hoặc ô
+    `#audio-response` (audio). Trong headless cửa sổ thử thách có thể nằm ngoài
+    viewport, nên "trên màn hình" chỉ là điểm cộng — dấu hiệu quyết định là
+    tile/ô audio.
     """
     ranked = []
     for f in pg.frames:
@@ -80,19 +84,15 @@ def find_challenge(pg):
             tiles = f.locator("div.rc-imageselect-tile").count()
         except Exception:
             pass
-        score = 0
-        if _on_screen(pg, f):
-            score += 2
-        if has_audio:
-            score += 2
-        if tiles:
-            score += 1
-        ranked.append((score, f))
+        score = (3 if tiles else 0) + (3 if has_audio else 0) + (1 if _on_screen(pg, f) else 0)
+        ranked.append((score, bool(tiles or has_audio), f))
     if not ranked:
         return None
     ranked.sort(key=lambda item: item[0], reverse=True)
-    score, frame = ranked[0]
-    return frame if score > 0 else None
+    for _score, active, frame in ranked:
+        if active:
+            return frame
+    return None
 
 
 def token_now(pg) -> str:
@@ -336,6 +336,14 @@ def solve(pg, tries: int = 4, limit: int = 150) -> str:
     """Giải thử thách đang hiện bằng audio; trả token ("" nếu thua)."""
     ch = find_challenge(pg) or find_audio_frame(pg)
     if not ch:
+        # Bframe mới render sau khi hộp kiểm được bấm; dò ngay lập tức hay trượt.
+        for _ in range(12):
+            time.sleep(0.5)
+            ch = find_challenge(pg) or find_audio_frame(pg)
+            if ch:
+                break
+    if not ch:
+        log("[audio] không thấy bframe có thử thách")
         return token_now(pg)
     for n in range(1, tries + 1):
         if not open_audio_mode(ch, pg):

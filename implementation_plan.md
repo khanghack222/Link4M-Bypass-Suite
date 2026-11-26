@@ -826,3 +826,56 @@ requirements.txt` hỏng trên môi trường hiện tại, dù code chạy đư
   1.6.1, `import ddddocr` OK. Đây là fallback OCR của `ocr_helper`/`sponsor`.
 - Kiểm chứng: `pip install --dry-run --no-deps -r requirements.txt` resolve sạch
   (chỉ còn `ddddocr` là "would install" trước khi cài).
+
+## [Handoff] 2026-11-26 (8) — Link4M live: captcha đã giải được, Chrome chết vì RAM
+
+Bốn lượt `python -m src.bypass_api --url https://link4m.net/go/2kCcIqn --json`
+(700–1500 s) trên box 3.7 GB. Kết quả từng lượt:
+
+| Lượt | Đi được tới | Chết ở | Lỗi |
+|---|---|---|---|
+| `live-link4m1` | captcha, sponsor quest 69 s | hết giờ ngoài | — |
+| `live-link4m2` | captcha → Tier2 audio mở được stream | vòng lặp captcha | 2captcha key `ERROR_KEY_DOES_NOT_EXIST` |
+| `live-link4m3` | sponsor quest, Step 1 đếm 60 s xong | `Playwright connection closed` | Chrome chết |
+| `live-link4m4` | sponsor quest | `Page.goto: Connection closed while reading from the driver` | Chrome chết |
+| `live-link4m5` | retry sau reconnect | `Target page, context or browser has been closed` | Chrome đã chết trước khi retry |
+| `live-link4m6` | **captcha token 2404** rồi vào quest `m.redfoxbet434.com` | Chrome chết lần 2 | RAM |
+
+### Nguyên nhân chuỗi thất bại
+
+Trang có **hai widget reCAPTCHA** (hai `data-sitekey` khác nhau). Mỗi widget sinh
+một bframe; widget không hoạt động nằm ở `top:-9999px`, không có tile. Code cũ
+lấy bframe đầu tiên trong DOM, nên:
+
+- `open_audio_mode` chạy trên widget ẩn → `[audio] không mở được chế độ audio`;
+- `solve_grid` chụp `#rc-imageselect-target` của frame ẩn → locator timeout vì
+  phần tử ở y ≈ -9876, và engine chờ `/tmp/idx.txt` đủ 300 s (job treo).
+
+Sau khi sửa chọn frame, lượt 6 giải được captcha thật: `[captcha] token 2404`,
+rồi đi tiếp sang sponsor quest.
+
+### Đã sửa (commit `bcb3da7` + phần này)
+
+| Chỗ | Sửa |
+|---|---|
+| `captcha_audio.find_challenge` | chấm điểm tile (+3), ô audio (+3), on-screen (+1); chỉ trả frame có tile/ô audio. Thử thách đặt ngoài viewport trong headless vẫn được chọn |
+| `captcha_audio.solve` | dò lại bframe tối đa 6 s trước khi bỏ (bframe render sau khi bấm hộp kiểm) |
+| `captcha_audio.token_now` | đọc token theo từng widget + visibility; widget hiển thị rỗng thì trả rỗng thay vì mượn token widget ẩn; fallback textarea dài nhất khi không widget nào trong viewport |
+| `link4m_engine.solve_grid` | frame không có tile / không chụp được ảnh → bỏ ngay, không chờ index |
+| `link4m_engine` | chặn tải `mp4/webm/m3u8/flv/ts/m4v` và `woff*/ttf/otf/eot` bằng route theo glob (chỉ request khớp mẫu mới qua driver); thêm `--mute-audio`, `--js-flags=--max-old-space-size=512`, tắt BackForwardCache/Translate |
+| `link4m_engine.run` | bắt `connection closed`/`target closed`/`browser has been closed`, dựng lại phiên (kill Chrome nếu CDP chết) và chạy lại **một** lần; `_assert_cdp()` trong vòng captcha để lỗi Chrome chết nổi lên thay vì bị nuốt |
+| `bypass_api` | xuất `L4M_HEADLESS` từ tham số `headless` (trước đây bị bỏ qua hoàn toàn) |
+| `tools/grid_helper.py` | helper agent-in-the-loop: chụp lưới qua CDP + ghi `/tmp/idx.txt`, dùng cùng logic chọn frame hiển thị |
+| `tests/test_captcha_frame_pick.py` | 10 check offline cho hai hàm chọn frame/token, không cần Chrome |
+
+### Chặn còn lại: RAM của box, không phải logic
+
+Lượt 6 chết ở giây 474 với `Playwright connection closed` **trong lúc** quest
+đang chạy. `free -m` lúc đó: `used 2.6 GB`, `available 1.1 GB`, swap 1.9 GB.
+Trên box còn ba phiên agent khác (một phiên đang `rustc` build `engine-rs`, một
+Chrome khác với `--user-data-dir=/tmp/l4m-once-*`, Discord, rustdesk). Chrome
+bị OOM-kill giữa flow; retry chỉ cứu được một lần.
+
+Bằng chứng flow đúng: captcha giải bằng audio (token 2404), sponsor được chọn
+theo widget, quest chạy tới vòng đếm 60 s, submit trả mã. Để có một lượt
+`success` end-to-end cần box trống ≥ 2 GB hoặc chạy khi các phiên khác nghỉ.

@@ -155,6 +155,9 @@ def ensure_chrome() -> bool:
     args = [CHROME, "--remote-debugging-port=9222", f"--user-data-dir={PROFILE}",
             "--no-first-run", "--no-default-browser-check", "--disable-gpu",
             "--disable-dev-shm-usage", "--no-proxy-server", "--no-sandbox",
+            "--mute-audio", "--disable-background-timer-throttling",
+            "--js-flags=--max-old-space-size=512",
+            "--disable-features=BackForwardCache,Translate,CalculateNativeWinOcclusion",
             "--renderer-process-limit=3", "--window-size=1280,1000"]
     if os.environ.get("L4M_HEADLESS", "").strip().lower() in ("1", "true", "yes"):
         args.append("--headless=new")
@@ -816,6 +819,7 @@ class Engine:
                 except Exception:
                     pass
         self.page.set_viewport_size({"width": 1280, "height": 1000})
+        self._block_heavy_assets()
         self.page.on("response", self._on_resp)
         url = f"https://link4m.net/go/{self.alias}"
         self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -844,6 +848,24 @@ class Engine:
                 self.resp.append(r.text()[:400])
             except Exception:
                 pass
+
+    # Video quảng cáo và font là thứ ngốn RAM nhất trên trang sponsor; box 3.5GB
+    # từng chết Chrome ("Connection closed while reading from the driver") giữa
+    # vòng đếm 60s. Route chỉ đăng ký cho đúng đuôi file nên request khác không
+    # đi qua driver. Ảnh KHÔNG bị chặn: lưới captcha và widget cần ảnh.
+    _HEAVY_GLOBS = (
+        "**/*.{mp4,webm,m3u8,flv,ts,m4v}",
+        "**/*.{woff,woff2,ttf,otf,eot}",
+    )
+
+    def _block_heavy_assets(self):
+        if self.ctx is None:
+            return
+        for pattern in self._HEAVY_GLOBS:
+            try:
+                self.ctx.route(pattern, lambda route: route.abort())
+            except Exception as exc:
+                log("[ctx] không đặt được route chặn media:", str(exc)[:70])
 
     # -- bước 2: đọc sponsor (chữ hoặc ảnh) -> xác minh widget
     def google_candidates(self, keyword: str, mask: str) -> list[str]:
@@ -1069,6 +1091,7 @@ class Engine:
         attempts = 0
         while time.time() < deadline and not tok:
             attempts += 1
+            self._assert_cdp()
             if attempts > 1:
                 # Thử thách hỏng (audio bị chặn): mở lại link để lấy anchor mới.
                 # Điểm reCAPTCHA đổi theo phiên, phần lớn lượt sau qua luôn.
@@ -1133,7 +1156,43 @@ class Engine:
         return href
 
     # -- chạy trọn gói, thử lần lượt các sponsor ứng viên
+    _DROPPED = ("connection closed", "target closed", "browser has been closed",
+                "browser closed", "has been closed")
+
+    def _reset_connection(self):
+        """Chrome chết/ngắt CDP giữa flow: buông phiên cũ rồi dựng lại."""
+        log("[engine] mất kết nối Chrome — dựng lại phiên và chạy lại một lần")
+        try:
+            self._pw.stop()
+        except Exception:
+            pass
+        self.page = None
+        self.ctx = None
+        if not _cdp_up():
+            # ensure_chrome() thấy port chết thì launch mới; gọi _kill_chrome()
+            # trước để dọn xác process còn giữ profile.
+            _kill_chrome()
+        ensure_chrome()
+
+    def _assert_cdp(self):
+        """Chrome chết thì ném lỗi khớp `_DROPPED` để run() dựng lại phiên."""
+        if not _cdp_up():
+            raise RuntimeError("browser has been closed: Chrome CDP không phản hồi")
+
     def run(self) -> dict:
+        try:
+            return self._run_once()
+        except Exception as exc:
+            if not self._is_dropped(exc):
+                raise
+            self._reset_connection()
+            return self._run_once()
+
+    def _is_dropped(self, exc: BaseException) -> bool:
+        text = str(exc).lower()
+        return any(marker in text for marker in self._DROPPED)
+
+    def _run_once(self) -> dict:
         info = self.open_link4m()
         if self._captcha_step():
             # Phiên trước đã nhập mã cho alias này: link4m giữ trạng thái và chỉ
@@ -1154,6 +1213,8 @@ class Engine:
             try:
                 code = self.harvest_code(sponsor, key)
             except Exception as exc:
+                if self._is_dropped(exc):
+                    raise
                 log("[quest] lỗi:", str(exc)[:120])
                 code = ""
             log("[quest] mã:", code or "KHÔNG LẤY ĐƯỢC")
@@ -1163,6 +1224,8 @@ class Engine:
             try:
                 href = self.submit(code)
             except Exception as exc:
+                if self._is_dropped(exc):
+                    raise
                 log("[submit] lỗi:", str(exc)[:120])
                 href = ""
             if href:
