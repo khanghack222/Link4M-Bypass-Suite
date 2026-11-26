@@ -230,7 +230,19 @@ impl<'a> Flow<'a> {
         let url = format!("https://link4m.net/go/{}", self.alias);
         self.navigate(&url).await?;
 
-        let mut state = self.wait_for_page().await?;
+        // The first navigation can land on an error or interstitial page. One
+        // renavigation normally clears it and is much cheaper than failing a
+        // job that still has budget left.
+        let mut state = match self.wait_for_page().await {
+            Ok(state) => state,
+            Err(err) if self.remaining() > Duration::from_secs(60) => {
+                warn!(target: "engine", alias = %self.alias, "page not ready ({err}), renavigating once");
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                self.navigate(&url).await?;
+                self.wait_for_page().await?
+            }
+            Err(err) => return Err(err),
+        };
         // Test/debug aid: keep reloading until the page serves a given campaign.
         // When Link4M serves a captcha-only page there is no campaign to match,
         // so pinning is skipped instead of burning 24 reloads on a mismatch.
@@ -246,6 +258,10 @@ impl<'a> Flow<'a> {
             if !wanted.is_empty() {
                 let mut tries = 0;
                 while !wanted.contains(&state.campaign.as_str()) && tries < 24 {
+                    if self.remaining() < Duration::from_secs(90) {
+                        debug!(target: "engine", "campaign pin: out of budget before a match");
+                        break;
+                    }
                     tries += 1;
                     debug!(target: "engine", want = %want, got = %state.campaign, tries, "campaign mismatch, re-rolling");
                     self.navigate(&url).await?;

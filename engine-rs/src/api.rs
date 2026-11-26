@@ -5,7 +5,7 @@ use crate::fast_decode::fast_decode;
 use crate::flow::extract_alias;
 use crate::pool::{Job, Pool};
 use crate::providers;
-use crate::state::{elapsed_ms, new_job_id, unix_now, Inner, JobView};
+use crate::state::{elapsed_ms, new_job_id, unix_now, Inner, JobView, QueuedJob};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -264,6 +264,19 @@ async fn resolve(
         .await;
     let (sender, receiver) = oneshot::channel();
     let track_id = state.inner.link_begin(&url, Some(provider)).await;
+    let queued_at = unix_now();
+    state
+        .inner
+        .queue_push(QueuedJob {
+            job_id: job_id.clone(),
+            key: key.clone(),
+            alias: alias.clone(),
+            url: url.clone(),
+            code: req_code.clone(),
+            track_id: track_id.clone(),
+            created_at: queued_at,
+        })
+        .await;
     let job = Job {
         job_id: job_id.clone(),
         key: key.clone(),
@@ -274,6 +287,7 @@ async fn resolve(
         respond: sender,
     };
     if state.pool.try_dispatch(job).is_err() {
+        state.inner.queue_remove(&job_id).await;
         state.inner.job_remove(&job_id).await;
         state
             .inner
@@ -407,10 +421,11 @@ async fn batch(
 
 async fn health(State(state): State<Arc<ApiState>>) -> Json<Value> {
     let cache = state.inner.cache.lock().await.len();
+    let queued = state.inner.queue_len().await;
     Json(json!({
         "status": "ok",
         "workers": state.inner.cfg.workers,
-        "queued": 0,
+        "queued": queued,
         "cached_links": cache,
         "uptime_sec": state.inner.started.elapsed().as_secs(),
     }))
@@ -418,9 +433,20 @@ async fn health(State(state): State<Arc<ApiState>>) -> Json<Value> {
 
 async fn stats(State(state): State<Arc<ApiState>>) -> Json<Value> {
     let cache = state.inner.cache.lock().await.len();
+    let links = state.inner.links_snapshot().await;
+    let pending = links
+        .iter()
+        .filter(|entry| entry.status == "queued" || entry.status == "running")
+        .count();
+    let recent: Vec<crate::state::LinkEntry> = links
+        .iter()
+        .filter(|entry| entry.status == "success" || entry.status == "failed")
+        .take(20)
+        .cloned()
+        .collect();
     Json(json!({
-        "stats": state.inner.stats.snapshot(cache, 0),
-        "recent": [],
+        "stats": state.inner.stats.snapshot(cache, pending),
+        "recent": recent,
     }))
 }
 
@@ -545,13 +571,24 @@ mod tests {
     use std::path::PathBuf;
     use tower::ServiceExt;
 
-    fn state(api_key: &str, workers: usize, max_queue: usize) -> Arc<ApiState> {
+    fn scratch(tag: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let scratch = std::env::temp_dir().join(format!("l4m-api-test-{stamp}"));
-        let cfg = Config {
+        let dir = std::env::temp_dir().join(format!("l4m-api-{tag}-{stamp}"));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn config_at(
+        scratch: &std::path::Path,
+        api_key: &str,
+        workers: usize,
+        max_queue: usize,
+        resume_queue: bool,
+    ) -> Config {
+        Config {
             host: "127.0.0.1".into(),
             port: 0,
             api_key: api_key.into(),
@@ -563,16 +600,27 @@ mod tests {
             cache_ttl: Duration::from_secs(60),
             cache_file: scratch.join("cache.json"),
             cache_enabled: false,
+            queue_file: scratch.join("queue.json"),
+            links_file: scratch.join("links.json"),
+            resume_queue,
             chrome_bin: "google-chrome".into(),
             headless: true,
             profile_dir: scratch.join("profile"),
             model_path: PathBuf::from("models/ggml-tiny.en.bin"),
             model_url: String::new(),
             asr_threads: 1,
-        };
+        }
+    }
+
+    fn build(cfg: Config) -> Arc<ApiState> {
         let inner = Inner::new(cfg, None);
         let pool = Arc::new(Pool::spawn(inner.clone()));
         Arc::new(ApiState { inner, pool })
+    }
+
+    fn state(api_key: &str, workers: usize, max_queue: usize) -> Arc<ApiState> {
+        let scratch = scratch("state");
+        build(config_at(&scratch, api_key, workers, max_queue, false))
     }
 
     async fn call(app: Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -780,7 +828,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
 
         let (status, body) = call(
-            app,
+            app.clone(),
             Request::builder()
                 .uri("/api/v1/links")
                 .body(Body::empty())
@@ -794,6 +842,21 @@ mod tests {
         assert_eq!(links[0]["destination_url"], "https://example.com/x");
         assert_eq!(links[0]["provider"], "decode");
         assert_eq!(body["stats"]["successes"], 1);
+
+        let (status, body) = call(
+            app,
+            Request::builder()
+                .uri("/api/v1/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["stats"]["successes"], 1);
+        let recent = body["recent"].as_array().unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0]["destination_url"], "https://example.com/x");
+        assert_eq!(recent[0]["status"], "success");
     }
 
     #[tokio::test]
@@ -819,6 +882,59 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(body["links"].is_array());
+    }
+
+    #[tokio::test]
+    async fn pending_job_is_resumed_on_boot() {
+        let scratch = scratch("resume");
+        let cfg = config_at(&scratch, "", 1, 8, true);
+        let job = crate::state::QueuedJob {
+            job_id: "job-resume".into(),
+            key: "link4m:abc".into(),
+            alias: "abc".into(),
+            url: "https://link4m.net/go/abc".into(),
+            code: None,
+            track_id: "track-resume".into(),
+            created_at: unix_now(),
+        };
+        std::fs::write(
+            &cfg.queue_file,
+            serde_json::to_string(&[job]).expect("queue json"),
+        )
+        .expect("queue file");
+        let app = router(build(cfg));
+
+        for _ in 0..60 {
+            let (status, body) = call(
+                app.clone(),
+                Request::builder()
+                    .uri("/api/v1/links")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let done = body["links"]
+                .as_array()
+                .and_then(|rows| rows.iter().find(|row| row["id"] == "track-resume"))
+                .map(|row| row["status"] == "failed")
+                .unwrap_or(false);
+            if done {
+                let (status, job) = call(
+                    app,
+                    Request::builder()
+                        .uri("/api/v1/jobs/job-resume")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(job["status"], "failed");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("resumed job never reached a terminal state");
     }
 
     #[tokio::test]

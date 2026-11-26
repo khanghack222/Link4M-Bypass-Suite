@@ -96,6 +96,11 @@ pub fn fast_decode(raw: &str) -> Option<String> {
                 return Some(destination);
             }
         }
+        // Some shortlinks put the destination in plain text, already decoded
+        // by `Url::parse` (`?url=https://...` or `#https://...`).
+        if looks_like_url(&value) && !is_self_reference(&value) {
+            return Some(value);
+        }
     }
     None
 }
@@ -155,5 +160,20 @@ mod tests {
             fast_decode(&url).as_deref(),
             Some("https://example.com/from-query")
         );
+    }
+
+    #[test]
+    fn decodes_plain_query_url() {
+        let url = "https://example.com/redirect?url=https%3A%2F%2Fexample.com%2Fplain";
+        assert_eq!(
+            fast_decode(url).as_deref(),
+            Some("https://example.com/plain")
+        );
+    }
+
+    #[test]
+    fn plain_query_does_not_return_a_shortlink() {
+        let url = "https://example.com/redirect?url=https%3A%2F%2Flink4m.net%2Fgo%2Fabc";
+        assert!(fast_decode(url).is_none());
     }
 }

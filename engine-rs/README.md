@@ -180,7 +180,8 @@ curl -s -X POST localhost:8080/api/v1/bypass \
 Mỗi request thành một dòng `queued → running → success | failed`, kèm link
 đích, provider, cache, thời gian. Dữ liệu đẩy qua `/api/v1/events` (SSE,
 snapshot đầu + từng thay đổi); trang tự fallback poll `/api/v1/links` 5 s/lần
-khi SSE bị chặn. Giữ 500 link gần nhất trong RAM.
+khi SSE bị chặn. Giữ 500 link gần nhất trong `data/links.json`; hàng đợi nằm ở
+`data/queue.json` và được đẩy lại sau restart (`QUEUE_RESUME=0` để tắt).
 
 Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?key=`.
 
@@ -200,6 +201,9 @@ Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?ke
 | `JOB_TIMEOUT` | `480` | giây cho một lượt flow (quest 120 s + captcha) |
 | `CACHE_ENABLED` / `CACHE_TTL` | `true` / `21600` | cache theo `provider:alias` |
 | `CACHE_FILE` | `data/native_cache.json` | cache bền qua restart |
+| `QUEUE_FILE` | `data/queue.json` | job chờ, sống qua restart |
+| `LINKS_FILE` | `data/links.json` | 500 dòng bảng trạng thái gần nhất |
+| `QUEUE_RESUME` | `true` | `0` = không replay job chờ sau restart |
 | `L4M_CODE_TTL` | `900` | giây sống của mã sponsor đã chứng minh |
 | `L4M_CODE_FILE` | `data/codes.json` | cache mã theo campaign |
 | `L4M_CAMPAIGN_CACHE` | `data/campaigns.json` | cache sponsor/key/referrer theo campaign |
@@ -317,7 +321,11 @@ curl -s -X POST localhost:8080/api/v1/bypass \
 - Sponsor không có widget (hoặc widget chết) → probe loại domain đó và thử ứng
   viên kế tiếp; hết ứng viên thì job trả `needs_code`.
 - reCAPTCHA audio bị chặn theo IP/profile: reload lấy anchor mới, thử lại trong
-  budget.
+  budget. Khi Google trả `automated queries` / `try again later`, engine đánh
+  dấu exit proxy đó là xấu và relaunch Chrome sang exit kế tiếp (nếu có pool).
+- Job còn trong hàng đợi được chạy lại sau restart; job đang chạy lúc process
+  chết bị đánh `failed` thay vì replay để tránh chạy đôi một lượt đã qua
+  captcha.
 - OCR là sidecar Python; máy không có rapidocr thì campaign `TÌM KIẾM` sẽ không
   lấy được domain từ ảnh (campaign `TRỰC TIẾP` vẫn chạy).
 - Một campaign chỉ có một mã tại một thời điểm; mã cũ hết hạn sẽ bị từ chối và

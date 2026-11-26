@@ -181,6 +181,9 @@ Auth: nếu đặt `API_KEY`, gửi `x-api-key: <key>` hoặc `?key=`.
 | `L4M_HEADLESS` | `1` nếu không có `DISPLAY` | **đặt `0`** khi có display/Xvfb |
 | `JOB_TIMEOUT` | `480` | giây/lượt |
 | `CACHE_ENABLED` / `CACHE_TTL` | `true` / `21600` | cache destination |
+| `QUEUE_FILE` | `data/queue.json` | job đang chờ, sống qua restart |
+| `LINKS_FILE` | `data/links.json` | 500 dòng bảng trạng thái gần nhất |
+| `QUEUE_RESUME` | `true` | `0` = không chạy lại job chờ sau restart |
 | `L4M_CODE_TTL` | `900` | TTL mã sponsor |
 | `L4M_CAMPAIGN` | rỗng | ghim campaign (list id, debug) |
 | `L4M_CODE` | rỗng | truyền mã có sẵn, bỏ quest |
@@ -202,7 +205,7 @@ ra `nmkiosvn-api.nmk87201.workers.dev/claim?...`.
 ## 9. Test
 
 ```bash
-# engine-rs — 32 test (Linux/macOS/WSL2)
+# engine-rs — 39 test (Linux/macOS/WSL2)
 cd <repo>/engine-rs
 WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
 
@@ -237,10 +240,12 @@ không được sửa nội dung test.
   đường sponsor phải đổi exit (`PROXY_LIST` / `PROXY_ROTATE`).
 - Máy 4 GB chỉ nên chạy 1 worker headful (Chrome 1.3–1.8 GB).
 - reCAPTCHA audio bị chặn theo IP/profile: engine reload lấy anchor mới trong
-  budget; proxy xoay là cách giảm tỉ lệ.
+  budget. Khi Google báo `automated queries` / `try again later`, engine đánh
+  dấu exit đó là xấu và chuyển sang proxy kế tiếp nếu có pool.
 - OCR là sidecar rapidocr; thiếu nó thì campaign tìm kiếm không đọc được domain
   từ ảnh (campaign trực tiếp vẫn chạy).
-- Queue nằm trong RAM: restart mất job đang chờ.
+- Queue và bảng trạng thái đã persist; job **đang chạy** lúc process chết thì
+  đánh `failed` chứ không replay (tránh chạy đôi một lượt đã qua captcha).
 - `engine-rs` native Windows chưa hỗ trợ (phụ thuộc `setsid`/`killpg`); dùng
   WSL2.
 
@@ -289,8 +294,11 @@ Mở `http://<host>:8080/status` (thêm `?key=<API_KEY>` nếu engine có `API_K
 - Cập nhật bằng SSE `/api/v1/events`; snapshot đầu tiên là toàn bộ 500 link
   gần nhất. SSE bị proxy chặn thì trang tự fallback poll `/api/v1/links` 5 s/lần.
 - Cache hit và fast decode cũng lên bảng; lỗi hiện nguyên văn bên dưới link.
-- Lịch sử nằm trong RAM: restart engine thì bảng trắng, cache destination vẫn
-  còn trên đĩa.
+- Bảng và hàng đợi sống qua restart: `data/links.json` giữ 500 dòng gần nhất,
+  `data/queue.json` giữ job chưa chạy. Job đang chạy lúc process chết được đánh
+  `failed` (không replay hai lần); job còn chờ được đẩy lại vào worker.
+- `/api/v1/stats` trả `recent` (20 dòng cuối) và số `queued` thật, không còn 0
+  cố định.
 
 ## 14. Cập nhật không cần clone
 

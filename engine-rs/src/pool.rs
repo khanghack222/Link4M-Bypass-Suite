@@ -9,7 +9,7 @@ use crate::proxy::{self, Proxy, Relay};
 use crate::state::{unix_now, Inner, JobView};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{error, info, warn};
 
@@ -48,6 +48,11 @@ impl Pool {
                 worker_loop(worker_id, inner, receiver).await;
             });
         }
+        let resume_inner = inner.clone();
+        let resume_sender = sender.clone();
+        tokio::spawn(async move {
+            resume_pending(resume_inner, resume_sender).await;
+        });
         Self { sender }
     }
 
@@ -66,6 +71,92 @@ struct Session {
     proxy: Option<Proxy>,
 }
 
+/// Re-dispatch jobs that were accepted before the last shutdown. The HTTP
+/// caller that was waiting is gone, so the oneshot receiver is dropped; the
+/// worker still records the result on the board and in `/jobs/{id}`.
+async fn resume_pending(inner: Arc<Inner>, sender: mpsc::Sender<Job>) {
+    if !inner.cfg.resume_queue {
+        return;
+    }
+    let pending = inner.queue_snapshot().await;
+    if pending.is_empty() {
+        return;
+    }
+    // Let the listener bind and the router come up before the first Chrome
+    // launch, so a client can watch the resumed rows immediately.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let mut resumed = 0usize;
+    for entry in pending {
+        let job_id = entry.job_id.clone();
+        let job_url = entry.url.clone();
+        let view_url = entry.url.clone();
+        let created_at = entry.created_at;
+        inner
+            .job_put(JobView {
+                job_id: job_id.clone(),
+                status: "running".into(),
+                url: view_url,
+                destination_url: None,
+                error: None,
+                created_at,
+                elapsed_ms: 0.0,
+            })
+            .await;
+        let (respond, _receiver) = oneshot::channel();
+        let job = Job {
+            job_id: entry.job_id,
+            key: entry.key,
+            alias: entry.alias,
+            url: job_url,
+            code: entry.code,
+            track_id: entry.track_id,
+            respond,
+        };
+        // A full channel leaves the row on disk untouched for the next boot;
+        // drop the provisional view so `/jobs` does not show a ghost.
+        if sender.try_send(job).is_err() {
+            inner.job_remove(&job_id).await;
+            break;
+        }
+        resumed += 1;
+    }
+    if resumed > 0 {
+        info!(target: "engine", resumed, "resumed queued jobs after restart");
+    }
+}
+
+/// Google explicitly says the exit is burned. Only these messages justify
+/// cooling down a proxy; a plain misread must not blacklist a good IP.
+fn ip_blocked(err: &FlowError) -> bool {
+    if err.kind != "audio" {
+        return false;
+    }
+    let message = err.message.to_lowercase();
+    message.contains("automated") || message.contains("try again later")
+}
+
+/// Any audio dead-end is worth a fresh Chrome/anchor; three bad transcripts
+/// can be the profile, not the exit.
+fn audio_blocked(err: &FlowError) -> bool {
+    ip_blocked(err) || (err.kind == "audio" && err.message.to_lowercase().contains("three clips failed"))
+}
+
+/// Terminal failures that happen before `run_alias` still need a
+/// `/api/v1/jobs/{id}` row; otherwise a poller sees `running` forever.
+async fn record_failure(inner: &Arc<Inner>, job: &Job, kind: &str, message: &str, elapsed_ms: f64) {
+    inner
+        .job_put(JobView {
+            job_id: job.job_id.clone(),
+            status: "failed".into(),
+            url: job.url.clone(),
+            destination_url: None,
+            error: Some(format!("{kind}: {message}")),
+            created_at: unix_now(),
+            elapsed_ms,
+        })
+        .await;
+}
+
 async fn worker_loop(
     worker_id: usize,
     inner: Arc<Inner>,
@@ -79,7 +170,36 @@ async fn worker_loop(
         };
         let Some(job) = job else { break };
         let started = Instant::now();
+        // Picked up: the on-disk queue no longer owns it. A crash after this
+        // point shows the row as failed instead of replaying it twice.
+        inner.queue_remove(&job.job_id).await;
         inner.link_running(&job.track_id).await;
+
+        // Without the whisper model the job can never finish; fail it before
+        // paying for a Chrome launch.
+        let Some(asr) = inner.asr.clone() else {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            inner
+                .link_finish(
+                    &job.track_id,
+                    "failed",
+                    None,
+                    Some("asr: whisper model not loaded".into()),
+                    elapsed_ms,
+                    false,
+                )
+                .await;
+            record_failure(&inner, &job, "asr", "whisper model not loaded", elapsed_ms).await;
+            let _ = job.respond.send(JobOutcome {
+                destination: None,
+                error: Some(FlowError {
+                    kind: "asr",
+                    message: "whisper model not loaded".into(),
+                }),
+                elapsed_ms,
+            });
+            continue;
+        };
 
         if session.is_none() {
             match start_session(&inner, worker_id).await {
@@ -106,6 +226,7 @@ async fn worker_loop(
                             false,
                         )
                         .await;
+                    record_failure(&inner, &job, "browser", &err.to_string(), elapsed_ms).await;
                     let _ = job.respond.send(JobOutcome {
                         destination: None,
                         error: Some(FlowError {
@@ -124,28 +245,6 @@ async fn worker_loop(
         let chrome_port = active.chrome.port;
         let cdp = active.cdp.clone();
         let active_proxy = active.proxy.clone();
-        let Some(asr) = inner.asr.clone() else {
-            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-            inner
-                .link_finish(
-                    &job.track_id,
-                    "failed",
-                    None,
-                    Some("asr: whisper model not loaded".into()),
-                    elapsed_ms,
-                    false,
-                )
-                .await;
-            let _ = job.respond.send(JobOutcome {
-                destination: None,
-                error: Some(FlowError {
-                    kind: "asr",
-                    message: "whisper model not loaded".into(),
-                }),
-                elapsed_ms,
-            });
-            continue;
-        };
         let outcome = run_alias(
             &cdp,
             &asr,
@@ -165,9 +264,15 @@ async fn worker_loop(
             warn!(target: "engine", worker = worker_id, "browser died, dropping session");
             session = None;
         }
+        // reCAPTCHA answers "automated queries / try again later" when the IP
+        // is burned. That is not a transient audio mistake: burn the exit and
+        // let the next job start on a different one.
+        let blocked = matches!(&outcome, Err(err) if audio_blocked(err));
         if let (Some(pool), Some(bad)) = (proxy::shared(), active_proxy.as_ref()) {
             match &outcome {
-                Err(err) if matches!(err.kind, "cdp" | "browser" | "timeout") => pool.mark_bad(bad),
+                Err(err) if matches!(err.kind, "cdp" | "browser" | "timeout") || ip_blocked(err) => {
+                    pool.mark_bad(bad)
+                }
                 Ok(_) => pool.mark_good(bad),
                 _ => {}
             }
@@ -177,8 +282,13 @@ async fn worker_loop(
         let rotate = std::env::var("PROXY_ROTATE")
             .map(|value| value != "0")
             .unwrap_or(false);
-        if rotate && active_proxy.is_some() && session.is_some() {
-            info!(target: "engine", worker = worker_id, "rotating proxy, relaunching chrome");
+        if active_proxy.is_some() && (rotate || blocked) && session.is_some() {
+            info!(
+                target: "engine",
+                worker = worker_id,
+                reason = if blocked { "captcha block" } else { "rotate" },
+                "moving to the next proxy, relaunching chrome"
+            );
             session = None;
         }
 
