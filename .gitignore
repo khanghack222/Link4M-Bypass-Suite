@@ -58,3 +58,9 @@ server-rs/target/
 engine-rs/target/
 engine-rs/models/*.bin
 engine-rs/data/
+
+# Local tool state (rules, chat history, personal configs)
+_local/
+
+# Runtime snippets
+/data/rust_cache.json

@@ -76,7 +76,7 @@ Khi nhận yêu cầu: đọc file liên quan trước, sửa đúng chỗ, buil
 | Cache | `engine-rs/data/native_cache.json`, `codes.json`, `campaigns.json` |
 | Deploy | `engine-rs/deploy/l4m-engine.service`, `l4m-engine.env.example` |
 | Scale | `engine-rs/docs/SCALE.md` |
-| Tổng quan | `README_TONG_QUAN.md` |
+| Tổng quan | `README.md` |
 
 ### Hợp đồng không được phá
 
