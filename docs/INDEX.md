@@ -2,8 +2,7 @@
 
 | File | Nội dung | Đối tượng |
 |---|---|---|
-| [`../README.md`](../README.md) | Tổng quan toàn repo, quickstart, API, env, bằng chứng live, giới hạn | Mọi người |
-| [`COMPONENTS.md`](COMPONENTS.md) | Trạng thái từng thành phần: ACTIVE / COMPAT / LEGACY / REMOVED, quy tắc sửa | Người và AI |
+| [`../README.md`](../README.md) | Tổng quan toàn repo, trạng thái thành phần, quickstart, API, env, bằng chứng live, giới hạn | Mọi người |
 | [`AI_HANDOFF.md`](AI_HANDOFF.md) | Brief dán vào context AI khác: sự thật dự án, hợp đồng, giọng nói, checklist | Người bàn giao cho AI |
 | [`API_DOCUMENTATION.md`](API_DOCUMENTATION.md) | API bản Python cũ (FastAPI) | Dev legacy |
 | [`TEST_INFRA.md`](TEST_INFRA.md) | Hạ tầng test Python, phân tầng test | Dev legacy |

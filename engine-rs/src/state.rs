@@ -3,12 +3,12 @@
 use crate::asr::{self, SharedAsr};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{broadcast, Mutex, Semaphore};
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -156,6 +156,27 @@ pub struct JobView {
     pub elapsed_ms: f64,
 }
 
+/// One row on the live status board. `JobView` is the polling contract;
+/// `LinkEntry` is the board contract and keeps finished links around so a
+/// fresh browser tab can render what already ran.
+#[derive(Clone, Debug, Serialize)]
+pub struct LinkEntry {
+    pub id: String,
+    pub url: String,
+    /// `queued` -> `running` -> `success` | `failed`.
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    pub cached: bool,
+    pub elapsed_ms: f64,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Default)]
 pub struct Stats {
     pub total: AtomicU64,
@@ -185,14 +206,22 @@ pub struct Inner {
     pub asr: Option<SharedAsr>,
     pub cache: Mutex<HashMap<String, CacheEntry>>,
     pub jobs: Mutex<HashMap<String, JobView>>,
+    pub links: Mutex<VecDeque<LinkEntry>>,
+    /// Fan-out for the status board. Slow SSE clients lag and skip instead of
+    /// blocking dispatch.
+    pub events: broadcast::Sender<serde_json::Value>,
     pub locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub stats: Stats,
     pub queue_slots: Semaphore,
 }
 
+/// Board history is bounded: a long-running service must not grow with traffic.
+const LINK_HISTORY: usize = 500;
+
 impl Inner {
     pub fn new(cfg: Config, asr: Option<SharedAsr>) -> Arc<Self> {
         let cache = load_cache(&cfg.cache_file);
+        let (events, _) = broadcast::channel(512);
         Arc::new(Self {
             queue_slots: Semaphore::new(cfg.max_queue),
             started: Instant::now(),
@@ -200,9 +229,92 @@ impl Inner {
             asr,
             cache: Mutex::new(cache),
             jobs: Mutex::new(HashMap::new()),
+            links: Mutex::new(VecDeque::new()),
+            events,
             locks: Mutex::new(HashMap::new()),
             stats: Stats::default(),
         })
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<serde_json::Value> {
+        self.events.subscribe()
+    }
+
+    fn emit_link(&self, entry: &LinkEntry) {
+        let _ = self.events.send(serde_json::json!(entry));
+    }
+
+    /// Record a request as soon as it is accepted, before a browser touches it.
+    pub async fn link_begin(&self, url: &str, provider: Option<&str>) -> String {
+        let now = unix_now();
+        let entry = LinkEntry {
+            id: new_job_id(),
+            url: url.to_string(),
+            status: "queued".into(),
+            destination_url: None,
+            provider: provider.map(str::to_string),
+            cached: false,
+            elapsed_ms: 0.0,
+            created_at: now,
+            updated_at: now,
+            error: None,
+        };
+        {
+            let mut links = self.links.lock().await;
+            links.push_front(entry.clone());
+            while links.len() > LINK_HISTORY {
+                links.pop_back();
+            }
+        }
+        self.emit_link(&entry);
+        entry.id
+    }
+
+    pub async fn link_running(&self, id: &str) {
+        self.link_update(id, |entry| {
+            entry.status = "running".into();
+        })
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn link_finish(
+        &self,
+        id: &str,
+        status: &str,
+        destination: Option<String>,
+        error: Option<String>,
+        elapsed_ms: f64,
+        cached: bool,
+    ) {
+        self.link_update(id, move |entry| {
+            entry.status = status.to_string();
+            entry.destination_url = destination;
+            entry.error = error;
+            entry.elapsed_ms = elapsed_ms;
+            entry.cached = cached;
+        })
+        .await;
+    }
+
+    async fn link_update<F>(&self, id: &str, mutate: F)
+    where
+        F: FnOnce(&mut LinkEntry),
+    {
+        let updated = {
+            let mut links = self.links.lock().await;
+            let Some(entry) = links.iter_mut().find(|entry| entry.id == id) else {
+                return;
+            };
+            mutate(entry);
+            entry.updated_at = unix_now();
+            entry.clone()
+        };
+        self.emit_link(&updated);
+    }
+
+    pub async fn links_snapshot(&self) -> Vec<LinkEntry> {
+        self.links.lock().await.iter().cloned().collect()
     }
 
     pub async fn cache_get(&self, key: &str) -> Option<String> {

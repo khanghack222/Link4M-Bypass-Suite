@@ -25,10 +25,19 @@ Chọn nhanh:
 - Cần một endpoint cho nhiều loại link, engine Python đã kiểm chứng → `server-rs`.
 - Cần CLI/GUI/bot cũ → Python gốc.
 
-Trạng thái từng thành phần (mới / compat / legacy / đã xoá): xem
-[`docs/COMPONENTS.md`](docs/COMPONENTS.md). Tóm tắt: chỉ `engine-rs` và
-`server-rs` là engine mới; `src/` là lớp **COMPAT** mà `server-rs` vẫn gọi;
-`legacy/` và `docs/archive/` chỉ để tham khảo, không sửa.
+Trạng thái từng thành phần:
+
+| Nhóm | Trạng thái | Quy tắc |
+|---|---|---|
+| `engine-rs/`, `server-rs/` | **ACTIVE** | Nơi làm tính năng mới |
+| `src/` (engine Python, `src/bypass_api.py`) | **COMPAT** | `server-rs` vẫn gọi; sửa phải giữ stdout `__BYPASS_JSON__{...}` |
+| `api_server.py`, `auto_bypass.py`, `src/cli.py`, `service/`, `Dockerfile` gốc, `deploy/` gốc | **LEGACY** | Không ưu tiên sửa; chưa chắc chạy trên máy mới |
+| `legacy/`, `docs/archive/` | **ARCHIVE** | Chỉ đọc, không dùng production |
+| 5 file test đóng băng | **CONTRACT** | Không sửa nội dung |
+| Userscript, `extension/`, `community_bypass.js`, `universal_bypass.py` | **REMOVED** | Đã xoá; lịch sử còn trong git |
+
+Bảng này là nguồn duy nhất về trạng thái thành phần. Legacy chưa được kiểm
+tra lại trên máy mới, nên mọi việc mới tập trung vào `engine-rs/` (Link4M).
 
 ## 2. Yêu cầu theo hệ điều hành
 
@@ -153,6 +162,9 @@ cd <repo>
 | `GET /api/v1/bypass?url=...` | bản GET |
 | `GET /api/v1/jobs/{id}` | poll job khi `wait=false` |
 | `POST /api/v1/batch` | `{urls: [...], wait?, timeout?}` |
+| `GET /api/v1/links` | snapshot bảng trạng thái (JSON) |
+| `GET /api/v1/events` | SSE realtime cho bảng trạng thái |
+| `GET /status` | trang bảng trạng thái realtime |
 
 Auth: nếu đặt `API_KEY`, gửi `x-api-key: <key>` hoặc `?key=`.
 
@@ -190,7 +202,7 @@ ra `nmkiosvn-api.nmk87201.workers.dev/claim?...`.
 ## 9. Test
 
 ```bash
-# engine-rs — 29 test (Linux/macOS/WSL2)
+# engine-rs — 32 test (Linux/macOS/WSL2)
 cd <repo>/engine-rs
 WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
 
@@ -243,8 +255,9 @@ engine-rs/            engine native Rust (chính)
   src/quest.rs        driver tab sponsor, countdown, parse mã
   src/instr.rs        OCR hướng dẫn, probe sponsor, cache campaign
   src/codes.rs        cache mã đã chứng minh
-  src/state.rs        Config, worker auto, batch
-  src/api.rs          HTTP API
+  src/state.rs        Config, worker auto, batch, lịch sử link cho bảng
+  src/api.rs          HTTP API + SSE + trang /status
+  web/status.html     bảng trạng thái realtime
   deploy/             systemd, env mẫu
   docs/SCALE.md       dung lượng + scale ngang
 server-rs/            façade HTTP Rust gọi engine Python
@@ -252,8 +265,8 @@ src/                  engine Python gốc (Playwright), registry provider — CO
 tests/                contract tests Python (đóng băng)
 service/, deploy/     service FastAPI + Docker/systemd cũ — LEGACY
 legacy/               mã cũ đã dời: api_server_slim, windows/, scripts/, tools/
+scripts/              update-engine.sh — cập nhật không clone
 docs/                 tài liệu dự án
-  COMPONENTS.md             trạng thái mới/legacy/đã xoá
   README_PYTHON_LEGACY.md   bản Python cũ
   AI_HANDOFF.md             brief cho AI bên thứ ba
   API_DOCUMENTATION.md      API Python cũ
@@ -266,3 +279,47 @@ bot_discord.js        bot Discord
 ```
 
 Mục lục tài liệu: `docs/INDEX.md`.
+
+## 13. Bảng trạng thái realtime
+
+Mở `http://<host>:8080/status` (thêm `?key=<API_KEY>` nếu engine có `API_KEY`).
+
+- Mỗi request hiện thành một dòng: `queued` → `running` → `success` hoặc
+  `failed`; kèm link gốc, link đích, provider, cache hit, thời gian chạy.
+- Cập nhật bằng SSE `/api/v1/events`; snapshot đầu tiên là toàn bộ 500 link
+  gần nhất. SSE bị proxy chặn thì trang tự fallback poll `/api/v1/links` 5 s/lần.
+- Cache hit và fast decode cũng lên bảng; lỗi hiện nguyên văn bên dưới link.
+- Lịch sử nằm trong RAM: restart engine thì bảng trắng, cache destination vẫn
+  còn trên đĩa.
+
+## 14. Cập nhật không cần clone
+
+`scripts/update-engine.sh` tải mã mới từ GitHub và chỉ quản lý `engine-rs/`.
+Không chạm `data/`, `models/`, `target/`, `legacy/`, `src/`, `service/`,
+`.env`, `proxies.txt`.
+
+Cơ chế 3 chiều, chống đè file bạn đã sửa:
+
+| Tình huống | Hành động |
+|---|---|
+| File local giống bản mới | bỏ qua |
+| File local giống manifest (bạn chưa sửa) | ghi đè, có backup |
+| File local khác manifest (bạn đã sửa) | **giữ nguyên**, bản mới vào `_local/update-conflicts/<thời-gian>/` |
+| File bạn tự tạo ngoài manifest | không đụng |
+
+```bash
+./scripts/update-engine.sh                 # xem trước, không ghi
+./scripts/update-engine.sh --apply         # ghi + build release
+./scripts/update-engine.sh --apply -y      # không hỏi
+./scripts/update-engine.sh --check         # cron: exit 10 nếu có bản mới
+./scripts/update-engine.sh --apply --restart --no-build
+```
+
+- Trước khi ghi, file bị thay đổi được backup vào
+  `_local/update-backup/<thời-gian>/`.
+- Build release fail → tự rollback các file vừa ghi, `.l4m-version` giữ nguyên.
+- Manifest `.l4m-engine-manifest` và mốc `.l4m-version` nằm ở gốc repo, được
+  cập nhật sau khi apply thành công.
+- Lần đầu chưa có manifest: file đã sửa được coi là xung đột và giữ nguyên,
+  không có chuyện ghi đè mù.
+- Windows: chạy script trong WSL2 (engine-rs native Windows chưa hỗ trợ).

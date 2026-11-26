@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>L4M Engine — Bảng trạng thái</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #111821;
+    --panel-2: #16202b;
+    --line: #22303d;
+    --text: #d7e2ec;
+    --muted: #7f93a6;
+    --ok: #34d399;
+    --ok-bg: rgba(52, 211, 153, .12);
+    --err: #f87171;
+    --err-bg: rgba(248, 113, 113, .12);
+    --run: #60a5fa;
+    --run-bg: rgba(96, 165, 250, .12);
+    --wait: #fbbf24;
+    --wait-bg: rgba(251, 191, 36, .12);
+    --accent: #22d3ee;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1200px 500px at 15% -10%, rgba(34, 211, 238, .10), transparent 60%),
+      radial-gradient(900px 400px at 90% 0%, rgba(52, 211, 153, .07), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 20px 60px; }
+  header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .logo {
+    width: 38px; height: 38px; border-radius: 11px;
+    display: grid; place-items: center;
+    background: linear-gradient(140deg, #0e7490, #065f46);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08), 0 8px 24px rgba(34,211,238,.16);
+    font-weight: 800; letter-spacing: .5px; color: #e6fffb;
+  }
+  h1 { margin: 0; font-size: 19px; letter-spacing: -.2px; }
+  .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .live {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 7px 12px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel);
+    color: var(--muted); font-size: 12.5px; white-space: nowrap;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait); box-shadow: 0 0 10px var(--wait); }
+  .live.on .dot { background: var(--ok); box-shadow: 0 0 10px var(--ok); animation: pulse 1.8s infinite; }
+  .live.off .dot { background: var(--err); box-shadow: 0 0 10px var(--err); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin: 22px 0 18px; }
+  .card {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px;
+    position: relative; overflow: hidden;
+  }
+  .card::after { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px; background: var(--accent); opacity: .35; }
+  .card.ok::after { background: var(--ok); }
+  .card.err::after { background: var(--err); }
+  .card.wait::after { background: var(--wait); }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+  .card .v { font-size: 26px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .card .v.ok { color: var(--ok); }
+  .card .v.err { color: var(--err); }
+  .card .v.wait { color: var(--wait); }
+
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+    padding: 7px 12px; border-radius: 999px; cursor: pointer; font-size: 12.5px;
+    transition: .15s ease; user-select: none;
+  }
+  .chip:hover { border-color: #31465a; color: var(--text); }
+  .chip.active { color: #061318; background: var(--accent); border-color: var(--accent); font-weight: 650; }
+  .chip .n { opacity: .75; margin-left: 6px; font-variant-numeric: tabular-nums; }
+  .search {
+    margin-left: auto; min-width: 240px; flex: 1 1 240px; max-width: 360px;
+    display: flex; align-items: center; gap: 8px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0 12px;
+  }
+  .search input {
+    background: transparent; border: 0; outline: 0; color: var(--text);
+    padding: 9px 0; width: 100%; font: inherit;
+  }
+  .search svg { opacity: .5; flex: 0 0 auto; }
+
+  .banner {
+    display: none; margin: 0 0 12px; padding: 10px 14px; border-radius: 10px;
+    border: 1px solid rgba(248, 113, 113, .35); background: var(--err-bg); color: #fecaca;
+    font-size: 13px;
+  }
+  .banner.show { display: block; }
+
+  .tablewrap {
+    border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: var(--panel);
+  }
+  .table-scroll { max-height: min(62vh, 720px); overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: #0f1720; color: var(--muted);
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .7px; font-weight: 600;
+    text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line);
+  }
+  tbody td { padding: 11px 14px; border-bottom: 1px solid rgba(34, 48, 61, .65); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: rgba(34, 211, 238, .035); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  .url { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .url a { color: var(--text); text-decoration: none; }
+  .url a:hover { color: var(--accent); text-decoration: underline; }
+  .dest a { color: var(--ok); text-decoration: none; }
+  .dest a:hover { text-decoration: underline; }
+  .dash { color: #45586a; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 650;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .pill.success { color: var(--ok); background: var(--ok-bg); border-color: rgba(52,211,153,.25); }
+  .pill.failed  { color: var(--err); background: var(--err-bg); border-color: rgba(248,113,113,.25); }
+  .pill.running { color: var(--run); background: var(--run-bg); border-color: rgba(96,165,250,.25); }
+  .pill.queued  { color: var(--wait); background: var(--wait-bg); border-color: rgba(251,191,36,.25); }
+  .pill.running::before { animation: pulse 1.2s infinite; }
+  .meta { color: var(--muted); font-size: 11.5px; margin-top: 5px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .tag { border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 10.5px; }
+  .tag.cached { color: var(--accent); border-color: rgba(34,211,238,.35); }
+  .errline { color: #fca5a5; font-size: 11.5px; margin-top: 4px; word-break: break-word; }
+  .num { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+  .empty { padding: 54px 20px; text-align: center; color: var(--muted); }
+  .empty b { display: block; color: var(--text); font-size: 15px; margin-bottom: 6px; }
+  footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: #5d7183; font-size: 11.5px; margin-top: 14px; }
+  code { background: #0d141b; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; font-size: 11px; }
+  @media (max-width: 900px) {
+    .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .url { max-width: 220px; }
+  }
+  @media (max-width: 560px) {
+    .cards { grid-template-columns: 1fr 1fr; }
+    .search { max-width: none; margin-left: 0; }
+    .table-scroll { max-height: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo">44</div>
+      <div>
+        <h1>Bảng trạng thái — Link4M</h1>
+        <div class="sub">native engine · cập nhật realtime qua SSE · không cần reload</div>
+      </div>
+    </div>
+    <div id="live" class="live off"><span class="dot"></span><span id="liveText">đang kết nối…</span></div>
+  </header>
+
+  <div class="cards">
+    <div class="card"><div class="k">Tổng request</div><div class="v" id="cTotal">0</div></div>
+    <div class="card ok"><div class="k">Thành công</div><div class="v ok" id="cOk">0</div></div>
+    <div class="card err"><div class="k">Lỗi</div><div class="v err" id="cErr">0</div></div>
+    <div class="card wait"><div class="k">Đang chờ / chạy</div><div class="v wait" id="cPending">0</div></div>
+    <div class="card"><div class="k">Cache hit</div><div class="v" id="cCache">0</div></div>
+  </div>
+
+  <div id="banner" class="banner"></div>
+
+  <div class="toolbar">
+    <div class="chips" id="chips">
+      <div class="chip active" data-filter="all">Tất cả <span class="n" data-count="all">0</span></div>
+      <div class="chip" data-filter="queued">Đang chờ <span class="n" data-count="queued">0</span></div>
+      <div class="chip" data-filter="running">Đang chạy <span class="n" data-count="running">0</span></div>
+      <div class="chip" data-filter="success">Thành công <span class="n" data-count="success">0</span></div>
+      <div class="chip" data-filter="failed">Lỗi <span class="n" data-count="failed">0</span></div>
+    </div>
+    <label class="search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+      <input id="q" type="search" placeholder="Lọc theo link gốc hoặc link đích…" autocomplete="off">
+    </label>
+  </div>
+
+  <div class="tablewrap">
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:132px">Trạng thái</th>
+            <th>Link gốc</th>
+            <th>Link đích</th>
+            <th style="width:120px">Nguồn</th>
+            <th style="width:92px">Thời gian</th>
+            <th style="width:92px">Lúc</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty" hidden>
+        <b>Chưa có link nào trên bàn.</b>
+        Gửi một request tới <code>/api/v1/bypass</code> hoặc <code>/api/v1/batch</code> — bảng sẽ tự nhảy.
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <div><code>/api/v1/events</code> SSE · <code>/api/v1/links</code> snapshot · <code>/status</code></div>
+    <div id="clock"></div>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var params = new URLSearchParams(window.location.search);
+  var apiKey = params.get("key") || "";
+  var links = new Map();          // id -> entry
+  var stats = { total_jobs: 0, successes: 0, errors: 0, cache_hits: 0 };
+  var filter = "all";
+  var query = "";
+  var sse = null;
+  var pollTimer = null;
+  var live = false;
+
+  var els = {
+    rows: document.getElementById("rows"),
+    empty: document.getElementById("empty"),
+    live: document.getElementById("live"),
+    liveText: document.getElementById("liveText"),
+    banner: document.getElementById("banner"),
+    q: document.getElementById("q"),
+    clock: document.getElementById("clock"),
+    cTotal: document.getElementById("cTotal"),
+    cOk: document.getElementById("cOk"),
+    cErr: document.getElementById("cErr"),
+    cPending: document.getElementById("cPending"),
+    cCache: document.getElementById("cCache")
+  };
+
+  function keySuffix(sep) {
+    if (!apiKey) return "";
+    return (sep || "?") + "key=" + encodeURIComponent(apiKey);
+  }
+
+  function setLive(on, text) {
+    live = on;
+    els.live.className = "live " + (on ? "on" : "off");
+    els.liveText.textContent = text || (on ? "live" : "mất kết nối");
+  }
+
+  function showBanner(text) {
+    els.banner.textContent = text;
+    els.banner.className = "banner show";
+  }
+
+  function hideBanner() {
+    els.banner.className = "banner";
+  }
+
+  function fmtSeconds(ms) {
+    if (!ms || ms <= 0) return "—";
+    var s = ms / 1000;
+    return (s >= 100 ? Math.round(s) : s.toFixed(1)) + "s";
+  }
+
+  function fmtClock(unix) {
+    if (!unix) return "—";
+    var d = new Date(unix * 1000);
+    return d.toLocaleTimeString("vi-VN", { hour12: false });
+  }
+
+  function fmtAgo(unix) {
+    if (!unix) return "";
+    var diff = Math.max(0, Math.floor(Date.now() / 1000 - unix));
+    if (diff < 5) return "vừa xong";
+    if (diff < 60) return diff + "s trước";
+    if (diff < 3600) return Math.floor(diff / 60) + "p trước";
+    return Math.floor(diff / 3600) + "h trước";
+  }
+
+  function statusLabel(status) {
+    return { queued: "Đang chờ", running: "Đang chạy", success: "Thành công", failed: "Lỗi" }[status] || status;
+  }
+
+  function providerLabel(entry) {
+    if (!entry.provider) return "—";
+    return entry.provider;
+  }
+
+  function matches(entry) {
+    if (filter !== "all" && entry.status !== filter) return false;
+    if (!query) return true;
+    var hay = ((entry.url || "") + " " + (entry.destination_url || "") + " " + (entry.error || "")).toLowerCase();
+    return hay.indexOf(query) !== -1;
+  }
+
+  function rowFor(entry) {
+    var tr = document.createElement("tr");
+    tr.dataset.id = entry.id;
+
+    var tdStatus = document.createElement("td");
+    var pill = document.createElement("span");
+    pill.className = "pill " + entry.status;
+    pill.textContent = statusLabel(entry.status);
+    tdStatus.appendChild(pill);
+    tr.appendChild(tdStatus);
+
+    var tdUrl = document.createElement("td");
+    var url = document.createElement("div");
+    url.className = "url mono";
+    var a = document.createElement("a");
+    a.href = entry.url || "#";
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = entry.url || "—";
+    a.title = entry.url || "";
+    url.appendChild(a);
+    tdUrl.appendChild(url);
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    var tagP = document.createElement("span");
+    tagP.className = "tag";
+    tagP.textContent = providerLabel(entry);
+    meta.appendChild(tagP);
+    if (entry.cached) {
+      var tagC = document.createElement("span");
+      tagC.className = "tag cached";
+      tagC.textContent = "cache";
+      meta.appendChild(tagC);
+    }
+    if (entry.error) {
+      var errline = document.createElement("div");
+      errline.className = "errline";
+      errline.textContent = entry.error;
+      tdUrl.appendChild(errline);
+    }
+    tdUrl.appendChild(meta);
+    tr.appendChild(tdUrl);
+
+    var tdDest = document.createElement("td");
+    tdDest.className = "dest mono";
+    if (entry.destination_url) {
+      var d = document.createElement("a");
+      d.href = entry.destination_url;
+      d.target = "_blank";
+      d.rel = "noopener noreferrer";
+      d.textContent = entry.destination_url;
+      d.title = entry.destination_url;
+      d.style.display = "inline-block";
+      d.style.maxWidth = "340px";
+      d.style.overflow = "hidden";
+      d.style.textOverflow = "ellipsis";
+      d.style.whiteSpace = "nowrap";
+      tdDest.appendChild(d);
+    } else {
+      var dash = document.createElement("span");
+      dash.className = "dash";
+      dash.textContent = entry.status === "failed" ? "không lấy được" : "chưa có";
+      tdDest.appendChild(dash);
+    }
+    tr.appendChild(tdDest);
+
+    var tdSrc = document.createElement("td");
+    tdSrc.className = "mono";
+    tdSrc.style.color = "var(--muted)";
+    tdSrc.textContent = entry.cached ? "cache" : (entry.provider || "—");
+    tr.appendChild(tdSrc);
+
+    var tdElapsed = document.createElement("td");
+    tdElapsed.className = "num";
+    tdElapsed.textContent = fmtSeconds(entry.elapsed_ms);
+    tr.appendChild(tdElapsed);
+
+    var tdTime = document.createElement("td");
+    tdTime.className = "num";
+    tdTime.title = fmtClock(entry.created_at);
+    tdTime.textContent = fmtAgo(entry.updated_at || entry.created_at);
+    tr.appendChild(tdTime);
+
+    return tr;
+  }
+
+  function render() {
+    var list = Array.from(links.values()).sort(function (a, b) {
+      return (b.created_at || 0) - (a.created_at || 0);
+    });
+    var counts = { all: list.length, queued: 0, running: 0, success: 0, failed: 0 };
+    list.forEach(function (e) { if (counts[e.status] !== undefined) counts[e.status]++; });
+
+    document.querySelectorAll("[data-count]").forEach(function (n) {
+      var k = n.getAttribute("data-count");
+      n.textContent = counts[k] !== undefined ? counts[k] : 0;
+    });
+
+    els.cPending.textContent = counts.queued + counts.running;
+    els.cOk.textContent = stats.successes || 0;
+    els.cErr.textContent = stats.errors || 0;
+    els.cTotal.textContent = stats.total_jobs || 0;
+    els.cCache.textContent = stats.cache_hits || 0;
+
+    var visible = list.filter(matches);
+    els.rows.textContent = "";
+    var frag = document.createDocumentFragment();
+    visible.forEach(function (entry) { frag.appendChild(rowFor(entry)); });
+    els.rows.appendChild(frag);
+    els.empty.hidden = visible.length !== 0;
+  }
+
+  function applySnapshot(payload) {
+    if (!payload) return;
+    links.clear();
+    (payload.links || []).forEach(function (entry) { links.set(entry.id, entry); });
+    if (payload.stats) stats = payload.stats;
+    hideBanner();
+    render();
+  }
+
+  function applyLink(entry) {
+    if (!entry || !entry.id) return;
+    var previous = links.get(entry.id);
+    links.set(entry.id, entry);
+    if (!previous) {
+      stats.total_jobs = (stats.total_jobs || 0) + 1;
+    }
+    if (entry.status === "success" && (!previous || previous.status !== "success")) {
+      stats.successes = (stats.successes || 0) + 1;
+      if (entry.cached) stats.cache_hits = (stats.cache_hits || 0) + 1;
+    }
+    if (entry.status === "failed" && (!previous || previous.status !== "failed")) {
+      stats.errors = (stats.errors || 0) + 1;
+    }
+    render();
+  }
+
+  function loadSnapshot() {
+    return fetch("/api/v1/links" + keySuffix(), { cache: "no-store" })
+      .then(function (res) {
+        if (res.status === 401) {
+          showBanner("Thiếu hoặc sai API key. Mở lại trang với ?key=<API_KEY> khớp biến API_KEY của engine.");
+          throw new Error("unauthorized");
+        }
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (payload) {
+        applySnapshot(payload);
+        setLive(true, "live");
+      })
+      .catch(function (err) {
+        if (err && err.message === "unauthorized") return;
+        setLive(false, "đang thử lại…");
+        showBanner("Không gọi được /api/v1/links — kiểm tra engine còn chạy và URL/proxy.");
+      });
+  }
+
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(loadSnapshot, 5000);
+  }
+
+  function stopPolling() {
+    if (!pollTimer) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  function connect() {
+    if (sse) sse.close();
+    if (typeof EventSource === "undefined") {
+      startPolling();
+      return;
+    }
+    sse = new EventSource("/api/v1/events" + keySuffix());
+    sse.addEventListener("snapshot", function (ev) {
+      try { applySnapshot(JSON.parse(ev.data)); } catch (_) {}
+      setLive(true, "live");
+      stopPolling();
+    });
+    sse.addEventListener("link", function (ev) {
+      try { applyLink(JSON.parse(ev.data)); } catch (_) {}
+    });
+    sse.onopen = function () {
+      setLive(true, "live");
+      stopPolling();
+    };
+    sse.onerror = function () {
+      setLive(false, "đang kết nối lại…");
+      startPolling();
+    };
+  }
+
+  document.getElementById("chips").addEventListener("click", function (ev) {
+    var chip = ev.target.closest(".chip");
+    if (!chip) return;
+    filter = chip.getAttribute("data-filter");
+    document.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
+    chip.classList.add("active");
+    render();
+  });
+
+  els.q.addEventListener("input", function () {
+    query = els.q.value.trim().toLowerCase();
+    render();
+  });
+
+  setInterval(function () {
+    els.clock.textContent = new Date().toLocaleTimeString("vi-VN", { hour12: false });
+    document.querySelectorAll("tbody tr").forEach(function (tr) {
+      var entry = links.get(tr.dataset.id);
+      if (!entry) return;
+      var cell = tr.lastElementChild;
+      if (cell) cell.textContent = fmtAgo(entry.updated_at || entry.created_at);
+    });
+  }, 1000);
+
+  loadSnapshot();
+  connect();
+})();
+</script>
+</body>
+</html>

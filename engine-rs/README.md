@@ -68,6 +68,17 @@ Test không cần Chrome, không cần model. Gồm HTTP contract (dựng `ApiSt
 `asr = None`), parser campaign (`instr`), parser mã widget (`quest`), cache mã
 (`codes`).
 
+## 2.2 Cập nhật không cần clone
+
+```bash
+./scripts/update-engine.sh            # xem trước
+./scripts/update-engine.sh --apply    # ghi + build release
+```
+
+Script chỉ quản lý `engine-rs/`, so 3 chiều local / manifest / bản mới: file
+bạn đã sửa không bị ghi đè, bản mới vào `_local/update-conflicts/`. Build fail
+thì rollback. Chi tiết ở `README.md` gốc mục 14.
+
 ## 3. Chạy
 
 ```bash
@@ -140,6 +151,9 @@ Lỗi:
 | GET | `/api/v1/bypass` | `?url=...&wait=1&timeout=480&key=...` |
 | GET | `/api/v1/jobs/{id}` | job đang chạy / vừa xong |
 | POST | `/api/v1/batch` | `{urls:[≤50], wait?, timeout?}` |
+| GET | `/api/v1/links` | snapshot bảng trạng thái |
+| GET | `/api/v1/events` | SSE realtime (EventSource) |
+| GET | `/status` | trang bảng trạng thái realtime |
 
 Envelope giống `service/app.py`: `status`, `url`, `destination_url`, `provider`,
 `cached`, `elapsed_ms`, `job_id`, `error`. Lỗi trả `{"detail": "..."}` với
@@ -159,6 +173,16 @@ curl -s -X POST localhost:8080/api/v1/bypass \
   -d '{"url":"https://link4m.net/go/2kCcIqn","wait":true}'
 # → {"status":"success","destination_url":"https://...","provider":"link4m",...}
 ```
+
+### 5.1 Bảng trạng thái realtime
+
+`GET /status` là một trang HTML nhúng trong binary, không cần build frontend.
+Mỗi request thành một dòng `queued → running → success | failed`, kèm link
+đích, provider, cache, thời gian. Dữ liệu đẩy qua `/api/v1/events` (SSE,
+snapshot đầu + từng thay đổi); trang tự fallback poll `/api/v1/links` 5 s/lần
+khi SSE bị chặn. Giữ 500 link gần nhất trong RAM.
+
+Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?key=`.
 
 ## 6. Cấu hình
 

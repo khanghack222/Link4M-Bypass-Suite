@@ -19,6 +19,8 @@ pub struct Job {
     pub alias: String,
     pub url: String,
     pub code: Option<String>,
+    /// Row id on the live status board.
+    pub track_id: String,
     pub respond: oneshot::Sender<JobOutcome>,
 }
 
@@ -77,6 +79,7 @@ async fn worker_loop(
         };
         let Some(job) = job else { break };
         let started = Instant::now();
+        inner.link_running(&job.track_id).await;
 
         if session.is_none() {
             match start_session(&inner, worker_id).await {
@@ -92,13 +95,24 @@ async fn worker_loop(
                 }
                 Err(err) => {
                     error!(target: "engine", worker = worker_id, "chrome failed: {err}");
+                    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                    inner
+                        .link_finish(
+                            &job.track_id,
+                            "failed",
+                            None,
+                            Some(format!("browser: {err}")),
+                            elapsed_ms,
+                            false,
+                        )
+                        .await;
                     let _ = job.respond.send(JobOutcome {
                         destination: None,
                         error: Some(FlowError {
                             kind: "browser",
                             message: err.to_string(),
                         }),
-                        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+                        elapsed_ms,
                     });
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     continue;
@@ -111,13 +125,24 @@ async fn worker_loop(
         let cdp = active.cdp.clone();
         let active_proxy = active.proxy.clone();
         let Some(asr) = inner.asr.clone() else {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            inner
+                .link_finish(
+                    &job.track_id,
+                    "failed",
+                    None,
+                    Some("asr: whisper model not loaded".into()),
+                    elapsed_ms,
+                    false,
+                )
+                .await;
             let _ = job.respond.send(JobOutcome {
                 destination: None,
                 error: Some(FlowError {
                     kind: "asr",
                     message: "whisper model not loaded".into(),
                 }),
-                elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+                elapsed_ms,
             });
             continue;
         };
@@ -184,6 +209,16 @@ async fn worker_loop(
                 }
             }
         };
+        inner
+            .link_finish(
+                &job.track_id,
+                &snapshot.status,
+                snapshot.destination_url.clone(),
+                snapshot.error.clone(),
+                snapshot.elapsed_ms,
+                false,
+            )
+            .await;
         inner.job_put(snapshot).await;
 
         let _ = job.respond.send(match outcome {

@@ -8,17 +8,19 @@ use crate::providers;
 use crate::state::{elapsed_ms, new_job_id, unix_now, Inner, JobView};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures_util::stream::{self, StreamExt};
+use futures_util::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -55,6 +57,14 @@ pub struct BatchReq {
     pub wait: Option<bool>,
     #[serde(default)]
     pub timeout: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EventsQuery {
+    /// EventSource cannot set headers, so the board passes its API key in the
+    /// query string like `GET /api/v1/bypass` already does.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 struct ApiError {
@@ -148,8 +158,20 @@ async fn resolve(
 
     // 1) Zero-browser decode.
     if let Some(destination) = fast_decode(&url) {
+        let track_id = state.inner.link_begin(&url, Some("decode")).await;
         state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
         state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
+        state
+            .inner
+            .link_finish(
+                &track_id,
+                "success",
+                Some(destination.clone()),
+                None,
+                elapsed_ms(started),
+                false,
+            )
+            .await;
         let mut response = envelope("success", &url, Some("decode"));
         response["destination_url"] = json!(destination);
         response["elapsed_ms"] = json!(elapsed_ms(started));
@@ -177,9 +199,21 @@ async fn resolve(
 
     // 3) Cache.
     if let Some(destination) = state.inner.cache_get(&key).await {
+        let track_id = state.inner.link_begin(&url, Some(provider)).await;
         state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
         state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
         state.inner.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+        state
+            .inner
+            .link_finish(
+                &track_id,
+                "success",
+                Some(destination.clone()),
+                None,
+                elapsed_ms(started),
+                true,
+            )
+            .await;
         let mut response = envelope("success", &url, Some(provider));
         response["destination_url"] = json!(destination);
         response["cached"] = json!(true);
@@ -191,9 +225,21 @@ async fn resolve(
     let key_lock = state.inner.key_lock(&key).await;
     let _guard = key_lock.lock().await;
     if let Some(destination) = state.inner.cache_get(&key).await {
+        let track_id = state.inner.link_begin(&url, Some(provider)).await;
         state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
         state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
         state.inner.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+        state
+            .inner
+            .link_finish(
+                &track_id,
+                "success",
+                Some(destination.clone()),
+                None,
+                elapsed_ms(started),
+                true,
+            )
+            .await;
         let mut response = envelope("success", &url, Some(provider));
         response["destination_url"] = json!(destination);
         response["cached"] = json!(true);
@@ -217,16 +263,29 @@ async fn resolve(
         })
         .await;
     let (sender, receiver) = oneshot::channel();
+    let track_id = state.inner.link_begin(&url, Some(provider)).await;
     let job = Job {
         job_id: job_id.clone(),
         key: key.clone(),
         alias,
         url: url.clone(),
         code: req_code,
+        track_id: track_id.clone(),
         respond: sender,
     };
     if state.pool.try_dispatch(job).is_err() {
         state.inner.job_remove(&job_id).await;
+        state
+            .inner
+            .link_finish(
+                &track_id,
+                "failed",
+                None,
+                Some("Hàng đợi đầy".into()),
+                elapsed_ms(started),
+                false,
+            )
+            .await;
         state.inner.stats.errors.fetch_add(1, Ordering::Relaxed);
         return Err(ApiError::busy());
     }
@@ -369,6 +428,69 @@ async fn supported_list() -> Json<Value> {
     Json(json!({ "supported": providers::table_json() }))
 }
 
+/// Snapshot of the live board. Same payload the SSE stream sends first, so a
+/// client can reconnect with plain polling when SSE is blocked by a proxy.
+async fn links(
+    State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
+    Query(query): Query<EventsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    check_auth(&state.inner, &headers, query.key.as_deref())?;
+    let links = state.inner.links_snapshot().await;
+    let pending = links
+        .iter()
+        .filter(|entry| entry.status == "queued" || entry.status == "running")
+        .count();
+    let cache = state.inner.cache.lock().await.len();
+    Ok(Json(json!({
+        "links": links,
+        "stats": state.inner.stats.snapshot(cache, pending),
+    })))
+}
+
+async fn status_page() -> Html<&'static str> {
+    Html(include_str!("../web/status.html"))
+}
+
+async fn events(
+    State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
+    Query(query): Query<EventsQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    check_auth(&state.inner, &headers, query.key.as_deref())?;
+    // Subscribe before the snapshot: an update can never fall between the two.
+    let receiver = state.inner.subscribe();
+    let links = state.inner.links_snapshot().await;
+    let pending = links
+        .iter()
+        .filter(|entry| entry.status == "queued" || entry.status == "running")
+        .count();
+    let cache = state.inner.cache.lock().await.len();
+    let snapshot = Event::default().event("snapshot").data(
+        json!({
+            "links": links,
+            "stats": state.inner.stats.snapshot(cache, pending),
+        })
+        .to_string(),
+    );
+    let live = stream::unfold(receiver, |mut receiver| async move {
+        loop {
+            match receiver.recv().await {
+                Ok(value) => {
+                    return Some((
+                        Ok(Event::default().event("link").data(value.to_string())),
+                        receiver,
+                    ));
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    let body = stream::once(async move { Ok::<Event, Infallible>(snapshot) }).chain(live);
+    Ok(Sse::new(body).keep_alive(KeepAlive::new().interval(Duration::from_secs(20))))
+}
+
 async fn root() -> Json<Value> {
     Json(json!({
         "service": "Link4M native engine (Rust)",
@@ -382,6 +504,9 @@ async fn root() -> Json<Value> {
             "POST /api/v1/batch",
             "GET /api/v1/stats",
             "GET /api/v1/supported",
+            "GET /api/v1/links",
+            "GET /api/v1/events (SSE)",
+            "GET /status (live board)",
             "GET /health",
         ],
     }))
@@ -393,9 +518,12 @@ pub fn router(state: Arc<ApiState>) -> Router {
         .route("/health", get(health))
         .route("/api/v1/stats", get(stats))
         .route("/api/v1/supported", get(supported_list))
+        .route("/api/v1/links", get(links))
+        .route("/api/v1/events", get(events))
         .route("/api/v1/bypass", post(bypass_post).get(bypass_get))
         .route("/api/v1/jobs/{id}", get(job_get))
         .route("/api/v1/batch", post(batch))
+        .route("/status", get(status_page))
         .with_state(state)
 }
 
@@ -593,6 +721,104 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    async fn call_raw(app: Router, request: Request<Body>) -> (StatusCode, String, String) {
+        let response = app.oneshot(request).await.expect("router answered");
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, content_type, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    #[tokio::test]
+    async fn status_page_and_empty_links_snapshot_are_served() {
+        let app = router(state("", 1, 8));
+        let (status, content_type, html) = call_raw(
+            app.clone(),
+            Request::builder().uri("/status").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.contains("text/html"));
+        assert!(html.contains("Bảng trạng thái"));
+
+        let (status, body) = call(
+            app,
+            Request::builder()
+                .uri("/api/v1/links")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["links"].as_array().unwrap().len(), 0);
+        assert_eq!(body["stats"]["total_jobs"], 0);
+    }
+
+    #[tokio::test]
+    async fn fast_decode_appears_on_the_board() {
+        let app = router(state("", 1, 8));
+        let payload = json!({ "url": DECODE_URL }).to_string();
+        let (status, _) = call(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/bypass")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, body) = call(
+            app,
+            Request::builder()
+                .uri("/api/v1/links")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let links = body["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["status"], "success");
+        assert_eq!(links[0]["destination_url"], "https://example.com/x");
+        assert_eq!(links[0]["provider"], "decode");
+        assert_eq!(body["stats"]["successes"], 1);
+    }
+
+    #[tokio::test]
+    async fn links_endpoint_requires_the_api_key() {
+        let app = router(state("secret", 1, 8));
+        let (status, _) = call(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/links")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, body) = call(
+            app,
+            Request::builder()
+                .uri("/api/v1/links?key=secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["links"].is_array());
     }
 
     #[tokio::test]

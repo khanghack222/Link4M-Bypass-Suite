@@ -29,4 +29,4 @@ Quy tắc:
 | Deploy | `engine-rs/deploy/` hoặc `server-rs/` |
 
 Các userscript và extension Chrome cũ đã bị xoá khỏi repo; xem
-`docs/COMPONENTS.md` mục "Đã xoá / đã dời".
+`README.md` mục "Trạng thái từng thành phần".

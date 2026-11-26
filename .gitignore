@@ -64,3 +64,7 @@ _local/
 
 # Runtime snippets
 /data/rust_cache.json
+
+# Update state (per machine)
+.l4m-version
+.l4m-engine-manifest
