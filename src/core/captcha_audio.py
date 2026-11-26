@@ -28,6 +28,23 @@ MODEL_SIZE = os.environ.get("RC_WHISPER_MODEL", "tiny.en")
 GOOGLE_STT = ("https://www.google.com/speech-api/v2/recognize"
               "?output=json&lang=en-US&key=AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXxWjig")
 
+# reCAPTCHA đọc một chuỗi chữ số. ASR hay nghe nhầm thành từ đồng âm
+# ("for" -> four, "to" -> two, "ate" -> eight); bảng này đổi lại.
+DIGIT_WORDS = ["zero", "oh", "one", "two", "three", "four", "five",
+               "six", "seven", "eight", "nine"]
+_HOMOPHONES = {
+    "zero": "0", "oh": "0", "o": "0",
+    "one": "1", "won": "1",
+    "two": "2", "to": "2", "too": "2",
+    "three": "3", "tree": "3", "free": "3",
+    "four": "4", "for": "4", "fore": "4",
+    "five": "5",
+    "six": "6", "sex": "6", "sicks": "6",
+    "seven": "7",
+    "eight": "8", "ate": "8",
+    "nine": "9", "niner": "9",
+}
+
 _MODEL = None
 
 
@@ -84,15 +101,19 @@ def find_challenge(pg):
             tiles = f.locator("div.rc-imageselect-tile").count()
         except Exception:
             pass
-        score = (3 if tiles else 0) + (3 if has_audio else 0) + (1 if _on_screen(pg, f) else 0)
+        score = (4 if tiles else 0) + (4 if has_audio else 0) + (2 if _on_screen(pg, f) else 0)
         ranked.append((score, bool(tiles or has_audio), f))
     if not ranked:
         return None
     ranked.sort(key=lambda item: item[0], reverse=True)
+    # Frame hoạt động (có tile hoặc ô audio) thắng ngay. Nếu chưa frame nào render
+    # xong, vẫn nhận frame nằm trên màn hình: lưới ảnh cần vài trăm ms mới có tile,
+    # và bỏ ở đây làm cả lượt captcha trượt (thấy ở lượt live 7).
     for _score, active, frame in ranked:
         if active:
             return frame
-    return None
+    best_score, _active, best_frame = ranked[0]
+    return best_frame if best_score >= 2 else None
 
 
 def token_now(pg) -> str:
@@ -261,7 +282,13 @@ def transcribe_whisper(path: str) -> str:
     return " ".join(s.text.strip() for s in segs).strip()
 
 
-def transcribe_vosk(path: str) -> str:
+def transcribe_vosk(path: str, digits_only: bool = False) -> str:
+    """Nhận dạng bằng Vosk; ``digits_only`` ép grammar chỉ còn chữ số.
+
+    Clip reCAPTCHA là một chuỗi chữ số đọc trong tạp âm. Grammar tự do nghe
+    thành câu vô nghĩa ("for eternity and so well"), còn grammar chữ số thu
+    được đúng vài chữ số. Cả hai dạng đều được đem đi thử.
+    """
     import json
     import wave
     from vosk import KaldiRecognizer, Model, SetLogLevel
@@ -272,7 +299,11 @@ def transcribe_vosk(path: str) -> str:
     subprocess.run(["sox", path, "-r", "16000", "-c", "1", "-e", "signed", "-b", "16", wav],
                    check=True, capture_output=True, timeout=60)
     SetLogLevel(-1)
-    rec = KaldiRecognizer(Model(mpath), 16000)
+    if digits_only:
+        grammar = json.dumps(DIGIT_WORDS + ["[unk]"])
+        rec = KaldiRecognizer(Model(mpath), 16000, grammar)
+    else:
+        rec = KaldiRecognizer(Model(mpath), 16000)
     with wave.open(wav, "rb") as w:
         while True:
             d = w.readframes(4000)
@@ -310,17 +341,61 @@ def transcribe_google(path: str) -> str:
     return ""
 
 
-def transcribe(path: str) -> str:
-    for name, fn in (("whisper", transcribe_whisper), ("vosk", transcribe_vosk)):
+def digits_of(text: str) -> str:
+    """Đổi câu ASR thành chuỗi chữ số ("for two" -> "42")."""
+    import re
+    out = []
+    for word in re.findall(r"[a-z]+|\d+", (text or "").lower()):
+        if word.isdigit():
+            out.append(word)
+        elif word in _HOMOPHONES:
+            out.append(_HOMOPHONES[word])
+    return "".join(out)
+
+
+def _answer_candidates(path: str) -> list[str]:
+    """Mọi câu trả lời đáng thử cho một clip, xếp theo độ tin cậy.
+
+    Mỗi clip reCAPTCHA cho thử vài lần, nên thay vì nộp một câu rồi xin clip
+    mới, ta nộp lần lượt các cách đọc khác nhau của **cùng** clip: bản whisper,
+    bản vosk tự do, bản vosk grammar chữ số, và các bản đã chuẩn hoá đồng âm.
+    """
+    raw: list[str] = []
+    for name, fn in (("whisper", transcribe_whisper),
+                     ("vosk", transcribe_vosk),
+                     ("vosk-digits", lambda p: transcribe_vosk(p, digits_only=True))):
         try:
-            t = fn(path)
-            if t:
-                log(f"[audio] {name}: {t}")
-                return t
-            log(f"[audio] {name}: rỗng")
-        except Exception as e:
-            log(f"[audio] {name} lỗi:", str(e)[:70])
-    return ""
+            text = fn(path)
+        except Exception as exc:
+            log(f"[audio] {name} lỗi:", str(exc)[:70])
+            continue
+        text = (text or "").replace("[unk]", " ").strip()
+        if text:
+            log(f"[audio] {name}: {text}")
+            raw.append(text)
+
+    answers: list[str] = []
+    for text in raw:
+        answers.append(text)
+    for text in raw:
+        digits = digits_of(text)
+        if 3 <= len(digits) <= 8:
+            answers.append(digits)
+    # Bản số trước bản chữ: reCAPTCHA chấp nhận cả hai, nhưng số ít lỗi chính tả.
+    answers.sort(key=lambda a: (0 if a.isdigit() else 1, -len(a)))
+    seen, unique = set(), []
+    for a in answers:
+        key = a.lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(a)
+    return unique
+
+
+def transcribe(path: str) -> str:
+    """Câu trả lời tốt nhất cho một clip (rỗng nếu không đọc được gì)."""
+    cands = _answer_candidates(path)
+    return cands[0] if cands else ""
 
 
 # ------------------------------------------------------------------ vòng giải
@@ -332,8 +407,57 @@ def error_text(ch) -> str:
         return ""
 
 
+def _submit(ch, pg, answer: str, limit: int = 25) -> tuple[str, str]:
+    """Nộp một đáp án và đọc phản hồi của reCAPTCHA.
+
+    Trả ``(trạng_thái, token)`` với trạng thái:
+    ``ok`` token đã có · ``blocked`` bị chặn/IP xấu · ``wrong`` sai ·
+    ``advanced`` đúng (thử thách đổi sang clip khác) · ``timeout`` không rõ.
+    """
+    try:
+        ch.locator("#audio-response").first.fill(answer)
+    except Exception:
+        return "timeout", ""
+    time.sleep(0.4)
+    try:
+        ch.locator("#recaptcha-verify-button").first.click(timeout=6000)
+    except Exception:
+        return "timeout", ""
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        time.sleep(1)
+        tok = token_now(pg)
+        cur = find_audio_frame(pg) or find_challenge(pg)
+        if tok and cur is None:
+            log(f"[audio] '{answer}' đúng sau {int(time.time() - t0)}s, token {len(tok)}")
+            return "ok", tok
+        if cur is None:
+            continue
+        err = error_text(cur)
+        if not err:
+            continue
+        low = err.lower()
+        if "try again later" in low or "automated" in low or "blocked" in low:
+            log("[audio] bị chặn:", err[:70])
+            return "blocked", ""
+        if "multiple" in low or "vài lần" in low or "try again" in low:
+            log(f"[audio] '{answer}' sai, còn lượt:", err[:60])
+            return "wrong", ""
+        if "correct" in low or "chính xác" in low:
+            return "advanced", ""
+        log(f"[audio] '{answer}' sai:", err[:60])
+        return "wrong", ""
+    return "timeout", ""
+
+
 def solve(pg, tries: int = 4, limit: int = 150) -> str:
-    """Giải thử thách đang hiện bằng audio; trả token ("" nếu thua)."""
+    """Giải thử thách đang hiện bằng audio; trả token ("" nếu thua).
+
+    ``tries`` là số clip tối đa, ``limit`` là ngân sách chờ tổng (giữ tham số
+    cũ cho tương thích). Mỗi clip được nộp nhiều đáp án — ASR trên clip nhiễu
+    thường đúng ở một cách đọc nào đó chứ hiếm khi đúng ngay bản đầu.
+    """
+    deadline = time.time() + max(limit, 30)
     ch = find_challenge(pg) or find_audio_frame(pg)
     if not ch:
         # Bframe mới render sau khi hộp kiểm được bấm; dò ngay lập tức hay trượt.
@@ -346,6 +470,9 @@ def solve(pg, tries: int = 4, limit: int = 150) -> str:
         log("[audio] không thấy bframe có thử thách")
         return token_now(pg)
     for n in range(1, tries + 1):
+        if time.time() > deadline:
+            log("[audio] hết ngân sách chờ")
+            break
         if not open_audio_mode(ch, pg):
             log("[audio] không mở được chế độ audio")
             return ""
@@ -356,43 +483,25 @@ def solve(pg, tries: int = 4, limit: int = 150) -> str:
             return ""
         with open(AUDIO_FILE, "wb") as f:
             f.write(blob)
-        text = transcribe(AUDIO_FILE)
-        if not text:
-            log("[audio] không chép được lời -> thử lại")
+        candidates = _answer_candidates(AUDIO_FILE)
+        if not candidates:
+            log("[audio] không chép được lời -> clip khác")
             _next_clip(ch)
             continue
-        try:
-            ch.locator("#audio-response").first.fill(text)
-        except Exception:
-            pass
-        time.sleep(0.4)
-        try:
-            ch.locator("#recaptcha-verify-button").first.click(timeout=6000)
-        except Exception:
-            pass
-        t0 = time.time()
-        while time.time() - t0 < limit:
-            time.sleep(1)
-            tok = token_now(pg)
-            if tok and not find_challenge(pg) and not find_audio_frame(pg):
-                log(f"[audio] xong sau {int(time.time() - t0)}s, token {len(tok)}")
+        log("[audio] đáp án thử:", " | ".join(candidates[:4]))
+        advanced = False
+        for answer in candidates[:4]:
+            state, tok = _submit(ch, pg, answer)
+            if state == "ok":
                 return tok
-            cur = find_audio_frame(pg) or find_challenge(pg)
-            if cur is None:
+            if state == "blocked":
+                return ""
+            if state == "advanced":
+                advanced = True
                 break
-            err = error_text(cur)
-            if err:
-                low = err.lower()
-                if "try again later" in low or "automated" in low or "blocked" in low:
-                    log("[audio] bị chặn:", err[:70])
-                    return ""
-                if "multiple" in low or "thử" in low or "try again" in low:
-                    log("[audio] cần vòng nữa:", err[:60])
-                    break
-                log("[audio] sai:", err[:60])
-                break
-        else:
-            return token_now(pg)
+            ch = find_audio_frame(pg) or find_challenge(pg) or ch
+        if not advanced:
+            _next_clip(ch)
     return token_now(pg)
 
 

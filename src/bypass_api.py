@@ -131,6 +131,40 @@ def emit_result(res: BypassResult, as_json: bool) -> int:
     return rc
 
 
+def _arm_deadline(seconds: int, target: str, as_json: bool):
+    """Đồng hồ cứng cho cả lượt chạy: hết giờ thì in envelope rồi thoát.
+
+    ``--timeout`` trước đây chỉ là metadata. Khi Chrome chết giữa lúc driver
+    đang chờ một lệnh (evaluate trên tab đã đóng), Playwright không có timeout
+    cho lệnh đó và tiến trình treo vô hạn — đã thấy job chạy 850s rồi bị
+    ``timeout`` ngoài giết mà không in kết quả nào. Timer này bảo đảm consumer
+    luôn nhận được dòng ``__BYPASS_JSON__`` với ``ERR_TIMEOUT``.
+    """
+    import threading
+
+    def fire() -> None:
+        res = BypassResult(
+            success=False,
+            engine="",
+            provider="",
+            error_code="ERR_TIMEOUT",
+            error_message=(f"engine vượt ngân sách {seconds}s — driver không trả về "
+                           f"(Chrome chết giữa lệnh?)"),
+            metadata={"url": target, "timeout": seconds, "deadline_hit": True},
+            stage="deadline",
+        )
+        try:
+            emit_result(res, as_json)
+        except Exception:
+            pass
+        os._exit(1)
+
+    timer = threading.Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def main(argv: Optional[list] = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -145,8 +179,13 @@ def main(argv: Optional[list] = None) -> int:
 
     headless = False if args.head else bool(args.headless)
     as_json = bool(args.json) or os.environ.get("BYPASS_API_JSON", "") == "1"
-    res = run_once(target, engine=args.engine, headless=headless,
-                   timeout=max(5, int(args.timeout or DEFAULT_TIMEOUT)))
+    budget = max(5, int(args.timeout or DEFAULT_TIMEOUT))
+    # +20s để engine tự kết thúc gọn trước khi đồng hồ cứng nổ.
+    timer = _arm_deadline(budget + 20, target, as_json)
+    try:
+        res = run_once(target, engine=args.engine, headless=headless, timeout=budget)
+    finally:
+        timer.cancel()
     return emit_result(res, as_json)
 
 

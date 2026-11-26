@@ -152,13 +152,23 @@ def ensure_chrome() -> bool:
             return False
         log("[chrome] bản đang chạy qua proxy -> restart đi thẳng")
         _kill_chrome()
+    # Box chạy suite chỉ có ~3.7 GB và dùng chung với các phiên khác. Chrome mặc
+    # định bật MemoryPressure handler: khi RAM căng, nó tự "discard" tab để giải
+    # phóng bộ nhớ, và tab của job bị đóng giữa lúc đếm ngược
+    # ("Target page, context or browser has been closed"). --memory-pressure-off
+    # tắt cơ chế đó; các cờ còn lại cắt process và cache để Chrome vừa box hơn.
     args = [CHROME, "--remote-debugging-port=9222", f"--user-data-dir={PROFILE}",
             "--no-first-run", "--no-default-browser-check", "--disable-gpu",
             "--disable-dev-shm-usage", "--no-proxy-server", "--no-sandbox",
             "--mute-audio", "--disable-background-timer-throttling",
-            "--js-flags=--max-old-space-size=512",
+            "--js-flags=--max-old-space-size=384",
             "--disable-features=BackForwardCache,Translate,CalculateNativeWinOcclusion",
-            "--renderer-process-limit=3", "--window-size=1280,1000"]
+            "--memory-pressure-off", "--enable-low-end-device-mode",
+            "--process-per-site", "--renderer-process-limit=2",
+            "--disk-cache-size=134217728", "--media-cache-size=8388608",
+            "--disable-extensions", "--disable-sync", "--disable-default-apps",
+            "--disable-component-update", "--disable-software-rasterizer",
+            "--window-size=1280,1000"]
     if os.environ.get("L4M_HEADLESS", "").strip().lower() in ("1", "true", "yes"):
         args.append("--headless=new")
     args.append("about:blank")
@@ -678,7 +688,13 @@ def wait_status(tab, key: str, limit: int) -> str:
     i = 0
     while i < hard_cap:
         time.sleep(1.1)
-        tab.mouse.wheel(0, -70 if i % 2 else 70)
+        # scrollBy thay cho mouse.wheel: không sinh round-trip CDP Input và không
+        # ném lỗi "Target closed" khi Chrome vừa chết — vòng lặp đọc trạng thái
+        # ngay sau đó sẽ phát hiện và để run() dựng lại phiên.
+        try:
+            tab.evaluate("(dy) => window.scrollBy(0, dy)", -70 if i % 2 else 70)
+        except Exception:
+            pass
         s = widget_status(tab, key)
         if i % 8 == 0:
             log(f"  t={i * 1.1:.0f}s | {s.replace(chr(10), ' / ')[:70]}")
@@ -857,11 +873,21 @@ class Engine:
         "**/*.{mp4,webm,m3u8,flv,ts,m4v}",
         "**/*.{woff,woff2,ttf,otf,eot}",
     )
+    # Iframe YouTube nhúng trong trang link4m là một renderer riêng (~150-250 MB)
+    # chỉ để phát quảng cáo. Cùng nhóm với các mạng quảng cáo bên thứ ba — chặn
+    # ở cấp context, không liên quan tới captcha (google.com/recaptcha) hay widget
+    # quest (script trên chính domain sponsor).
+    _BLOCKED_HOSTS = (
+        "**://www.youtube.com/**", "**://youtube.com/**",
+        "**://*.googlevideo.com/**", "**://*.ytimg.com/**",
+        "**://*.doubleclick.net/**", "**://*.googlesyndication.com/**",
+        "**://*.googleadservices.com/**", "**://*.adnxs.com/**",
+    )
 
     def _block_heavy_assets(self):
         if self.ctx is None:
             return
-        for pattern in self._HEAVY_GLOBS:
+        for pattern in self._HEAVY_GLOBS + self._BLOCKED_HOSTS:
             try:
                 self.ctx.route(pattern, lambda route: route.abort())
             except Exception as exc:
@@ -981,6 +1007,16 @@ class Engine:
     def harvest_code(self, sponsor: str, key: str) -> str:
         tab = self.ctx.new_page()
         tab.set_viewport_size({"width": 390, "height": 844})
+        # Trang quest là trang quảng cáo mobile: ảnh banner, video, font chiếm
+        # phần lớn bộ nhớ renderer và không liên quan tới đồng hồ đếm hay mã KM.
+        # Chặn ở cấp tab để trang link4m (cần ảnh cho lưới captcha) không bị ảnh hưởng.
+        for pattern in ("**/*.{png,jpg,jpeg,gif,webp,avif,svg,ico}",
+                        "**/*.{mp4,webm,m3u8,flv,ts,m4v}",
+                        "**/*.{woff,woff2,ttf,otf,eot}"):
+            try:
+                tab.route(pattern, lambda route: route.abort())
+            except Exception:
+                pass
         cdp = self.ctx.new_cdp_session(tab)
         cdp.send("Network.setUserAgentOverride", {"userAgent": UA_MOBILE, "platform": "Linux armv8l"})
         cdp.send("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 5})
@@ -1180,13 +1216,18 @@ class Engine:
             raise RuntimeError("browser has been closed: Chrome CDP không phản hồi")
 
     def run(self) -> dict:
-        try:
-            return self._run_once()
-        except Exception as exc:
-            if not self._is_dropped(exc):
-                raise
-            self._reset_connection()
-            return self._run_once()
+        last: BaseException | None = None
+        for attempt in range(1, 4):
+            try:
+                return self._run_once()
+            except Exception as exc:
+                if not self._is_dropped(exc):
+                    raise
+                last = exc
+                log(f"[engine] lượt {attempt}: Chrome mất kết nối —", str(exc)[:90])
+                if attempt < 3:
+                    self._reset_connection()
+        raise RuntimeError(f"browser has been closed: bỏ sau 3 lượt ({last})")
 
     def _is_dropped(self, exc: BaseException) -> bool:
         text = str(exc).lower()
