@@ -190,6 +190,12 @@ Auth: nếu đặt `API_KEY`, gửi `x-api-key: <key>` hoặc `?key=`.
 | `PROXY_ROTATE_AFTER` | `4` | tự đổi exit sau N lượt thành công khi pool có >1 proxy; `0` tắt |
 | `PROXY_COOLDOWN` | `300` | giây một exit lỗi bị loại khỏi vòng xoay |
 | `L4M_TESSERACT` | `tesseract` | OCR fallback khi thiếu RapidOCR sidecar |
+| `OCR_URL` | rỗng | OCR server ngoài (multipart) thay sidecar/tesseract |
+| `OCR_TIMEOUT` | `30` | giây timeout OCR (probe 5 s / ảnh 6 s) |
+| `OCR_LANGUAGE` | rỗng | ngôn ngữ tesseract (rỗng = mặc định; `L4M_TESSERACT_LANG` ưu tiên hơn) |
+| `L4M_OCR_CACHE` | `data/ocr-cache.json` | cache kết quả OCR theo campaign + hash ảnh |
+| `L4M_PREWARM` | `1` | giữ sẵn một Chrome boot khi worker idle; `0` tắt |
+| `CHROME_FLAGS` | rỗng | flag thêm vào lệnh launch Chrome |
 | `L4M_CODE_TTL` | `900` | TTL mã sponsor |
 | `L4M_CAMPAIGN` | rỗng | ghim campaign (list id, debug) |
 | `L4M_CODE` | rỗng | truyền mã có sẵn, bỏ quest |
@@ -212,7 +218,7 @@ ra `nmkiosvn-api.nmk87201.workers.dev/claim?...`.
 ## 9. Test
 
 ```bash
-# engine-rs — 51 test (Linux/macOS/WSL2)
+# engine-rs — 58 test (Linux/macOS/WSL2)
 cd <repo>/engine-rs
 WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
 

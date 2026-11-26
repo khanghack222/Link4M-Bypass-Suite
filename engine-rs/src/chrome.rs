@@ -289,11 +289,32 @@ impl ChromeProc {
             .arg("--disable-gpu")
             .arg("--disable-dev-shm-usage")
             .arg("--disable-site-isolation-trials")
-            .arg("--disable-features=IsolateOrigins,site-per-process,Translate")
+            .arg("--disable-features=IsolateOrigins,site-per-process,Translate,CalculateNativeWinOcclusion,OptimizationHints")
             .arg("--disable-blink-features=AutomationControlled")
             .arg("--lang=en-US")
             .arg("--window-size=1280,1000")
             .arg("--renderer-process-limit=2")
+            // A backgrounded tab throttles its timers and the widget countdown
+            // then crawls. The flow deliberately keeps two tabs alive (campaign
+            // + sponsor), so none of the throttles may apply.
+            .arg("--disable-background-timer-throttling")
+            .arg("--disable-backgrounding-occluded-windows")
+            .arg("--disable-renderer-backgrounding")
+            // CDP evaluations are small and frequent; the IPC flood guard adds
+            // latency bursts when a page logs or posts messages.
+            .arg("--disable-ipc-flooding-protection")
+            // Nothing in a bypass job needs these background services, and
+            // each one adds startup work plus idle wakeups.
+            .arg("--disable-component-update")
+            .arg("--disable-default-apps")
+            .arg("--disable-sync")
+            .arg("--disable-domain-reliability")
+            .arg("--disable-client-side-phishing-detection")
+            .arg("--no-pings")
+            .arg("--metrics-recording-only")
+            .arg("--disable-hang-monitor")
+            .arg("--disable-prompt-on-repost")
+            .arg("--disable-breakpad")
             .arg("about:blank")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())

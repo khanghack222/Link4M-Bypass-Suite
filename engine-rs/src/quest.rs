@@ -72,7 +72,9 @@ const STATUS_JS: &str = r#"(() => {
 const RECT_JS: &str = r#"(() => {
   const e = document.getElementById(KEY);
   if (!e) return null;
-  e.scrollIntoView({ block: 'center' });
+  // Instant scroll so the rect read below is final; the tap now follows in
+  // ~80 ms instead of the old 800 ms wait.
+  e.scrollIntoView({ block: 'center', behavior: 'instant' });
   const b = e.querySelector('button') || e;
   const r = b.getBoundingClientRect();
   return {
@@ -135,7 +137,7 @@ async fn tap(cdp: &Cdp, x: f64, y: f64, touch: bool) -> anyhow::Result<()> {
             json!({"type": "touchStart", "touchPoints": [{"x": x, "y": y, "id": 1, "radiusX": 12, "radiusY": 12}]}),
         )
         .await?;
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
         cdp.call(
             "Input.dispatchTouchEvent",
             json!({"type": "touchEnd", "touchPoints": []}),
@@ -147,13 +149,13 @@ async fn tap(cdp: &Cdp, x: f64, y: f64, touch: bool) -> anyhow::Result<()> {
             json!({"type": "mouseMoved", "x": x - 15.0, "y": y - 8.0}),
         )
         .await?;
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
         cdp.call(
             "Input.dispatchMouseEvent",
             json!({"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1}),
         )
         .await?;
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
         cdp.call(
             "Input.dispatchMouseEvent",
             json!({"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1}),
@@ -218,8 +220,15 @@ async fn press_widget(cdp: &Cdp, key: &str) -> bool {
         _ => return false,
     };
     let touch = rect.get("touch").and_then(Value::as_bool).unwrap_or(false);
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    // The rect is already scrolled into view; give the compositor a beat, not
+    // the old flat 800 ms.
+    tokio::time::sleep(Duration::from_millis(80)).await;
     tap(cdp, x, y, touch).await.is_ok()
+}
+
+/// The widget is idle when it still offers `LẤY MÃ` and no countdown is live.
+fn is_idle(text: &str) -> bool {
+    text.to_uppercase().contains("LẤY MÃ") && countdown_secs(text).is_none()
 }
 
 async fn click_widget(cdp: &Cdp, key: &str) -> bool {
@@ -227,11 +236,17 @@ async fn click_widget(cdp: &Cdp, key: &str) -> bool {
         if !press_widget(cdp, key).await {
             return false;
         }
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        let text = status(cdp, key).await;
-        let idle = text.to_uppercase().contains("LẤY MÃ") && countdown_secs(&text).is_none();
-        if !idle {
-            return true;
+        // Poll for the quest actually starting instead of sleeping 1.5 s and
+        // reading once: a countdown or any non-idle label is the signal. An
+        // empty status is not a start — the tap can land on an ad and navigate
+        // the tab away, leaving the widget missing.
+        let until = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let text = status(cdp, key).await;
+            if !text.trim().is_empty() && !is_idle(&text) {
+                return true;
+            }
         }
         match attempt {
             2 => {
@@ -263,12 +278,11 @@ async fn click_widget(cdp: &Cdp, key: &str) -> bool {
             _ => {
                 for _ in 0..3 {
                     let _ = wheel(cdp, 120).await;
-                    tokio::time::sleep(Duration::from_millis(350)).await;
+                    tokio::time::sleep(Duration::from_millis(120)).await;
                 }
                 let _ = wheel(cdp, -120).await;
             }
         }
-        tokio::time::sleep(Duration::from_millis(1200)).await;
     }
     false
 }
@@ -292,18 +306,58 @@ pub async fn harvest(
     outcome
 }
 
+/// `performance.timeOrigin` changes with every document, so it tells a fresh
+/// page from the previous one without waiting a fixed settle.
+async fn document_signature(cdp: &Cdp) -> Option<f64> {
+    match cdp.eval(None, "performance.timeOrigin").await {
+        Ok(Value::Number(value)) => value.as_f64(),
+        _ => None,
+    }
+}
+
 async fn load_and_scroll(cdp: &Cdp, url: &str, referrer: Option<&str>) -> QuestResult<()> {
     let mut params = json!({"url": url});
     if let Some(referrer) = referrer {
         params["referrer"] = json!(referrer);
     }
+    let before = document_signature(cdp).await;
     cdp.call("Page.navigate", params)
         .await
         .map_err(|e| QuestError::new("cdp", e.to_string()))?;
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    for _ in 0..10 {
-        let _ = wheel(cdp, 400).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
+    // Wait for the new document, not for a wall clock: an eval on the old page
+    // would still see the previous widget and return before the reload landed.
+    match before {
+        Some(before) => {
+            let until = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < until {
+                if let Some(now) = document_signature(cdp).await {
+                    if now != before {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(60)).await;
+            }
+        }
+        None => tokio::time::sleep(Duration::from_millis(250)).await,
+    }
+
+    // Poll for the widget while nudging lazy scripts into view. The old path
+    // slept 5 s and scrolled ten times regardless of whether it was ready.
+    let until = Instant::now() + Duration::from_secs(8);
+    let mut step = 0usize;
+    while Instant::now() < until {
+        if let Ok(Value::String(found)) = cdp.eval(None, FIND_WIDGET_JS).await {
+            if !found.is_empty() {
+                return Ok(());
+            }
+        }
+        // Light scroll roughly once a second so the banner enters the viewport
+        // without hammering the page.
+        if step % 8 == 0 {
+            let _ = wheel(cdp, 240).await;
+        }
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        step += 1;
     }
     Ok(())
 }
@@ -325,17 +379,21 @@ const DIAG_JS: &str = r#"(() => {
 })()"#;
 
 async fn find_widget(cdp: &Cdp) -> String {
+    // load_and_scroll already waited for the common case, so this loop is a
+    // short safety net. Poll fast; scroll only occasionally.
     for attempt in 0..14 {
         match cdp.eval(None, FIND_WIDGET_JS).await {
             Ok(Value::String(found)) if !found.is_empty() => return found,
             _ => {
-                let _ = wheel(cdp, 500).await;
-                tokio::time::sleep(Duration::from_millis(1500)).await;
-                if attempt == 6 {
+                if attempt % 4 == 0 {
+                    let _ = wheel(cdp, 400).await;
+                }
+                if attempt == 10 {
                     if let Ok(diag) = cdp.eval(None, DIAG_JS).await {
                         debug!(target: "engine", diag = %diag, "sponsor page before widget");
                     }
                 }
+                tokio::time::sleep(Duration::from_millis(150)).await;
             }
         }
     }
@@ -353,14 +411,21 @@ async fn wait_step(cdp: &Cdp, key: &str, step: u8, budget: Duration) -> QuestRes
     let mut last = String::new();
     let mut saw_countdown = false;
     let mut empty_polls = 0u8;
+    // The widget text is the signal; 120 ms polling catches a countdown or a
+    // code almost immediately. Scrolling and the visibility check are
+    // housekeeping, so they stay on a ~1 s cadence.
+    let mut last_side_effect = Instant::now() - Duration::from_secs(2);
     while Instant::now() < deadline {
-        if let Ok(Value::String(visibility)) = cdp.eval(None, "document.visibilityState").await {
-            if visibility != "visible" {
-                let _ = cdp.call("Page.bringToFront", json!({})).await;
+        let tick = Instant::now();
+        if tick.duration_since(last_side_effect) >= Duration::from_secs(1) {
+            last_side_effect = tick;
+            if let Ok(Value::String(visibility)) = cdp.eval(None, "document.visibilityState").await {
+                if visibility != "visible" {
+                    let _ = cdp.call("Page.bringToFront", json!({})).await;
+                }
             }
+            let _ = wheel(cdp, 70).await;
         }
-        let _ = wheel(cdp, 70).await;
-        tokio::time::sleep(Duration::from_millis(900)).await;
         let text = status(cdp, key).await;
         if text != last {
             debug!(target: "engine", text = %text.replace('\n', " | ").chars().take(120).collect::<String>(), "widget status");
@@ -389,6 +454,19 @@ async fn wait_step(cdp: &Cdp, key: &str, step: u8, budget: Duration) -> QuestRes
                 debug!(target: "engine", "widget went blank after countdown, moving to step 2");
                 return Ok(None);
             }
+            // End-of-step wording varies per advertiser; a countdown that
+            // disappears without a code is the stable signal that step 1 is
+            // done. Waiting for a literal "link" burned up to 140 s here.
+            if saw_countdown && countdown_secs(&text).is_none() {
+                debug!(target: "engine", "countdown gone without a code, moving to step 2");
+                return Ok(None);
+            }
+            // No countdown ever appeared and the node has been blank for ~4 s:
+            // the tap navigated away (ad overlay) or the widget died. Fail now
+            // instead of idling until the 140 s fallback.
+            if !saw_countdown && empty_polls >= 30 {
+                return Err(QuestError::new("widget", "widget disappeared after the press"));
+            }
             // Hard fallback: some builds show neither a countdown nor a link
             // at the end of step 1. After 140 s a reload is always safe — the
             // widget keeps its quest state in localStorage.
@@ -415,6 +493,7 @@ async fn wait_step(cdp: &Cdp, key: &str, step: u8, budget: Duration) -> QuestRes
                 return Ok(None);
             }
         }
+        tokio::time::sleep(Duration::from_millis(120)).await;
     }
     Err(QuestError::new("widget", "code did not appear before budget"))
 }
@@ -513,7 +592,17 @@ async fn drive(
     info!(target: "engine", widget = %key, "sponsor widget found");
 
     if !click_widget(cdp, &key).await {
-        return Err(QuestError::new("widget", "LẤY MÃ button did not start the quest"));
+        // A mis-aimed tap can hit an ad overlay and navigate the tab away from
+        // the sponsor; a fresh load plus one more press is much cheaper than
+        // losing the campaign code for this job.
+        debug!(target: "engine", "press did not start the quest, reloading sponsor once");
+        let referrer = if refs == "google" { google } else { None };
+        load_and_scroll(cdp, sponsor, referrer).await?;
+        let retry_key = find_widget(cdp).await;
+        if retry_key.is_empty() || !click_widget(cdp, &retry_key).await {
+            return Err(QuestError::new("widget", "LẤY MÃ button did not start the quest"));
+        }
+        key = retry_key;
     }
     info!(target: "engine", "quest step 1 started");
 
@@ -548,7 +637,15 @@ async fn drive(
 
 #[cfg(test)]
 mod tests {
-    use super::{countdown_secs, parse_code};
+    use super::{countdown_secs, is_idle, parse_code};
+
+    #[test]
+    fn idle_button_detection() {
+        assert!(is_idle("LẤY MÃ"));
+        assert!(!is_idle("Lấy mã sau 14s (1/2)"));
+        assert!(!is_idle("Mã KM: wq8YJK"));
+        assert!(!is_idle(""));
+    }
 
     #[test]
     fn parses_widget_code() {

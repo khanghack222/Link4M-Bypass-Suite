@@ -163,6 +163,16 @@ async fn worker_loop(
     receiver: Arc<Mutex<mpsc::Receiver<Job>>>,
 ) {
     let mut session: Option<Session> = None;
+    // Booting Chrome is ~2-4 s of every cold job. Keep one boot in flight
+    // while the worker is idle so the next job finds a browser already up.
+    // `L4M_PREWARM=0` restores lazy launch on memory-tight boxes.
+    let prewarm = std::env::var("L4M_PREWARM")
+        .map(|value| value != "0")
+        .unwrap_or(true);
+    let mut pending: Option<tokio::task::JoinHandle<anyhow::Result<Session>>> = None;
+    if prewarm {
+        pending = Some(spawn_session(inner.clone(), worker_id));
+    }
     // Link4M stops serving sponsor campaigns after a handful of completions
     // from one exit. Rotate proactively instead of waiting for captcha-only
     // pages; 0 disables the counter.
@@ -176,7 +186,13 @@ async fn worker_loop(
             let mut guard = receiver.lock().await;
             guard.recv().await
         };
-        let Some(job) = job else { break };
+        let Some(job) = job else {
+            // A prelaunched browser nobody will use must not outlive the pool.
+            if let Some(handle) = pending.take() {
+                handle.abort();
+            }
+            break;
+        };
         let started = Instant::now();
         // Picked up: keep the entry on disk, marked running, so a crash can
         // requeue the full job (key + code) instead of losing it.
@@ -210,6 +226,28 @@ async fn worker_loop(
             continue;
         };
 
+        if session.is_none() {
+            if let Some(handle) = pending.take() {
+                match handle.await {
+                    Ok(Ok(ready)) => {
+                        info!(
+                            target: "engine",
+                            worker = worker_id,
+                            port = ready.chrome.port,
+                            proxy = %ready.proxy.as_ref().map(|p| format!("{}:{}", p.host, p.port)).unwrap_or_else(|| "direct".into()),
+                            "chrome ready (prewarmed)"
+                        );
+                        session = Some(ready);
+                    }
+                    Ok(Err(err)) => {
+                        warn!(target: "engine", worker = worker_id, "prewarm failed: {err}");
+                    }
+                    Err(err) => {
+                        warn!(target: "engine", worker = worker_id, "prewarm task failed: {err}");
+                    }
+                }
+            }
+        }
         if session.is_none() {
             match start_session(&inner, worker_id).await {
                 Ok(ready) => {
@@ -328,6 +366,11 @@ async fn worker_loop(
             );
             session = None;
         }
+        // Boot the replacement while the result is written and the worker
+        // waits on the queue, so rotation does not cost the next job ~3 s.
+        if session.is_none() && prewarm && pending.is_none() {
+            pending = Some(spawn_session(inner.clone(), worker_id));
+        }
 
         let snapshot = match &outcome {
             Ok(destination) => {
@@ -389,6 +432,13 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()>
         }
     }
     Ok(())
+}
+
+fn spawn_session(
+    inner: Arc<Inner>,
+    worker_id: usize,
+) -> tokio::task::JoinHandle<anyhow::Result<Session>> {
+    tokio::spawn(async move { start_session(&inner, worker_id).await })
 }
 
 async fn start_session(inner: &Arc<Inner>, worker_id: usize) -> anyhow::Result<Session> {

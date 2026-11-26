@@ -17,6 +17,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -54,15 +55,22 @@ const INSTR_JS: &str = r#"(() => {
 })()"#;
 
 const TLDS: &[&str] = &[
-    "com", "net", "org", "vn", "life", "top", "site", "vip", "bet", "win", "app",
-    "xyz", "info", "io", "co", "online", "club", "fun", "store", "shop", "live",
-    "me", "tv", "cc", "pro", "asia", "biz", "link", "cloud", "one", "website",
-    "casino", "game", "games", "dev", "page", "space",
+    "com", "net", "org", "vn", "life", "top", "site", "vip", "bet", "win", "app", "xyz", "info",
+    "io", "co", "online", "club", "fun", "store", "shop", "live", "me", "tv", "cc", "pro", "asia",
+    "biz", "link", "cloud", "one", "website", "casino", "game", "games", "dev", "page", "space",
 ];
 
 const EXCLUDED: &[&str] = &[
-    "google.", "facebook.", "youtube.", "link4m.", "gstatic.", "doubleclick.",
-    "img.link4m", "googletagmanager", "google-analytics", "cdn.jsdelivr",
+    "google.",
+    "facebook.",
+    "youtube.",
+    "link4m.",
+    "gstatic.",
+    "doubleclick.",
+    "img.link4m",
+    "googletagmanager",
+    "google-analytics",
+    "cdn.jsdelivr",
 ];
 
 fn cache() -> &'static Mutex<Option<HashMap<String, Campaign>>> {
@@ -84,13 +92,196 @@ fn load_cache() -> HashMap<String, Campaign> {
 }
 
 fn store_cache(map: &HashMap<String, Campaign>) {
-    let path = cache_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(raw) = serde_json::to_string_pretty(map) {
-        let _ = std::fs::write(path, raw);
+        atomic_write(&cache_path(), raw.as_bytes());
     }
+}
+
+/// Write through a sibling temp file and rename so a reader never observes a
+/// half-written cache. `rename` cannot replace an existing file on Windows, so
+/// the fallback drops the old file first.
+fn atomic_write(path: &Path, bytes: &[u8]) {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+    }
+    let tmp = temp_sibling(path);
+    if std::fs::write(&tmp, bytes).is_err() {
+        return;
+    }
+    if std::fs::rename(&tmp, path).is_ok() {
+        return;
+    }
+    let _ = std::fs::remove_file(path);
+    if std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn temp_sibling(path: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cache.json");
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), seq))
+}
+
+const OCR_CACHE_LIMIT: usize = 200;
+
+/// One OCR result keyed by campaign id + a hash of the image source list. The
+/// page re-renders the same strips for every alias, so the same key recurs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct OcrCacheEntry {
+    campaign: String,
+    hash: u64,
+    lines: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct OcrCacheFile {
+    #[serde(default)]
+    entries: Vec<OcrCacheEntry>,
+}
+
+fn ocr_cache_slot() -> &'static Mutex<Option<Vec<OcrCacheEntry>>> {
+    static CACHE: OnceLock<Mutex<Option<Vec<OcrCacheEntry>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// `data/ocr-cache.json` by default. `L4M_OCR_CACHE=0` disables the cache;
+/// any other non-boolean value is treated as an explicit path.
+fn ocr_cache_path() -> Option<PathBuf> {
+    match std::env::var("L4M_OCR_CACHE") {
+        Ok(raw) => {
+            let value = raw.trim();
+            if value == "0"
+                || value.eq_ignore_ascii_case("false")
+                || value.eq_ignore_ascii_case("off")
+            {
+                None
+            } else if value.is_empty()
+                || value == "1"
+                || value.eq_ignore_ascii_case("true")
+                || value.eq_ignore_ascii_case("on")
+            {
+                Some(PathBuf::from("data/ocr-cache.json"))
+            } else {
+                Some(PathBuf::from(value))
+            }
+        }
+        Err(_) => Some(PathBuf::from("data/ocr-cache.json")),
+    }
+}
+
+fn ocr_cache_load_path(path: &Path) -> Vec<OcrCacheEntry> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let entries = match serde_json::from_str::<OcrCacheFile>(&raw) {
+        Ok(file) => file.entries,
+        // Tolerate a bare array left by an older/hand-written build.
+        Err(_) => serde_json::from_str::<Vec<OcrCacheEntry>>(&raw).unwrap_or_default(),
+    };
+    entries
+        .into_iter()
+        .filter(|entry| !entry.campaign.is_empty() && !entry.lines.is_empty())
+        .collect()
+}
+
+fn ocr_cache_store_path(path: &Path, entries: &[OcrCacheEntry]) {
+    let file = OcrCacheFile {
+        entries: entries.to_vec(),
+    };
+    if let Ok(raw) = serde_json::to_string_pretty(&file) {
+        atomic_write(path, raw.as_bytes());
+    }
+}
+
+fn ocr_cache_lookup(entries: &[OcrCacheEntry], campaign: &str, hash: u64) -> Option<Vec<String>> {
+    entries
+        .iter()
+        .find(|entry| entry.campaign == campaign && entry.hash == hash)
+        .map(|entry| entry.lines.clone())
+        .filter(|lines| !lines.is_empty())
+}
+
+/// Append one result, newest last, and evict the oldest insertions once the
+/// file grows past the limit. Re-inserting an existing key refreshes it.
+fn ocr_cache_remember(
+    entries: &mut Vec<OcrCacheEntry>,
+    campaign: &str,
+    hash: u64,
+    lines: &[String],
+) {
+    if campaign.is_empty() || lines.is_empty() {
+        return;
+    }
+    if let Some(pos) = entries
+        .iter()
+        .position(|entry| entry.campaign == campaign && entry.hash == hash)
+    {
+        entries.remove(pos);
+    }
+    entries.push(OcrCacheEntry {
+        campaign: campaign.to_string(),
+        hash,
+        lines: lines.to_vec(),
+    });
+    while entries.len() > OCR_CACHE_LIMIT {
+        entries.remove(0);
+    }
+}
+
+fn ocr_cache_get(campaign: &str, hash: u64) -> Option<Vec<String>> {
+    if campaign.is_empty() {
+        return None;
+    }
+    let path = ocr_cache_path()?;
+    let mut guard = ocr_cache_slot().lock().ok()?;
+    if guard.is_none() {
+        *guard = Some(ocr_cache_load_path(&path));
+    }
+    guard
+        .as_ref()
+        .and_then(|entries| ocr_cache_lookup(entries, campaign, hash))
+}
+
+fn ocr_cache_put(campaign: &str, hash: u64, lines: &[String]) {
+    if campaign.is_empty() || lines.is_empty() {
+        return;
+    }
+    let Some(path) = ocr_cache_path() else {
+        return;
+    };
+    let mut guard = ocr_cache_slot().lock().expect("ocr cache");
+    if guard.is_none() {
+        *guard = Some(ocr_cache_load_path(&path));
+    }
+    if let Some(entries) = guard.as_mut() {
+        ocr_cache_remember(entries, campaign, hash, lines);
+        ocr_cache_store_path(&path, entries);
+    }
+}
+
+/// Stable FNV-1a over every image source in page order. `DefaultHasher` is
+/// explicitly allowed to change between releases, which would silently miss
+/// the cache after an engine upgrade; FNV does not.
+fn hash_images(images: &[String]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for source in images {
+        for byte in source.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 fn cache_get(campaign_id: &str) -> Option<Campaign> {
@@ -185,7 +376,14 @@ fn clean_domains(blob: &str) -> Vec<String> {
 
 fn parse_keyword(blob: &str) -> String {
     let lower = blob.to_lowercase();
-    for needle in ["từ khoá", "từ khoa", "tu khoa", "tim tu khoa", "khoá", "khoa"] {
+    for needle in [
+        "từ khoá",
+        "từ khoa",
+        "tu khoa",
+        "tim tu khoa",
+        "khoá",
+        "khoa",
+    ] {
         let mut from = 0;
         while let Some(pos) = lower[from..].find(needle) {
             let at = from + pos;
@@ -215,7 +413,10 @@ fn ocr_binary() -> PathBuf {
         }
     }
     #[cfg(windows)]
-    for candidate in [".venv\\Scripts\\python.exe", "..\\.venv\\Scripts\\python.exe"] {
+    for candidate in [
+        ".venv\\Scripts\\python.exe",
+        "..\\.venv\\Scripts\\python.exe",
+    ] {
         let path = PathBuf::from(candidate);
         if path.exists() {
             return path;
@@ -234,6 +435,9 @@ fn ocr_script() -> PathBuf {
 /// Which OCR reader is available right now. `--check` prints this so a missing
 /// sidecar and a missing tesseract are visible before a campaign needs them.
 pub fn ocr_status() -> &'static str {
+    if ocr_url().is_some() {
+        return "remote";
+    }
     let python = ocr_binary();
     let script = ocr_script();
     if script.exists() && runnable(&python, &["-c", "import rapidocr_onnxruntime"]) {
@@ -247,6 +451,43 @@ pub fn ocr_status() -> &'static str {
     }
 }
 
+/// OCR_URL wins over the local sidecar when it parses as an absolute HTTP(S)
+/// URL. Anything else falls through to the old detection path.
+fn ocr_url() -> Option<String> {
+    let raw = std::env::var("OCR_URL").ok()?;
+    let url = raw.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return None;
+    }
+    parsed.host_str()?;
+    Some(url.to_string())
+}
+
+fn ocr_language() -> Option<String> {
+    for key in ["L4M_TESSERACT_LANG", "OCR_LANGUAGE"] {
+        if let Ok(raw) = std::env::var(key) {
+            let value = raw.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn ocr_timeout() -> Duration {
+    let secs = std::env::var("OCR_TIMEOUT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(30)
+        .clamp(1, 600);
+    Duration::from_secs(secs)
+}
+
 fn runnable(binary: &Path, args: &[&str]) -> bool {
     std::process::Command::new(binary)
         .args(args)
@@ -257,38 +498,212 @@ fn runnable(binary: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-fn decode_image(src: &str, dir: &Path, index: usize, proxy: Option<&Proxy>) -> Option<PathBuf> {
-    let path = dir.join(format!("instr-{index}.png"));
+struct ImagePayload {
+    name: String,
+    data: Vec<u8>,
+}
+
+fn decode_image_bytes(src: &str, proxy: Option<&Proxy>) -> Option<Vec<u8>> {
     if let Some(rest) = src.strip_prefix("data:image/") {
         let payload = rest.split_once(',')?.1;
-        let raw = base64::engine::general_purpose::STANDARD.decode(payload).ok()?;
-        std::fs::write(&path, raw).ok()?;
-        return Some(path);
+        return base64::engine::general_purpose::STANDARD
+            .decode(payload.trim())
+            .ok()
+            .filter(|raw| !raw.is_empty());
     }
     if src.starts_with("http://") || src.starts_with("https://") {
-        let body = proxy::agent_for(proxy, Duration::from_secs(12), "Mozilla/5.0")
+        let body = proxy::agent_for(proxy, Duration::from_secs(6), "Mozilla/5.0")
             .get(src)
             .call()
             .ok()?
             .into_reader();
         let mut buf = Vec::new();
-        let mut reader = body.take(8 * 1024 * 1024);
-        reader.read_to_end(&mut buf).ok()?;
-        std::fs::write(&path, buf).ok()?;
-        return Some(path);
+        body.take(8 * 1024 * 1024).read_to_end(&mut buf).ok()?;
+        return (!buf.is_empty()).then_some(buf);
     }
     None
 }
 
-fn run_ocr(images: &[String], proxy: Option<&Proxy>) -> Vec<String> {
+fn image_payloads(images: &[String], proxy: Option<&Proxy>) -> Vec<ImagePayload> {
+    images
+        .iter()
+        .enumerate()
+        .filter_map(|(index, src)| {
+            decode_image_bytes(src, proxy).map(|data| ImagePayload {
+                name: format!("instr-{index}.png"),
+                data,
+            })
+        })
+        .collect()
+}
+
+fn spill_payloads(payloads: &[ImagePayload]) -> Vec<PathBuf> {
     let dir = std::env::temp_dir().join("l4m-instr");
     let _ = std::fs::create_dir_all(&dir);
     let mut files = Vec::new();
-    for (i, src) in images.iter().enumerate() {
-        if let Some(path) = decode_image(src, &dir, i, proxy) {
+    for payload in payloads {
+        let path = dir.join(&payload.name);
+        if std::fs::write(&path, &payload.data).is_ok() {
             files.push(path);
         }
     }
+    files
+}
+
+fn multipart_boundary() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|delta| delta.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "----l4mocr{:x}{:x}{:x}",
+        std::process::id(),
+        nanos,
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn multipart_body(payloads: &[ImagePayload], language: Option<&str>, boundary: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    for payload in payloads {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; \
+                 filename=\"{}\"\r\nContent-Type: image/png\r\n\r\n",
+                payload.name
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(&payload.data);
+        body.extend_from_slice(b"\r\n");
+    }
+    if let Some(language) = language {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n\
+                 {language}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+/// One keep-alive agent for every remote OCR call: the engine OCRs a strip per
+/// campaign, and reusing the TLS connection removes a handshake from each.
+fn remote_ocr_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| proxy::agent_for(None, ocr_timeout(), UA_MOBILE))
+}
+
+fn remote_ocr(url: &str, payloads: &[ImagePayload], language: Option<&str>) -> Option<Vec<String>> {
+    if payloads.is_empty() {
+        return None;
+    }
+    let boundary = multipart_boundary();
+    let body = multipart_body(payloads, language, &boundary);
+    let response = remote_ocr_agent()
+        .post(url)
+        .set(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        )
+        .send_bytes(&body)
+        .ok()?;
+    let mut raw = String::new();
+    response
+        .into_reader()
+        .take(4 * 1024 * 1024)
+        .read_to_string(&mut raw)
+        .ok()?;
+    let lines = parse_remote_lines(&raw);
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines)
+    }
+}
+
+/// Accept the three shapes OCR servers actually return: `[[..],..]` from the
+/// local sidecar, `{"lines":[..]}` from JSON wrappers, and plain text.
+fn parse_remote_lines(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        match value {
+            Value::Array(blocks) => {
+                for block in blocks {
+                    match block {
+                        Value::Array(items) => push_json_lines(&items, &mut lines),
+                        Value::String(line) => push_json_line(&line, &mut lines),
+                        _ => {}
+                    }
+                }
+            }
+            Value::Object(map) => {
+                if let Some(Value::Array(items)) = map.get("lines") {
+                    for item in items {
+                        match item {
+                            Value::String(line) => push_json_line(line, &mut lines),
+                            Value::Array(nested) => push_json_lines(nested, &mut lines),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        if !lines.is_empty() {
+            return lines;
+        }
+    }
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            lines.push(line.to_string());
+        }
+    }
+    lines
+}
+
+fn push_json_line(line: &str, out: &mut Vec<String>) {
+    let trimmed = line.trim();
+    if !trimmed.is_empty() {
+        out.push(trimmed.to_string());
+    }
+}
+
+fn push_json_lines(items: &[Value], out: &mut Vec<String>) {
+    for item in items {
+        if let Some(line) = item.as_str() {
+            push_json_line(line, out);
+        }
+    }
+}
+
+fn run_ocr(images: &[String], proxy: Option<&Proxy>) -> Vec<String> {
+    let payloads = image_payloads(images, proxy);
+    if payloads.is_empty() {
+        return Vec::new();
+    }
+
+    // Remote backend first when configured; a network failure or an empty
+    // answer falls through to the local readers instead of burning the run.
+    if let Some(url) = ocr_url() {
+        let language = ocr_language();
+        if let Some(lines) = remote_ocr(&url, &payloads, language.as_deref()) {
+            debug!(target: "engine", lines = lines.len(), "remote OCR");
+            return lines;
+        }
+        warn!(target: "engine", "remote OCR failed, falling back to local");
+    }
+
+    let files = spill_payloads(&payloads);
     if files.is_empty() {
         return Vec::new();
     }
@@ -374,33 +789,57 @@ fn run_with_timeout(
 }
 
 fn tesseract_ocr(files: &[PathBuf]) -> Vec<String> {
+    if files.is_empty() {
+        return Vec::new();
+    }
     let binary = std::env::var("L4M_TESSERACT").unwrap_or_else(|_| "tesseract".into());
     let language = std::env::var("L4M_TESSERACT_LANG").unwrap_or_else(|_| "eng".into());
+    // Tesseract is CPU-bound; two concurrent processes cut a multi-strip page
+    // in half without letting a wide campaign monopolise the box.
+    let workers = files.len().min(2);
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<Vec<String>>> =
+        Mutex::new((0..files.len()).map(|_| Vec::new()).collect());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                if index >= files.len() {
+                    break;
+                }
+                let lines = tesseract_one(&files[index], &binary, &language);
+                if let Ok(mut slots) = results.lock() {
+                    slots[index] = lines;
+                }
+            });
+        }
+    });
+    let blocks = results.into_inner().unwrap_or_default();
     let mut lines = Vec::new();
-    for file in files {
-        let mut command = std::process::Command::new(&binary);
-        command
-            .arg(file)
-            .arg("stdout")
-            .arg("-l")
-            .arg(&language);
-        let Some(output) = run_with_timeout(command, Duration::from_secs(45)) else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let line = line.trim();
-            if !line.is_empty() {
-                lines.push(line.to_string());
-            }
-        }
+    for block in blocks {
+        lines.extend(block);
     }
     if !lines.is_empty() {
         debug!(target: "engine", lines = lines.len(), "tesseract fallback OCR");
     }
     lines
+}
+
+fn tesseract_one(file: &Path, binary: &str, language: &str) -> Vec<String> {
+    let mut command = std::process::Command::new(binary);
+    command.arg(file).arg("stdout").arg("-l").arg(language);
+    let Some(output) = run_with_timeout(command, Duration::from_secs(45)) else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Pull the what-on widget key out of a sponsor page body.
@@ -450,7 +889,7 @@ fn widget_refs(body: &str, proxy: Option<&Proxy>) -> String {
     } else {
         return "auto".into();
     };
-    let Ok(response) = proxy::agent_for(proxy, Duration::from_secs(8), UA_MOBILE)
+    let Ok(response) = proxy::agent_for(proxy, Duration::from_secs(4), UA_MOBILE)
         .get(&url)
         .call()
     else {
@@ -481,7 +920,7 @@ fn widget_refs(body: &str, proxy: Option<&Proxy>) -> String {
 
 /// Fetch a candidate homepage and return `(final host, widget key)`.
 fn probe(domain: &str, proxy: Option<&Proxy>) -> Option<(String, String)> {
-    let agent = proxy::agent_for(proxy, Duration::from_secs(9), UA_MOBILE);
+    let agent = proxy::agent_for(proxy, Duration::from_secs(5), UA_MOBILE);
     let response = agent.get(&format!("https://{domain}/")).call().ok()?;
     let final_url = response.get_url().to_string();
     let mut body = String::new();
@@ -539,7 +978,12 @@ pub async fn discover(cdp: &Cdp, proxy: Option<Proxy>) -> Option<Campaign> {
                 .split_once('\u{1}')
                 .map(|(k, r)| (k.to_string(), r.to_string()))
                 .unwrap_or((packed, "auto".into()));
-            let updated = Campaign { sponsor: host, key, refs, ..hit.clone() };
+            let updated = Campaign {
+                sponsor: host,
+                key,
+                refs,
+                ..hit.clone()
+            };
             cache_put(campaign_id, &updated);
             return Some(updated);
         }
@@ -553,9 +997,43 @@ pub async fn discover(cdp: &Cdp, proxy: Option<Proxy>) -> Option<Campaign> {
         let images: Vec<String> = value
             .get("imgs")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
-        let lines = run_ocr(&images, proxy.as_ref());
+        let images_hash = hash_images(&images);
+        let cached_lines = if images.is_empty() {
+            None
+        } else {
+            ocr_cache_get(campaign_id, images_hash)
+        };
+        let lines = match cached_lines {
+            Some(lines) => {
+                debug!(target: "engine", campaign = %campaign_id, lines = lines.len(), "instruction OCR cache hit");
+                lines
+            }
+            None => {
+                // OCR shells out to Python/tesseract or waits on a remote
+                // socket; keep it off the async runtime thread so the API and
+                // other workers are not stalled for the whole read.
+                let ocr_images = images;
+                let ocr_proxy = proxy.clone();
+                let lines = tokio::task::spawn_blocking(move || {
+                    run_ocr(&ocr_images, ocr_proxy.as_ref())
+                })
+                .await
+                .unwrap_or_default();
+                // Empty stays uncached: the strips may be a transient 404 and
+                // the next alias should retry instead of inheriting nothing.
+                if !lines.is_empty() {
+                    ocr_cache_put(campaign_id, images_hash, &lines);
+                }
+                lines
+            }
+        };
         if lines.is_empty() {
             warn!(target: "engine", "instruction OCR returned nothing");
         }
@@ -577,7 +1055,11 @@ pub async fn discover(cdp: &Cdp, proxy: Option<Proxy>) -> Option<Campaign> {
         .map(|(k, r)| (k.to_string(), r.to_string()))
         .unwrap_or((packed, "auto".into()));
     let campaign = Campaign {
-        kind: if direct { "direct".into() } else { "search".into() },
+        kind: if direct {
+            "direct".into()
+        } else {
+            "search".into()
+        },
         sponsor,
         key,
         keyword,
@@ -616,5 +1098,140 @@ mod tests {
         let body = r#"<script src="//s1.what-on.com/widget/service-v2.js?key=GlY39k"></script>"#;
         assert_eq!(widget_key(body).as_deref(), Some("GlY39k"));
         assert_eq!(widget_key("<html>no widget</html>"), None);
+    }
+
+    fn temp_cache_path(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|delta| delta.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir()
+            .join(format!("l4m-ocr-{tag}-{}-{nanos}", std::process::id()))
+            .join("ocr-cache.json")
+    }
+
+    #[test]
+    fn ocr_cache_round_trip_and_eviction() {
+        let path = temp_cache_path("cache");
+        let mut entries = Vec::new();
+        for index in 0..=OCR_CACHE_LIMIT {
+            let lines = vec![format!("line {index}"), format!("domain{index}.com")];
+            ocr_cache_remember(&mut entries, &format!("camp{index}"), index as u64, &lines);
+        }
+        assert_eq!(entries.len(), OCR_CACHE_LIMIT);
+        assert!(ocr_cache_lookup(&entries, "camp0", 0).is_none());
+        assert_eq!(
+            ocr_cache_lookup(
+                &entries,
+                &format!("camp{OCR_CACHE_LIMIT}"),
+                OCR_CACHE_LIMIT as u64
+            )
+            .as_deref(),
+            Some(
+                &[
+                    format!("line {OCR_CACHE_LIMIT}"),
+                    format!("domain{OCR_CACHE_LIMIT}.com")
+                ][..]
+            )
+        );
+
+        ocr_cache_store_path(&path, &entries);
+        let loaded = ocr_cache_load_path(&path);
+        assert_eq!(loaded, entries);
+        assert_eq!(
+            ocr_cache_lookup(&loaded, "camp7", 7).as_deref(),
+            Some(&["line 7".to_string(), "domain7.com".to_string()][..])
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    fn serve_ocr_once(payload: &'static str) -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                let n = socket.read(&mut chunk).expect("read head");
+                assert!(n > 0, "client closed before headers");
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            let head = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
+            let length: usize = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse().ok())
+                .expect("content-length");
+            while buf.len() < header_end + length {
+                let n = socket.read(&mut chunk).expect("read body");
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
+            assert!(
+                body.contains("filename=\"instr-0.png\""),
+                "missing image field"
+            );
+            assert!(body.contains("name=\"language\""), "missing language field");
+            assert!(
+                body.contains("\r\n\r\nvie+eng\r\n"),
+                "language value missing"
+            );
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\
+                 Content-Length: {}\r\n\r\n{}",
+                payload.len(),
+                payload
+            );
+            socket.write_all(reply.as_bytes()).expect("write reply");
+        });
+        (port, server)
+    }
+
+    fn ocr_upload() -> Vec<ImagePayload> {
+        vec![ImagePayload {
+            name: "instr-0.png".into(),
+            data: b"\x89PNG\r\n\x1a\n".to_vec(),
+        }]
+    }
+
+    #[test]
+    fn remote_ocr_reads_nested_json_blocks() {
+        let payload = r#"[["alpha.com","beta"],["gamma.com"]]"#;
+        let (port, server) = serve_ocr_once(payload);
+        let url = format!("http://127.0.0.1:{port}/ocr");
+        let lines = remote_ocr(&url, &ocr_upload(), Some("vie+eng")).expect("remote lines");
+        server.join().expect("server");
+        assert_eq!(lines, vec!["alpha.com", "beta", "gamma.com"]);
+    }
+
+    #[test]
+    fn remote_ocr_reads_lines_object() {
+        let payload = r#"{"lines":["delta.com","epsilon.net"]}"#;
+        let (port, server) = serve_ocr_once(payload);
+        let url = format!("http://127.0.0.1:{port}/ocr");
+        let lines = remote_ocr(&url, &ocr_upload(), Some("vie+eng")).expect("remote lines");
+        server.join().expect("server");
+        assert_eq!(lines, vec!["delta.com", "epsilon.net"]);
+    }
+
+    #[test]
+    fn remote_ocr_reads_plain_text() {
+        let payload = "one.com\ntwo.net\n";
+        let (port, server) = serve_ocr_once(payload);
+        let url = format!("http://127.0.0.1:{port}/ocr");
+        let lines = remote_ocr(&url, &ocr_upload(), Some("vie+eng")).expect("remote lines");
+        server.join().expect("server");
+        assert_eq!(lines, vec!["one.com", "two.net"]);
     }
 }

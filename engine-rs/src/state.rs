@@ -249,9 +249,19 @@ impl Config {
             ),
             model_path: PathBuf::from(env_or("WHISPER_MODEL", "models/ggml-tiny.en.bin")),
             model_url: env_or("WHISPER_MODEL_URL", asr::DEFAULT_MODEL_URL),
-            asr_threads: env_num("ASR_THREADS", 2i32).max(1),
+            // Whisper tiny finishes a captcha clip in well under a second with
+            // one thread per available core, but two concurrent workers should
+            // not fight over the CPU. Cap at 4: more threads stop scaling.
+            asr_threads: env_num("ASR_THREADS", default_asr_threads(workers)).max(1),
         }
     }
+}
+
+fn default_asr_threads(workers: usize) -> i32 {
+    let cores = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(2);
+    (cores / workers.max(1)).clamp(1, 4) as i32
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

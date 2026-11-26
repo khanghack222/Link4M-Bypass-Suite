@@ -232,6 +232,12 @@ Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?ke
 | `CHROME_PROFILE` | `data/chrome-profile` | profile gốc; worker > 1 copy sang `-w<N>` |
 | `L4M_PYTHON` / `L4M_OCR` | `.venv/bin/python` / `tools/ocr.py` | sidecar OCR |
 | `L4M_TESSERACT` | `tesseract` | OCR fallback khi sidecar chết/thiếu |
+| `OCR_URL` | rỗng | OCR server ngoài (multipart) ưu tiên hơn sidecar và tesseract |
+| `OCR_TIMEOUT` | `30` | giây timeout OCR (probe 5 s, mỗi ảnh 6 s, widget refs 4 s) |
+| `OCR_LANGUAGE` | rỗng | ngôn ngữ tesseract (rỗng = mặc định; `L4M_TESSERACT_LANG` ưu tiên hơn) |
+| `L4M_OCR_CACHE` | `data/ocr-cache.json` | cache bền theo campaign id + hash ảnh (200 entry) |
+| `L4M_PREWARM` | `1` | worker giữ sẵn một Chrome boot khi idle; `0` tắt |
+| `CHROME_FLAGS` | rỗng | flag thêm vào lệnh launch Chrome |
 | `WHISPER_MODEL` | `models/ggml-tiny.en.bin` | model ASR local (bỏ qua khi có `ASR_URL`) |
 | `WHISPER_MODEL_URL` | HuggingFace tiny.en | nguồn tải khi thiếu model |
 | `ASR_THREADS` | `2` | thread whisper local |

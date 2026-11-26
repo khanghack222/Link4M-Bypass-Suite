@@ -53,6 +53,9 @@ enum Backend {
         url: String,
         language: String,
         timeout: Duration,
+        /// Keep-alive agent: an ASR host on the LAN or a HTTPS endpoint pays a
+        /// fresh TCP/TLS handshake on every clip otherwise.
+        agent: ureq::Agent,
     },
 }
 
@@ -106,6 +109,7 @@ impl Asr {
                 url,
                 language,
                 timeout,
+                agent: ureq::AgentBuilder::new().timeout(timeout).build(),
             },
         })
     }
@@ -129,7 +133,8 @@ impl Asr {
                 url,
                 language,
                 timeout,
-            } => transcribe_remote(url, language, *timeout, pcm_16k),
+                agent,
+            } => transcribe_remote(agent, url, language, *timeout, pcm_16k),
         }
     }
 }
@@ -141,6 +146,12 @@ fn transcribe_local(context: &WhisperContext, threads: i32, pcm_16k: &[f32]) -> 
     params.set_n_threads(threads);
     params.set_language(Some("en"));
     params.set_translate(false);
+    // A captcha clip is one short phrase. Carrying decoder context between
+    // clips and splitting the output into segments only adds work.
+    params.set_no_context(true);
+    params.set_single_segment(true);
+    params.set_suppress_blank(true);
+    params.set_temperature(0.0);
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
@@ -181,6 +192,7 @@ fn wav_bytes(pcm_16k: &[f32]) -> Vec<u8> {
 }
 
 fn transcribe_remote(
+    agent: &ureq::Agent,
     url: &str,
     language: &str,
     timeout: Duration,
@@ -212,7 +224,8 @@ fn transcribe_remote(
     }
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
-    let response = ureq::post(url)
+    let response = agent
+        .post(url)
         .timeout(timeout)
         .set(
             "Content-Type",

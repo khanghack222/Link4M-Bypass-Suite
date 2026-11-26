@@ -346,6 +346,9 @@ fn header_end(buf: &[u8]) -> Option<usize> {
 }
 
 async fn handle(mut client: TcpStream, proxy: Proxy) -> std::io::Result<()> {
+    // Captcha traffic is many small request/response pairs; Nagle adds up to
+    // 40 ms to each one behind a proxy hop.
+    let _ = client.set_nodelay(true);
     let head = read_head(&mut client).await?;
     let Some(end) = header_end(&head) else {
         return Ok(());
@@ -364,6 +367,7 @@ async fn handle(mut client: TcpStream, proxy: Proxy) -> std::io::Result<()> {
     }
 
     let mut upstream = TcpStream::connect((proxy.host.as_str(), proxy.port)).await?;
+    let _ = upstream.set_nodelay(true);
     let auth = proxy
         .authorization()
         .map(|value| format!("Proxy-Authorization: Basic {value}\r\n"))
@@ -542,6 +546,7 @@ async fn handle_socks(
     target: &str,
 ) -> std::io::Result<()> {
     let mut upstream = TcpStream::connect((proxy.host.as_str(), proxy.port)).await?;
+    let _ = upstream.set_nodelay(true);
     socks5_negotiate(&mut upstream, &proxy).await?;
 
     if method.eq_ignore_ascii_case("CONNECT") {

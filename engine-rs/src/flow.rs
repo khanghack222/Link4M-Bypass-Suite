@@ -8,7 +8,8 @@ use crate::asr::Asr;
 use crate::codes;
 use crate::instr;
 use crate::quest;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use crate::cdp::Cdp;
 use crate::proxy::Proxy;
 use base64::Engine;
@@ -38,6 +39,14 @@ impl std::error::Error for FlowError {}
 
 type FlowResult<T> = std::result::Result<T, FlowError>;
 
+/// Adaptive poll cadence: a freshly loaded page usually settles in tens of
+/// milliseconds, so start at 60 ms and back off to 400 ms. One flat interval
+/// either spins the CDP socket on a dead page or adds latency to a fast one.
+fn poll_delay(step: usize) -> Duration {
+    const STEPS: [u64; 5] = [60, 100, 150, 250, 400];
+    Duration::from_millis(STEPS[step.min(STEPS.len() - 1)])
+}
+
 const STATE_JS: &str = r#"(() => {
   const form = document.getElementById('main-form') || document.getElementById('main-form-2');
   const pw = form ? form.querySelector('input[name=password]') : null;
@@ -59,6 +68,26 @@ const TOKEN_JS: &str = r#"(() => {
   const values = Array.from(document.querySelectorAll('textarea[name=g-recaptcha-response]')).map(t => t.value || '');
   return values.sort((a, b) => b.length - a.length)[0] || '';
 })()"#;
+
+/// One round-trip for the token fast path: `len` is the length of the token
+/// owned by the campaign form (the only one Link4M accepts), `token` is the
+/// longest token on the page (the widget can solve in another form, and that
+/// value still gets injected into the campaign form later).
+const TOKEN_PROBE_JS: &str = r#"(() => {
+  const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
+  const own = form ? form.querySelector('textarea[name=g-recaptcha-response]') : null;
+  const values = Array.from(document.querySelectorAll('textarea[name=g-recaptcha-response]')).map(t => t.value || '');
+  const token = values.sort((a, b) => b.length - a.length)[0] || '';
+  return {len: own ? (own.value || '').length : 0, token: token};
+})()"#;
+
+/// Landing-page boot signals. The flow used to sleep a flat 2.2 s after the
+/// form appeared; polling these lets an already-armed page proceed at once.
+const BOOT_JS: &str = r#"(() => ({
+  complete: document.readyState === 'complete',
+  grecaptcha: typeof grecaptcha !== 'undefined',
+  anchor: [...document.querySelectorAll('iframe')].some(f => (f.src || '').includes('/anchor'))
+}))()"#;
 
 const ANCHOR_CLICK_JS: &str = r#"(() => {
   const el = document.getElementById('recaptcha-anchor');
@@ -83,7 +112,10 @@ const CHALLENGE_JS: &str = r#"(() => {
             document.getElementById('rc-audiochallenge-response-field'));
 })()"#;
 
-const AUDIO_FETCH_JS: &str = r#"(async () => {
+/// Fetch the challenge clip, decode it and resample to 16 kHz PCM in one page
+/// call. Previously the clip went page → Rust → page (twice, base64) before
+/// whisper saw it; one crossing is enough.
+const AUDIO_PCM_JS: &str = r#"(async () => {
   const el = document.querySelector('#audio-source') || document.querySelector('audio');
   let src = el ? (el.src || el.getAttribute('src') || '') : '';
   if (!src) {
@@ -94,11 +126,27 @@ const AUDIO_FETCH_JS: &str = r#"(async () => {
   const response = await fetch(src, {credentials: 'omit'});
   if (!response.ok) return 'ERR' + response.status;
   const bytes = new Uint8Array(await response.arrayBuffer());
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  let buffer;
+  try { buffer = await ctx.decodeAudioData(bytes.buffer); }
+  catch (e) { return ''; }
+  const channel = buffer.getChannelData(0);
+  const srcRate = buffer.sampleRate, dstRate = 16000;
+  const n = Math.floor(channel.length * dstRate / srcRate);
+  const out = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = i * srcRate / dstRate;
+    const i0 = Math.floor(x), i1 = Math.min(i0 + 1, channel.length - 1), f = x - i0;
+    const v = channel[i0] * (1 - f) + channel[i1] * f;
+    out[i] = Math.max(-1, Math.min(1, v)) * 32767;
   }
-  return btoa(binary);
+  if (ctx.close) ctx.close();
+  const raw = new Uint8Array(out.buffer);
+  let binaryOut = '';
+  for (let i = 0; i < raw.length; i += 0x8000) {
+    binaryOut += String.fromCharCode.apply(null, raw.subarray(i, i + 0x8000));
+  }
+  return btoa(binaryOut);
 })()"#;
 
 const AUDIO_ERROR_JS: &str = r#"(() => {
@@ -106,11 +154,28 @@ const AUDIO_ERROR_JS: &str = r#"(() => {
   return el ? (el.innerText || '').trim() : '';
 })()"#;
 
-const VERIFY_CLICK_JS: &str = r#"(() => {
-  const el = document.getElementById('recaptcha-verify-button');
+/// Fill the transcript and press verify in a single evaluation. The old path
+/// spent a 250 ms sleep between two round-trips.
+const AUDIO_FILL_VERIFY_JS: &str = r#"(() => {
+  const el = document.getElementById('audio-response');
   if (!el) return false;
-  el.click();
+  el.focus();
+  el.value = TEXT;
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+  el.dispatchEvent(new Event('change', {bubbles: true}));
+  const button = document.getElementById('recaptcha-verify-button');
+  if (button) button.click();
   return true;
+})()"#;
+
+/// Snapshot used to tell when the reload button has actually swapped the clip.
+const CLIP_STATE_JS: &str = r#"(() => {
+  const el = document.querySelector('#audio-source') || document.querySelector('audio');
+  const response = document.getElementById('audio-response');
+  return {
+    src: el ? (el.src || el.getAttribute('src') || '') : '',
+    value: response ? (response.value || '') : ''
+  };
 })()"#;
 
 const RELOAD_CLICK_JS: &str = r#"(() => {
@@ -126,16 +191,6 @@ const LINK_CLICK_JS: &str = r#"(() => {
   if ((el.className || '').includes('disabled')) return false;
   el.click();
   return true;
-})()"#;
-
-/// Token length inside the main campaign form. The page can host several
-/// reCAPTCHA widgets (main form, second form, report modal); only the token in
-/// the form that produced the challenge unlocks the link.
-const MAIN_TOKEN_JS: &str = r#"(() => {
-  const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
-  if (!form) return 0;
-  const t = form.querySelector('textarea[name=g-recaptcha-response]');
-  return t ? (t.value || '').length : 0;
 })()"#;
 
 const FINISH_STATE_JS: &str = r#"(() => {
@@ -194,6 +249,10 @@ pub struct Flow<'a> {
     port: u16,
     proxy: Option<Proxy>,
     deadline: Instant,
+    /// Isolated-world execution contexts keyed by frame id. Creating a world
+    /// costs a CDP round-trip on every anchor/challenge poll; the cache lives
+    /// until a top-level navigation destroys the worlds.
+    contexts: Mutex<HashMap<String, i64>>,
 }
 
 impl<'a> Flow<'a> {
@@ -214,10 +273,12 @@ impl<'a> Flow<'a> {
             port,
             proxy,
             deadline: Instant::now() + budget,
+            contexts: Mutex::new(HashMap::new()),
         }
     }
 
     pub async fn run(&mut self) -> FlowResult<String> {
+        let started = Instant::now();
         self.cdp
             .call("Page.enable", json!({}))
             .await
@@ -241,8 +302,7 @@ impl<'a> Flow<'a> {
             Ok(state) => state,
             Err(err) if self.remaining() > Duration::from_secs(60) => {
                 warn!(target: "engine", alias = %self.alias, "page not ready ({err}), renavigating once");
-                tokio::time::sleep(Duration::from_millis(1500)).await;
-                self.navigate(&url).await?;
+                self.navigate_and_settle(&url).await?;
                 self.wait_for_page().await?
             }
             Err(err) => return Err(err),
@@ -268,8 +328,9 @@ impl<'a> Flow<'a> {
                     }
                     tries += 1;
                     debug!(target: "engine", want = %want, got = %state.campaign, tries, "campaign mismatch, re-rolling");
-                    self.navigate(&url).await?;
-                    tokio::time::sleep(Duration::from_millis(1800)).await;
+                    // The document stamp wait replaces the fixed 1.8 s settle;
+                    // wait_for_page then handles however long the new page takes.
+                    self.navigate_and_settle(&url).await?;
                     state = self.wait_for_page().await?;
                 }
                 if !wanted.contains(&state.campaign.as_str()) {
@@ -284,14 +345,14 @@ impl<'a> Flow<'a> {
             // that has budget left.
             if self.remaining() > Duration::from_secs(60) {
                 warn!(target: "engine", alias = %self.alias, "page has no form, renavigating once");
-                tokio::time::sleep(Duration::from_millis(1200)).await;
-                self.navigate(&url).await?;
+                self.navigate_and_settle(&url).await?;
                 state = self.wait_for_page().await?;
             }
         }
         if !state.password && !state.captcha {
             return Err(FlowError::new("page", "no captcha or code form on page"));
         }
+        let page_mark = Instant::now();
         // `prepared` holds (campaign id, code) while the page wants a sponsor
         // code. A code that unlocks a destination is cached for the next alias
         // on the same campaign; a rejected one is dropped and re-harvested.
@@ -299,7 +360,11 @@ impl<'a> Flow<'a> {
         if let Some((_, code)) = &prepared {
             info!(target: "engine", alias = %self.alias, code = %code, "campaign code filled");
         }
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        // The site swaps the code form for the captcha once its handler sees the
+        // code. Poll for that transition instead of paying a flat 1.2 s; the
+        // widget is normally armed before the eval even returns.
+        self.await_widget_arm(Duration::from_millis(1200)).await;
+        let code_mark = Instant::now();
         info!(target: "engine", alias = %self.alias, "captcha step");
 
         let mut attempt = 0;
@@ -313,61 +378,78 @@ impl<'a> Flow<'a> {
             }
             if !self.click_anchor().await? {
                 warn!(target: "engine", "anchor not found");
-                tokio::time::sleep(Duration::from_millis(800)).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
                 continue;
             }
 
             // Race the token against the challenge panel: a checkbox that passes
-            // silently returns a token in a couple of seconds, while a challenge
-            // (audio/grid) opens in the same window. Waiting a fixed 20 s for a
-            // token that needs a challenge is where the old flow burned a minute.
+            // silently returns a token in a second or two, while a challenge
+            // (audio/grid) opens in the same window. The first 1.2 s belongs to
+            // the fast path: one eval, 80 ms cadence, no frame-tree walk. Only
+            // after that does a challenge frame get looked for, and its isolated
+            // world is cached across polls.
             let mut token: Option<String> = None;
             let watch = (Instant::now() + Duration::from_secs(10)).min(self.deadline);
+            let watch_start = Instant::now();
+            let mut probe_step = 0usize;
             while Instant::now() < watch && token.is_none() {
-                if let Ok(Value::Number(len)) = self.cdp.eval(None, MAIN_TOKEN_JS).await {
-                    if len.as_u64().unwrap_or(0) > 50 {
-                        if let Ok(Value::String(found)) = self.cdp.eval(None, TOKEN_JS).await {
-                            if found.len() > 50 {
-                                token = Some(found);
-                                break;
-                            }
-                        }
+                if let Ok(value) = self.cdp.eval(None, TOKEN_PROBE_JS).await {
+                    let len = value.get("len").and_then(Value::as_u64).unwrap_or(0);
+                    let found = value.get("token").and_then(Value::as_str).unwrap_or("");
+                    if len > 50 && found.len() > 50 {
+                        token = Some(found.to_string());
+                        break;
                     }
                 }
-                if let Some(frame) = self.challenge_frame().await? {
-                    debug!(target: "engine", frame = %frame.0, "challenge open");
-                    match self.solve_audio(&frame.0).await {
-                        Ok(found) => {
-                            if let Ok(Value::Number(len)) = self.cdp.eval(None, MAIN_TOKEN_JS).await {
-                                if len.as_u64().unwrap_or(0) > 50 {
-                                    token = Some(found);
-                                } else {
+                if watch_start.elapsed() >= Duration::from_millis(1200) {
+                    if let Some(frame) = self.challenge_frame().await? {
+                        debug!(target: "engine", frame = %frame.0, "challenge open");
+                        match self.solve_audio(&frame.0).await {
+                            Ok(found) => match self.campaign_token_ready().await {
+                                Some(true) => token = Some(found),
+                                Some(false) => {
                                     warn!(target: "engine", "token landed in a non-campaign widget, retrying");
                                     last_err = Some(FlowError::new(
                                         "audio",
                                         "solved widget was not the campaign form",
                                     ));
                                 }
-                            } else {
-                                token = Some(found);
+                                None => token = Some(found),
+                            },
+                            Err(err) => {
+                                warn!(target: "engine", "audio attempt failed: {err}");
+                                last_err = Some(err);
                             }
-                        }
-                        Err(err) => {
-                            warn!(target: "engine", "audio attempt failed: {err}");
-                            last_err = Some(err);
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                let delay = if watch_start.elapsed() < Duration::from_millis(1200) {
+                    Duration::from_millis(80)
+                } else {
+                    poll_delay(probe_step)
+                };
+                tokio::time::sleep(delay).await;
+                probe_step += 1;
             }
 
             let Some(token) = token else { continue };
             debug!(target: "engine", len = token.len(), "token ready");
+            let finish_mark = Instant::now();
             match self.finish(token).await {
                 Ok(destination) => {
                     if let Some((campaign, code)) = &prepared {
                         codes::put(campaign, code);
                     }
+                    info!(
+                        target: "engine",
+                        alias = %self.alias,
+                        total_ms = started.elapsed().as_millis() as u64,
+                        page_ms = page_mark.duration_since(started).as_millis() as u64,
+                        code_ms = code_mark.duration_since(page_mark).as_millis() as u64,
+                        captcha_ms = finish_mark.duration_since(code_mark).as_millis() as u64,
+                        finish_ms = finish_mark.elapsed().as_millis() as u64,
+                        "flow timing"
+                    );
                     return Ok(destination);
                 }
                 Err(err) => {
@@ -404,8 +486,9 @@ impl<'a> Flow<'a> {
                         if self.remaining() < Duration::from_secs(120) {
                             break;
                         }
-                        self.navigate(url).await?;
-                        tokio::time::sleep(Duration::from_millis(2500)).await;
+                        // Wait for the new document instead of a flat 2.5 s;
+                        // ensure_code below then polls for the form it needs.
+                        self.navigate_and_settle(url).await?;
                     }
                 }
                 Err(err) => return Err(err),
@@ -418,8 +501,7 @@ impl<'a> Flow<'a> {
             if self.remaining() < Duration::from_secs(75) {
                 break;
             }
-            self.navigate(url).await?;
-            tokio::time::sleep(Duration::from_millis(1800)).await;
+            self.navigate_and_settle(url).await?;
             let state = match self.wait_for_page().await {
                 Ok(state) => state,
                 Err(err) => {
@@ -540,6 +622,9 @@ impl<'a> Flow<'a> {
     }
 
     async fn navigate(&self, url: &str) -> FlowResult<()> {
+        // A top-level navigation destroys every isolated world. Drop the cache
+        // before the command so a stale context is never evaluated after it.
+        self.clear_contexts();
         self.cdp
             .call("Page.navigate", json!({"url": url}))
             .await
@@ -547,14 +632,71 @@ impl<'a> Flow<'a> {
         Ok(())
     }
 
+    /// Navigate and wait for the new document to replace the old one.
+    ///
+    /// `performance.timeOrigin` changes with every document; polling it is
+    /// cheaper and more reliable than a fixed settle sleep, because the old
+    /// page already reports `readyState === "complete"` while the navigation
+    /// is still in flight.
+    async fn navigate_and_settle(&self, url: &str) -> FlowResult<()> {
+        let before = self.document_time_origin().await;
+        self.navigate(url).await?;
+        self.await_document_swap(before).await;
+        Ok(())
+    }
+
+    async fn document_time_origin(&self) -> Option<f64> {
+        match self.cdp.eval(None, "performance.timeOrigin").await {
+            Ok(Value::Number(value)) => value.as_f64(),
+            _ => None,
+        }
+    }
+
+    async fn await_document_swap(&self, before: Option<f64>) {
+        let Some(before) = before else {
+            // No stamp to compare (e.g. the context is mid-navigation): keep a
+            // short settle so callers never evaluate the previous document.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            return;
+        };
+        // Commit normally lands in well under a second; 10 s is only a guard
+        // against a navigation that never happens, not a load wait.
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut step = 0usize;
+        while Instant::now() < until {
+            if let Ok(Value::Number(value)) = self.cdp.eval(None, "performance.timeOrigin").await {
+                if value.as_f64().map_or(false, |now| now != before) {
+                    return;
+                }
+            }
+            tokio::time::sleep(poll_delay(step)).await;
+            step += 1;
+        }
+    }
+
     async fn reload(&self) -> FlowResult<()> {
+        let before = self.document_time_origin().await;
+        self.clear_contexts();
         self.cdp
             .call("Page.reload", json!({}))
             .await
             .map_err(|e| FlowError::new("cdp", e.to_string()))?;
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+        self.await_document_swap(before).await;
         self.wait_ready().await?;
-        tokio::time::sleep(Duration::from_millis(2000)).await;
+        // The reload is only useful once the form/wrapper it exists for is
+        // back; poll for that instead of the old flat 2 s. Cap the wait so a
+        // broken reload does not eat the next attempt's budget.
+        let until = Instant::now() + Duration::from_secs(10).min(self.remaining());
+        let mut step = 0usize;
+        while Instant::now() < until {
+            if let Ok(value) = self.cdp.eval(None, STATE_JS).await {
+                if PageState::from_value(&value).is_ready() {
+                    break;
+                }
+            }
+            tokio::time::sleep(poll_delay(step)).await;
+            step += 1;
+        }
         Ok(())
     }
 
@@ -566,7 +708,7 @@ impl<'a> Flow<'a> {
                     return Ok(());
                 }
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::time::sleep(Duration::from_millis(80)).await;
         }
         Err(FlowError::new("page", "document never reached complete"))
     }
@@ -574,6 +716,7 @@ impl<'a> Flow<'a> {
     async fn wait_for_page(&self) -> FlowResult<PageState> {
         let until = Instant::now() + Duration::from_secs(35);
         let mut state = PageState::default();
+        let mut step = 0usize;
         while Instant::now() < until {
             if let Ok(value) = self.cdp.eval(None, STATE_JS).await {
                 state = PageState::from_value(&value);
@@ -582,21 +725,65 @@ impl<'a> Flow<'a> {
                 // ready sends the flow into a captcha whose token can never unlock
                 // anything; wait for the form that owns the widget.
                 if state.is_ready() {
-                    // Let the widget script finish booting before clicking.
-                    tokio::time::sleep(Duration::from_millis(2200)).await;
+                    self.await_widget_boot(state.password).await;
                     return Ok(state);
                 }
                 if state.title.to_lowercase().contains("just a moment") {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    step = 0;
                     continue;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(poll_delay(step)).await;
+            step += 1;
         }
         Err(FlowError::new(
             "page",
             format!("page did not expose a captcha (title: {})", state.title),
         ))
+    }
+
+    /// Wait up to ~2 s for the widget to arm, then proceed regardless. A page
+    /// that already has `complete` plus grecaptcha/anchor costs one poll; a
+    /// slow one no longer pays the old flat 2.2 s sleep.
+    async fn await_widget_boot(&self, password_only: bool) {
+        let until = Instant::now() + Duration::from_secs(2);
+        let mut step = 0usize;
+        while Instant::now() < until {
+            let armed = match self.cdp.eval(None, BOOT_JS).await {
+                Ok(value) => {
+                    let complete = value.get("complete").and_then(Value::as_bool).unwrap_or(false);
+                    let grecaptcha = value.get("grecaptcha").and_then(Value::as_bool).unwrap_or(false);
+                    let anchor = value.get("anchor").and_then(Value::as_bool).unwrap_or(false);
+                    complete && (password_only || grecaptcha || anchor)
+                }
+                Err(_) => false,
+            };
+            if armed {
+                return;
+            }
+            tokio::time::sleep(poll_delay(step)).await;
+            step += 1;
+        }
+    }
+
+    /// Wait until the captcha widget exists or the budget expires. Used after
+    /// the campaign code is filled: the page re-renders the code form into the
+    /// captcha step, and clicking before the widget arms just wastes a poll.
+    async fn await_widget_arm(&self, budget: Duration) {
+        let until = Instant::now() + budget.min(self.remaining());
+        let mut step = 0usize;
+        while Instant::now() < until {
+            if let Ok(value) = self.cdp.eval(None, BOOT_JS).await {
+                let grecaptcha = value.get("grecaptcha").and_then(Value::as_bool).unwrap_or(false);
+                let anchor = value.get("anchor").and_then(Value::as_bool).unwrap_or(false);
+                if grecaptcha || anchor {
+                    return;
+                }
+            }
+            tokio::time::sleep(poll_delay(step)).await;
+            step += 1;
+        }
     }
 
     async fn frames(&self) -> FlowResult<Vec<(String, String)>> {
@@ -623,6 +810,55 @@ impl<'a> Flow<'a> {
             .get("executionContextId")
             .and_then(Value::as_i64)
             .ok_or_else(|| FlowError::new("cdp", "isolated world returned no context"))
+    }
+
+    async fn context_cached(&self, frame_id: &str) -> FlowResult<i64> {
+        if let Ok(contexts) = self.contexts.lock() {
+            if let Some(context) = contexts.get(frame_id).copied() {
+                return Ok(context);
+            }
+        }
+        let context = self.context_for(frame_id).await?;
+        if let Ok(mut contexts) = self.contexts.lock() {
+            contexts.insert(frame_id.to_string(), context);
+        }
+        Ok(context)
+    }
+
+    fn forget_context(&self, frame_id: &str) {
+        if let Ok(mut contexts) = self.contexts.lock() {
+            contexts.remove(frame_id);
+        }
+    }
+
+    fn clear_contexts(&self) {
+        if let Ok(mut contexts) = self.contexts.lock() {
+            contexts.clear();
+        }
+    }
+
+    /// Evaluate in a frame's cached isolated world. If the world was destroyed
+    /// (an iframe navigation), recreate it once and retry the script.
+    async fn eval_frame(&self, frame_id: &str, context: &mut i64, script: &str) -> FlowResult<Value> {
+        match self.cdp.eval(Some(*context), script).await {
+            Ok(value) => Ok(value),
+            Err(_) => {
+                self.forget_context(frame_id);
+                *context = self.context_cached(frame_id).await?;
+                self.cdp
+                    .eval(Some(*context), script)
+                    .await
+                    .map_err(|e| FlowError::new("cdp", e.to_string()))
+            }
+        }
+    }
+
+    /// True when the campaign form itself owns a token.
+    async fn campaign_token_ready(&self) -> Option<bool> {
+        match self.cdp.eval(None, TOKEN_PROBE_JS).await {
+            Ok(value) => Some(value.get("len").and_then(Value::as_u64).unwrap_or(0) > 50),
+            Err(_) => None,
+        }
     }
 
     /// Name of the reCAPTCHA widget that owns a frame, or the containing form id.
@@ -697,8 +933,8 @@ impl<'a> Flow<'a> {
                 }
             }
             for (id, _) in ordered {
-                let Ok(context) = self.context_for(&id).await else { continue };
-                if let Ok(Value::Bool(true)) = self.cdp.eval(Some(context), ANCHOR_CLICK_JS).await {
+                let Ok(mut context) = self.context_cached(&id).await else { continue };
+                if let Ok(Value::Bool(true)) = self.eval_frame(&id, &mut context, ANCHOR_CLICK_JS).await {
                     debug!(target: "engine", frame = %id, "anchor clicked");
                     return Ok(true);
                 }
@@ -706,7 +942,7 @@ impl<'a> Flow<'a> {
             if self.mouse_click_anchor().await? {
                 return Ok(true);
             }
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Ok(false)
     }
@@ -765,8 +1001,8 @@ impl<'a> Flow<'a> {
             }
         }
         for (id, _) in ordered {
-            let Ok(context) = self.context_for(&id).await else { continue };
-            if let Ok(Value::Bool(true)) = self.cdp.eval(Some(context), CHALLENGE_JS).await {
+            let Ok(mut context) = self.context_cached(&id).await else { continue };
+            if let Ok(Value::Bool(true)) = self.eval_frame(&id, &mut context, CHALLENGE_JS).await {
                 return Ok(Some((id, context)));
             }
         }
@@ -777,34 +1013,41 @@ impl<'a> Flow<'a> {
     async fn wait_token(&self, budget: Duration) -> FlowResult<Option<String>> {
         let until = Instant::now() + budget;
         while Instant::now() < until {
-            if let Ok(Value::Number(len)) = self.cdp.eval(None, MAIN_TOKEN_JS).await {
-                if len.as_u64().unwrap_or(0) > 50 {
-                    if let Ok(Value::String(token)) = self.cdp.eval(None, TOKEN_JS).await {
-                        if token.len() > 50 {
-                            return Ok(Some(token));
-                        }
-                    }
+            if let Ok(value) = self.cdp.eval(None, TOKEN_PROBE_JS).await {
+                let len = value.get("len").and_then(Value::as_u64).unwrap_or(0);
+                let token = value.get("token").and_then(Value::as_str).unwrap_or("");
+                if len > 50 && token.len() > 50 {
+                    return Ok(Some(token.to_string()));
                 }
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Ok(None)
     }
 
     async fn solve_audio(&mut self, frame_id: &str) -> FlowResult<String> {
-        let mut context = self.context_for(frame_id).await?;
-        let mut audio_context: Option<i64> = None;
-        for attempt in 1..=3 {
-            match self.cdp.eval(Some(context), AUDIO_BUTTON_JS).await {
+        let mut context = self.context_cached(frame_id).await?;
+        let mut audio: Option<(String, i64)> = None;
+        // Two presses are enough. The old three-press loop spent 18 s when the
+        // challenge was slow to render, and re-pressing can reset whatever the
+        // panel already started.
+        for attempt in 1..=2 {
+            match self.eval_frame(frame_id, &mut context, AUDIO_BUTTON_JS).await {
                 Ok(Value::Bool(true)) => debug!(target: "engine", attempt, "audio button clicked"),
                 _ => debug!(target: "engine", attempt, "audio button missing"),
             }
-            if let Some(found) = self.wait_audio_frame_for(Duration::from_secs(6)).await? {
-                audio_context = Some(found.1);
+            let wait = if attempt == 1 {
+                Duration::from_secs(7)
+            } else {
+                Duration::from_secs(4)
+            };
+            if let Some(found) = self.wait_audio_frame_for(wait).await? {
+                audio = Some(found);
                 break;
             }
-            if let Ok(Value::String(text)) =
-                self.cdp.eval(Some(context), "document.body ? document.body.innerText : ''").await
+            if let Ok(Value::String(text)) = self
+                .eval_frame(frame_id, &mut context, "document.body ? document.body.innerText : ''")
+                .await
             {
                 debug!(target: "engine", attempt, text = %text.chars().take(180).collect::<String>(), "challenge text");
             }
@@ -816,7 +1059,7 @@ impl<'a> Flow<'a> {
                 debug!(target: "engine", attempt, ?urls, "frames");
             }
         }
-        context = audio_context
+        let (audio_frame_id, mut context) = audio
             .ok_or_else(|| FlowError::new("audio", "audio challenge never appeared"))?;
 
         for round in 1..=3 {
@@ -824,20 +1067,17 @@ impl<'a> Flow<'a> {
                 return Err(FlowError::new("captcha", "budget exhausted in audio"));
             }
             let blob = self
-                .cdp
-                .eval(Some(context), AUDIO_FETCH_JS)
-                .await
-                .map_err(|e| FlowError::new("audio", e.to_string()))?;
+                .eval_frame(&audio_frame_id, &mut context, AUDIO_PCM_JS)
+                .await?;
             let encoded = blob.as_str().unwrap_or("");
             if encoded.is_empty() || encoded.starts_with("ERR") {
                 return Err(FlowError::new("audio", format!("no clip ({encoded})")));
             }
-            let mp3 = base64::engine::general_purpose::STANDARD
+            let raw = base64::engine::general_purpose::STANDARD
                 .decode(encoded)
-                .map_err(|e| FlowError::new("audio", format!("bad clip base64: {e}")))?;
-            debug!(target: "engine", round, bytes = mp3.len(), "clip fetched");
-
-            let pcm = self.decode_pcm(encoded).await?;
+                .map_err(|e| FlowError::new("audio", format!("bad pcm base64: {e}")))?;
+            debug!(target: "engine", round, bytes = raw.len(), "clip decoded");
+            let pcm = crate::asr::pcm16_to_f32(&raw);
             if pcm.is_empty() {
                 return Err(FlowError::new("audio", "clip could not be decoded"));
             }
@@ -849,26 +1089,16 @@ impl<'a> Flow<'a> {
             let text = text.trim().to_string();
             if text.is_empty() {
                 warn!(target: "engine", "empty transcript, next clip");
-                self.next_clip(context).await?;
+                self.next_clip(&audio_frame_id, &mut context).await?;
                 continue;
             }
             debug!(target: "engine", %text, "transcript");
 
-            let fill = format!(
-                r#"(() => {{
-                  const el = document.getElementById('audio-response');
-                  if (!el) return false;
-                  el.focus();
-                  el.value = {};
-                  el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                  el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                  return true;
-                }})()"#,
-                serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".into())
-            );
-            let _ = self.cdp.eval(Some(context), &fill).await;
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            let _ = self.cdp.eval(Some(context), VERIFY_CLICK_JS).await;
+            // Fill and verify in one eval; the old path paid a 250 ms sleep
+            // plus a second round-trip for the same two DOM calls.
+            let _ = self
+                .eval_frame(&audio_frame_id, &mut context, &audio_fill_verify_js(&text))
+                .await;
 
             let until = Instant::now() + Duration::from_secs(30);
             while Instant::now() < until {
@@ -878,7 +1108,10 @@ impl<'a> Flow<'a> {
                         return Ok(token);
                     }
                 }
-                if let Ok(Value::String(err)) = self.cdp.eval(Some(context), AUDIO_ERROR_JS).await {
+                if let Ok(Value::String(err)) = self
+                    .eval_frame(&audio_frame_id, &mut context, AUDIO_ERROR_JS)
+                    .await
+                {
                     let low = err.to_lowercase();
                     if !low.is_empty() {
                         if low.contains("try again later") || low.contains("automated") {
@@ -892,10 +1125,10 @@ impl<'a> Flow<'a> {
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(400)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             if round < 3 {
-                self.next_clip(context).await?;
+                self.next_clip(&audio_frame_id, &mut context).await?;
             }
         }
         Err(FlowError::new("audio", "three clips failed"))
@@ -908,63 +1141,43 @@ impl<'a> Flow<'a> {
                 if !url.contains("bframe") {
                     continue;
                 }
-                let context = self.context_for(&id).await?;
-                if let Ok(Value::Bool(true)) = self.cdp.eval(Some(context), AUDIO_READY_JS).await {
+                let Ok(mut context) = self.context_cached(&id).await else { continue };
+                if let Ok(Value::Bool(true)) =
+                    self.eval_frame(&id, &mut context, AUDIO_READY_JS).await
+                {
                     return Ok(Some((id, context)));
                 }
             }
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Ok(None)
     }
 
-    async fn decode_pcm(&self, mp3_base64: &str) -> FlowResult<Vec<f32>> {
-        let script = format!(
-            r#"(async () => {{
-              const binary = atob({b64});
-              const bytes = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-              const ctx = new (window.AudioContext || window.webkitAudioContext)();
-              let buffer;
-              try {{ buffer = await ctx.decodeAudioData(bytes.buffer); }}
-              catch (e) {{ return ''; }}
-              const channel = buffer.getChannelData(0);
-              const srcRate = buffer.sampleRate, dstRate = 16000;
-              const n = Math.floor(channel.length * dstRate / srcRate);
-              const out = new Int16Array(n);
-              for (let i = 0; i < n; i++) {{
-                const x = i * srcRate / dstRate;
-                const i0 = Math.floor(x), i1 = Math.min(i0 + 1, channel.length - 1), f = x - i0;
-                const v = channel[i0] * (1 - f) + channel[i1] * f;
-                out[i] = Math.max(-1, Math.min(1, v)) * 32767;
-              }}
-              const raw = new Uint8Array(out.buffer);
-              let binaryOut = '';
-              for (let i = 0; i < raw.length; i += 0x8000) {{
-                binaryOut += String.fromCharCode.apply(null, raw.subarray(i, i + 0x8000));
-              }}
-              return btoa(binaryOut);
-            }})()"#,
-            b64 = serde_json::to_string(mp3_base64).unwrap_or_else(|_| "\"\"".into())
-        );
-        let value = self
-            .cdp
-            .eval(None, &script)
+    /// Click reload and wait for the next clip instead of a flat 1.5 s: a new
+    /// `audio` src or a reset response field is the signal that it is ready.
+    async fn next_clip(&self, frame_id: &str, context: &mut i64) -> FlowResult<()> {
+        let before = self
+            .eval_frame(frame_id, context, CLIP_STATE_JS)
             .await
-            .map_err(|e| FlowError::new("audio", e.to_string()))?;
-        let encoded = value.as_str().unwrap_or("");
-        if encoded.is_empty() {
-            return Ok(Vec::new());
+            .unwrap_or(Value::Null);
+        let before_src = before.get("src").and_then(Value::as_str).unwrap_or("").to_string();
+        let before_value = before.get("value").and_then(Value::as_str).unwrap_or("").to_string();
+        let _ = self.eval_frame(frame_id, context, RELOAD_CLICK_JS).await;
+        let until = Instant::now() + Duration::from_millis(1500);
+        let mut step = 0usize;
+        while Instant::now() < until {
+            if let Ok(snapshot) = self.eval_frame(frame_id, context, CLIP_STATE_JS).await {
+                let src = snapshot.get("src").and_then(Value::as_str).unwrap_or("");
+                let value = snapshot.get("value").and_then(Value::as_str).unwrap_or("");
+                let src_changed = !before_src.is_empty() && src != before_src;
+                let value_changed = !before_value.is_empty() && value != before_value;
+                if src_changed || value_changed {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(poll_delay(step)).await;
+            step += 1;
         }
-        let raw = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|e| FlowError::new("audio", format!("pcm base64: {e}")))?;
-        Ok(crate::asr::pcm16_to_f32(&raw))
-    }
-
-    async fn next_clip(&self, context: i64) -> FlowResult<()> {
-        let _ = self.cdp.eval(Some(context), RELOAD_CLICK_JS).await;
-        tokio::time::sleep(Duration::from_millis(1500)).await;
         Ok(())
     }
 
@@ -976,22 +1189,17 @@ impl<'a> Flow<'a> {
         let mut injected = false;
         let mut last_state = FinishState::default();
         let mut last_log = Instant::now();
-        let mut last_direct = Instant::now();
+        let mut last_direct: Option<Instant> = None;
 
         while Instant::now() < until {
-            if let Ok(history) = self.cdp.call("Page.getNavigationHistory", json!({})).await {
-                if let Some(url) = history_url(&history) {
-                    if url.starts_with("http") && !is_link4m(&url) {
-                        return Ok(url);
-                    }
-                }
-            }
-
+            // `state.url` comes from `location.href`, so it already reflects a
+            // navigation; the extra Page.getNavigationHistory round-trip every
+            // loop was pure latency.
             let state = match self.cdp.eval(None, FINISH_STATE_JS).await {
                 Ok(value) => FinishState::from_value(&value),
                 Err(err) => {
                     debug!(target: "engine", "finish state read failed: {err}");
-                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
                 }
             };
@@ -1028,10 +1236,12 @@ impl<'a> Flow<'a> {
             if state.token > 50
                 && state.href.is_empty()
                 && direct_tries < 3
-                && Instant::now().duration_since(last_direct) >= Duration::from_secs(5)
+                && last_direct.map_or(true, |at| {
+                    Instant::now().duration_since(at) >= Duration::from_millis(1500)
+                })
             {
                 direct_tries += 1;
-                last_direct = Instant::now();
+                last_direct = Some(Instant::now());
                 last_log = Instant::now();
                 match self.post_link_info().await {
                     Ok(Some(destination)) => return Ok(destination),
@@ -1054,7 +1264,7 @@ impl<'a> Flow<'a> {
                     "finish poll"
                 );
             }
-            tokio::time::sleep(Duration::from_millis(350)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         Err(FlowError::new(
@@ -1158,11 +1368,12 @@ fn inject_token_js(token: &str) -> String {
     )
 }
 
-fn history_url(history: &Value) -> Option<String> {
-    let index = history.get("currentIndex").and_then(Value::as_i64)?;
-    let entries = history.get("entries").and_then(Value::as_array)?;
-    let entry = entries.get(index as usize)?;
-    entry.get("url").and_then(Value::as_str).map(str::to_string)
+/// Fill the transcript and press verify in one round-trip.
+fn audio_fill_verify_js(text: &str) -> String {
+    AUDIO_FILL_VERIFY_JS.replace(
+        "TEXT",
+        &serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into()),
+    )
 }
 
 #[derive(Default)]
@@ -1290,6 +1501,23 @@ mod tests {
     fn destination_filter() {
         assert!(is_link4m("https://link4m.net/go/x"));
         assert!(!is_link4m("https://dash.nvnmc.cloud/earn/callback/abc"));
+    }
+
+    #[test]
+    fn poll_cadence_starts_fast_and_caps() {
+        assert_eq!(poll_delay(0), Duration::from_millis(60));
+        assert_eq!(poll_delay(2), Duration::from_millis(150));
+        assert_eq!(poll_delay(4), Duration::from_millis(400));
+        assert_eq!(poll_delay(99), Duration::from_millis(400));
+    }
+
+    #[test]
+    fn audio_fill_script_is_single_eval() {
+        let script = audio_fill_verify_js("hello \"world\"");
+        assert!(script.contains("audio-response"));
+        assert!(script.contains("recaptcha-verify-button"));
+        assert!(script.contains("\"hello \\\"world\\\"\""));
+        assert!(!script.contains("TEXT"));
     }
 
     #[test]
