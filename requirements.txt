@@ -7,3 +7,4 @@ rapidocr_onnxruntime>=1.2.3
 onnxruntime>=1.16.0
 ddddocr>=1.5.0
 patchright>=1.62.0
+doescap>=1.0.2
