@@ -192,6 +192,7 @@ Auth: nếu đặt `API_KEY`, gửi `x-api-key: <key>` hoặc `?key=`.
 | `L4M_TESSERACT` | `tesseract` | OCR fallback khi thiếu RapidOCR sidecar |
 | `OCR_URL` | rỗng | OCR server ngoài (multipart) thay sidecar/tesseract |
 | `OCR_TIMEOUT` | `30` | giây timeout OCR (probe 5 s / ảnh 6 s) |
+| `L4M_OCR_SERVE` / `OCR_SERVE_TIMEOUT` | `1` / `90` | giữ RapidOCR thường trú, nạp model một lần |
 | `OCR_LANGUAGE` | rỗng | ngôn ngữ tesseract (rỗng = mặc định; `L4M_TESSERACT_LANG` ưu tiên hơn) |
 | `L4M_OCR_CACHE` | `data/ocr-cache.json` | cache kết quả OCR theo campaign + hash ảnh |
 | `L4M_PREWARM` | `1` | giữ sẵn một Chrome boot khi worker idle; `0` tắt |

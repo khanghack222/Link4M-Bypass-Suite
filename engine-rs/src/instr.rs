@@ -274,7 +274,14 @@ fn hash_images(images: &[String]) -> u64 {
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET;
     for source in images {
-        for byte in source.as_bytes() {
+        // Signed image URLs change their query string on every page load, so
+        // hashing the whole URL made the OCR cache miss on every reload. The
+        // path is stable for a given instruction set.
+        let stable = source
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(source);
+        for byte in stable.as_bytes() {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(PRIME);
         }
@@ -686,6 +693,137 @@ fn push_json_lines(items: &[Value], out: &mut Vec<String>) {
     }
 }
 
+/// Long-lived RapidOCR process. Loading the ONNX models costs more than the
+/// recognition itself, so a fresh interpreter per campaign is pure latency.
+/// Requests are one JSON line in, one JSON line out; the reader thread owns
+/// stdout and forwards each response over a channel so the caller can apply a
+/// timeout without desynchronising the stream.
+struct OcrSidecar {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    rx: std::sync::mpsc::Receiver<String>,
+}
+
+static OCR_SIDECAR: Mutex<Option<OcrSidecar>> = Mutex::new(None);
+
+fn sidecar_enabled() -> bool {
+    !matches!(std::env::var("L4M_OCR_SERVE"), Ok(value) if value.trim() == "0")
+}
+
+fn sidecar_timeout() -> Duration {
+    let secs = std::env::var("OCR_SERVE_TIMEOUT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(90)
+        .clamp(10, 300);
+    Duration::from_secs(secs)
+}
+
+fn spawn_sidecar() -> Option<OcrSidecar> {
+    let mut child = std::process::Command::new(ocr_binary())
+        .arg(ocr_script())
+        .arg("--serve")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdin = child.stdin.take()?;
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    Some(OcrSidecar { child, stdin, rx })
+}
+
+/// Serve one OCR request through the persistent sidecar. Returns `None` when
+/// the sidecar is disabled, cannot start, or times out (the caller then falls
+/// back to the one-shot path, which also covers the tesseract reader).
+fn sidecar_ocr(files: &[PathBuf]) -> Option<Vec<String>> {
+    use std::io::Write;
+    if files.is_empty() || !sidecar_enabled() {
+        return None;
+    }
+    let mut guard = OCR_SIDECAR.lock().ok()?;
+    let stale = match guard.as_mut() {
+        None => true,
+        Some(sidecar) => !matches!(sidecar.child.try_wait(), Ok(None)),
+    };
+    if stale {
+        *guard = spawn_sidecar();
+    }
+    let sidecar = guard.as_mut()?;
+    let request = serde_json::json!({
+        "files": files
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>(),
+    });
+    let mut line = request.to_string();
+    line.push('\n');
+    if sidecar.stdin.write_all(line.as_bytes()).is_err() || sidecar.stdin.flush().is_err() {
+        *guard = None;
+        return None;
+    }
+    let reply = match sidecar.rx.recv_timeout(sidecar_timeout()) {
+        Ok(reply) => reply,
+        Err(_) => {
+            warn!(target: "engine", "ocr sidecar timed out, restarting it");
+            if let Some(mut sidecar) = guard.take() {
+                let _ = sidecar.child.kill();
+                let _ = sidecar.child.wait();
+            }
+            return None;
+        }
+    };
+    let parsed: Value = serde_json::from_str(&reply).ok()?;
+    if let Some(ms) = parsed.get("ms").and_then(Value::as_array) {
+        let timings: Vec<u64> = ms.iter().filter_map(Value::as_u64).collect();
+        debug!(target: "engine", per_image_ms = ?timings, "ocr sidecar timings");
+    }
+    let mut lines = Vec::new();
+    for block in parsed.get("blocks")?.as_array()? {
+        for item in block.as_array()? {
+            if let Some(text) = item.as_str() {
+                if !text.trim().is_empty() {
+                    lines.push(text.trim().to_string());
+                }
+            }
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(lines)
+}
+
+/// Load the RapidOCR models before the first campaign needs them. The sidecar
+/// costs ~145 MB resident, but it removes the cold model load (about 3 s) from
+/// campaign discovery, which runs on every new campaign.
+pub fn prewarm() {
+    if !sidecar_enabled() || ocr_url().is_some() {
+        return;
+    }
+    std::thread::spawn(|| {
+        let Ok(mut guard) = OCR_SIDECAR.lock() else {
+            return;
+        };
+        if guard.is_none() {
+            *guard = spawn_sidecar();
+            if guard.is_some() {
+                debug!(target: "engine", "ocr sidecar prewarmed");
+            }
+        }
+    });
+}
+
 fn run_ocr(images: &[String], proxy: Option<&Proxy>) -> Vec<String> {
     let payloads = image_payloads(images, proxy);
     if payloads.is_empty() {
@@ -706,6 +844,12 @@ fn run_ocr(images: &[String], proxy: Option<&Proxy>) -> Vec<String> {
     let files = spill_payloads(&payloads);
     if files.is_empty() {
         return Vec::new();
+    }
+    // Warm sidecar first: one model load per engine process instead of one per
+    // campaign. Empty output falls through to the one-shot readers below.
+    if let Some(lines) = sidecar_ocr(&files) {
+        debug!(target: "engine", lines = lines.len(), "ocr sidecar");
+        return lines;
     }
     // The Python sidecar is the best reader, but it is optional. Timeout is
     // enforced in-process so Windows does not need GNU `timeout`, and a

@@ -87,6 +87,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    l4m_engine::instr::prewarm();
     let asr = Arc::new(asr);
     if let Some(target) = once {
         return run_once(cfg, asr, &target).await;

@@ -55,6 +55,10 @@ cd engine-rs
 
 Binary: `target/release/l4m-engine`.
 
+Vòng lặp phát triển: `cargo build --profile release-fast` (cùng opt-level 3,
+bỏ LTO) — binary `target/release-fast/l4m-engine`, build nhanh hơn nhiều lần;
+chỉ dùng `--release` cho bản phát hành.
+
 `build.sh` bật `WHISPER_DONT_GENERATE_BINDINGS=1` và tự tìm `cmake`. Lý do:
 `whisper-rs-sys` mặc định chạy bindgen, cần `libclang.so` — box slim thường
 không có và build chết ở `Unable to find libclang`. Bindings đóng sẵn trong
@@ -235,6 +239,8 @@ Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?ke
 | `OCR_URL` | rỗng | OCR server ngoài (multipart) ưu tiên hơn sidecar và tesseract |
 | `OCR_TIMEOUT` | `30` | giây timeout OCR (probe 5 s, mỗi ảnh 6 s, widget refs 4 s) |
 | `OCR_LANGUAGE` | rỗng | ngôn ngữ tesseract (rỗng = mặc định; `L4M_TESSERACT_LANG` ưu tiên hơn) |
+| `L4M_OCR_SERVE` | `1` | giữ tiến trình RapidOCR thường trú (nạp model một lần); `0` = tắt |
+| `OCR_SERVE_TIMEOUT` | `90` | giây chờ một request OCR qua sidecar thường trú (10–300) |
 | `L4M_OCR_CACHE` | `data/ocr-cache.json` | cache bền theo campaign id + hash ảnh (200 entry) |
 | `L4M_PREWARM` | `1` | worker giữ sẵn một Chrome boot khi idle; `0` tắt |
 | `CHROME_FLAGS` | rỗng | flag thêm vào lệnh launch Chrome |
