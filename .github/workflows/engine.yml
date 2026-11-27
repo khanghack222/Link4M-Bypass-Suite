@@ -1,0 +1,71 @@
+name: engine
+
+on:
+  push:
+    paths:
+      - "engine-rs/**"
+      - ".github/workflows/engine.yml"
+  pull_request:
+    paths:
+      - "engine-rs/**"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: engine-rs
+
+jobs:
+  linux:
+    name: linux (no local asr)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine-rs
+      - name: build
+        run: cargo build --release --no-default-features
+      - name: test
+        run: cargo test --no-default-features
+
+  windows:
+    name: windows (no local asr)
+    runs-on: windows-latest
+    env:
+      ASR_URL: http://127.0.0.1:8080/inference
+      L4M_HEADLESS: "1"
+      RUST_LOG: engine=info
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine-rs
+      - name: build
+        run: cargo build --release --no-default-features
+      - name: locate chrome
+        shell: pwsh
+        run: |
+          $paths = @(
+            "C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+          )
+          $chrome = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $chrome) { throw "chrome.exe not found on the runner" }
+          "CHROME_BIN=$chrome" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "chrome: $chrome"
+      - name: smoke check
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ..\artifacts | Out-Null
+          & .\target\release\l4m-engine.exe --check *>&1 |
+            Tee-Object -FilePath ..\artifacts\check-windows.log
+          if ($LASTEXITCODE -ne 0) { throw "check failed with $LASTEXITCODE" }
+      - name: upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-windows
+          path: artifacts/check-windows.log
+          if-no-files-found: warn
