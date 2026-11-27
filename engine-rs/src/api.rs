@@ -37,6 +37,10 @@ pub struct BypassReq {
     pub timeout: Option<u64>,
     #[serde(default)]
     pub code: Option<String>,
+    /// Skip the destination cache and force a real browser solve. A batch run
+    /// that only ever answered from cache proved nothing about the egress IP.
+    #[serde(default)]
+    pub fresh: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +52,8 @@ pub struct BypassQuery {
     pub timeout: Option<u64>,
     #[serde(default)]
     pub key: Option<String>,
+    #[serde(default, deserialize_with = "lenient_wait")]
+    pub fresh: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +63,8 @@ pub struct BatchReq {
     pub wait: Option<bool>,
     #[serde(default)]
     pub timeout: Option<u64>,
+    #[serde(default)]
+    pub fresh: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +157,7 @@ async fn resolve(
     wait: bool,
     timeout: Duration,
     code: Option<String>,
+    fresh: bool,
 ) -> Result<Value, ApiError> {
     let started = Instant::now();
     let url = providers::normalize_url(&raw_url);
@@ -198,53 +207,57 @@ async fn resolve(
     let key = format!("{provider}:{}", alias.to_lowercase());
 
     // 3) Cache.
-    if let Some(destination) = state.inner.cache_get(&key).await {
-        let track_id = state.inner.link_begin(&url, Some(provider)).await;
-        state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
-        state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
-        state.inner.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-        state
-            .inner
-            .link_finish(
-                &track_id,
-                "success",
-                Some(destination.clone()),
-                None,
-                elapsed_ms(started),
-                true,
-            )
-            .await;
-        let mut response = envelope("success", &url, Some(provider));
-        response["destination_url"] = json!(destination);
-        response["cached"] = json!(true);
-        response["elapsed_ms"] = json!(elapsed_ms(started));
-        return Ok(response);
+    if !fresh {
+        if let Some(destination) = state.inner.cache_get(&key).await {
+            let track_id = state.inner.link_begin(&url, Some(provider)).await;
+            state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
+            state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
+            state.inner.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+            state
+                .inner
+                .link_finish(
+                    &track_id,
+                    "success",
+                    Some(destination.clone()),
+                    None,
+                    elapsed_ms(started),
+                    true,
+                )
+                .await;
+            let mut response = envelope("success", &url, Some(provider));
+            response["destination_url"] = json!(destination);
+            response["cached"] = json!(true);
+            response["elapsed_ms"] = json!(elapsed_ms(started));
+            return Ok(response);
+        }
     }
 
     // 4) Single-flight per key: a burst on one alias runs one browser job.
     let key_lock = state.inner.key_lock(&key).await;
     let _guard = key_lock.lock().await;
-    if let Some(destination) = state.inner.cache_get(&key).await {
-        let track_id = state.inner.link_begin(&url, Some(provider)).await;
-        state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
-        state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
-        state.inner.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-        state
-            .inner
-            .link_finish(
-                &track_id,
-                "success",
-                Some(destination.clone()),
-                None,
-                elapsed_ms(started),
-                true,
-            )
-            .await;
-        let mut response = envelope("success", &url, Some(provider));
-        response["destination_url"] = json!(destination);
-        response["cached"] = json!(true);
-        response["elapsed_ms"] = json!(elapsed_ms(started));
-        return Ok(response);
+    if !fresh {
+        if let Some(destination) = state.inner.cache_get(&key).await {
+            let track_id = state.inner.link_begin(&url, Some(provider)).await;
+            state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
+            state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
+            state.inner.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+            state
+                .inner
+                .link_finish(
+                    &track_id,
+                    "success",
+                    Some(destination.clone()),
+                    None,
+                    elapsed_ms(started),
+                    true,
+                )
+                .await;
+            let mut response = envelope("success", &url, Some(provider));
+            response["destination_url"] = json!(destination);
+            response["cached"] = json!(true);
+            response["elapsed_ms"] = json!(elapsed_ms(started));
+            return Ok(response);
+        }
     }
 
     // 5) Queue.
@@ -349,6 +362,7 @@ async fn bypass_post(
         req.wait.unwrap_or(true),
         clamp_timeout(req.timeout),
         req.code,
+        req.fresh.unwrap_or(false),
     )
     .await?;
     Ok(Json(result))
@@ -366,6 +380,7 @@ async fn bypass_get(
         query.wait.unwrap_or(true),
         clamp_timeout(query.timeout),
         None,
+        query.fresh.unwrap_or(false),
     )
     .await?;
     Ok(Json(result))
@@ -395,11 +410,12 @@ async fn batch(
     }
     let wait = req.wait.unwrap_or(true);
     let timeout = clamp_timeout(req.timeout);
+    let fresh = req.fresh.unwrap_or(false);
     let concurrency = state.inner.cfg.batch_concurrency;
     let results: Vec<Value> = stream::iter(req.urls.into_iter().map(|url| {
         let state = state.clone();
         async move {
-            match resolve(state, url.clone(), wait, timeout, None).await {
+            match resolve(state, url.clone(), wait, timeout, None, fresh).await {
                 Ok(value) => value,
                 Err(error) => json!({
                     "status": "error",

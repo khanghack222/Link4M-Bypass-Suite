@@ -6,7 +6,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(windows)]
@@ -267,6 +267,22 @@ pub fn sweep(roots: &[PathBuf]) {
     }
 }
 
+/// Port plus browser websocket path from `<profile>/DevToolsActivePort`.
+///
+/// Chrome writes the two lines separately, so a read can catch the file
+/// half-written; anything without both fields is "not ready yet", never an
+/// error.
+fn read_active_port(path: &Path) -> Option<(u16, String)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    let port: u16 = lines.next()?.trim().parse().ok()?;
+    let target = lines.next()?.trim();
+    if !target.starts_with('/') {
+        return None;
+    }
+    Some((port, target.to_string()))
+}
+
 impl ChromeProc {
     pub fn launch(
         binary: &str,
@@ -362,6 +378,11 @@ impl ChromeProc {
             command.creation_flags(0x0000_0200);
         }
 
+        // A file left by a previous run in a reused profile names a dead
+        // port; Chrome rewrites it within the first second of boot.
+        let port_file = profile.join("DevToolsActivePort");
+        let _ = std::fs::remove_file(&port_file);
+
         let mut child = command.spawn().context("spawn chrome")?;
         let stderr = child.stderr.take().context("chrome stderr")?;
         let (tx, rx) = mpsc::channel::<Option<String>>();
@@ -383,10 +404,29 @@ impl ChromeProc {
             }
         });
 
-        let ws_url = match rx.recv_timeout(Duration::from_secs(30)) {
-            Ok(Some(url)) => url,
-            Ok(None) => return Err(anyhow!("chrome exited before announcing CDP")),
-            Err(_) => return Err(anyhow!("chrome did not announce CDP in 30s")),
+        // Chrome 158 stopped printing the banner to stderr, so the only
+        // reliable source is `<profile>/DevToolsActivePort`. Poll it and fall
+        // back to the stderr banner for builds that still log one.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let ws_url = loop {
+            if let Some((port, path)) = read_active_port(&port_file) {
+                break format!("ws://127.0.0.1:{port}{path}");
+            }
+            match rx.try_recv() {
+                Ok(Some(url)) => break url,
+                Ok(None) => return Err(anyhow!("chrome exited before announcing CDP")),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(anyhow!("chrome exited before announcing CDP"))
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                return Err(anyhow!("chrome exited before announcing CDP ({status})"));
+            }
+            if Instant::now() >= deadline {
+                return Err(anyhow!("chrome did not announce CDP in 30s"));
+            }
+            std::thread::sleep(Duration::from_millis(25));
         };
         let port = ws_url
             .rsplit(':')
@@ -461,5 +501,51 @@ mod tests {
         let mut got = descendants(10, &tree);
         got.sort();
         assert_eq!(got, vec![10, 11, 12, 13]);
+    }
+}
+
+#[cfg(test)]
+mod port_file_tests {
+    use super::read_active_port;
+    use std::path::{Path, PathBuf};
+
+    fn scratch(contents: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "l4m-portfile-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("DevToolsActivePort");
+        std::fs::write(&path, contents).expect("write port file");
+        path
+    }
+
+    #[test]
+    fn reads_port_and_browser_path() {
+        let path = scratch("45847\n/devtools/browser/abc\n");
+        assert_eq!(
+            read_active_port(&path),
+            Some((45847, "/devtools/browser/abc".to_string()))
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn half_written_file_is_not_ready() {
+        let path = scratch("45847\n");
+        assert_eq!(read_active_port(&path), None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn missing_file_is_not_ready() {
+        assert_eq!(
+            read_active_port(Path::new("/nonexistent/l4m/DevToolsActivePort")),
+            None
+        );
     }
 }

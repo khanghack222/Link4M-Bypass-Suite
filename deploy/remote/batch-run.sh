@@ -13,6 +13,9 @@ L4M_DIR=${L4M_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}
 WORKERS=${WORKERS:-1}
 API_KEY=${L4M_API_KEY:-}
 PORT=${PORT:-8080}
+# A batch answer served from the cache says nothing about the egress IP, and a
+# cached success after a proxy swap hid a dead relay once. Solve for real.
+FRESH=${L4M_FRESH:-1}
 
 # The script changes directory into engine-rs, so both paths are pinned to
 # absolute here; relative arguments used to resolve under engine-rs/ and the
@@ -24,8 +27,9 @@ mkdir -p "$(dirname "$OUT")"
 cd "$L4M_DIR/engine-rs"
 export PATH="$L4M_DIR/.venv/bin:$PATH"
 
-if [ -z "${DISPLAY:-}" ]; then
-  Xvfb :99 -screen 0 1280x1000x24 -ac -nolisten tcp &
+XVFB=$(command -v Xvfb || true)
+if [ -z "${DISPLAY:-}" ] && [ -n "$XVFB" ]; then
+  "$XVFB" :99 -screen 0 1280x1000x24 -ac -nolisten tcp &
   XVFB_PID=$!
   export DISPLAY=:99
   trap 'kill "$XVFB_PID" 2>/dev/null || true' EXIT
@@ -35,11 +39,22 @@ if [ -z "${DISPLAY:-}" ]; then
   done
 fi
 
+# A windowed Chrome with no X server never finishes booting and never writes
+# DevToolsActivePort, so every job burned its 30 s CDP window instead of
+# failing fast. No display means headless; an explicit L4M_HEADLESS still wins.
+if [ -n "${L4M_HEADLESS:-}" ]; then
+  HEADLESS=$L4M_HEADLESS
+elif [ -n "${DISPLAY:-}" ]; then
+  HEADLESS=0
+else
+  HEADLESS=1
+fi
+
 # PROXY_LIST may be unset; `env` keeps the assignment a real assignment. A
 # ${VAR:+VAR=...} word on the command line gets expanded after bash has already
 # decided which words are assignments, so it ran as a command name instead.
 [ -n "${PROXY_LIST:-}" ] && export PROXY_LIST
-env L4M_HEADLESS=0 WORKERS="$WORKERS" API_KEY="$API_KEY" \
+env L4M_HEADLESS="$HEADLESS" WORKERS="$WORKERS" API_KEY="$API_KEY" \
   ./target/release/l4m-engine >"$L4M_DIR/engine-batch.log" 2>&1 &
 ENGINE_PID=$!
 trap 'kill "$ENGINE_PID" 2>/dev/null || true; kill "${XVFB_PID:-}" 2>/dev/null || true' EXIT
@@ -66,7 +81,7 @@ while IFS= read -r url; do
   url=$(printf '%s' "$url" | tr -d '\r' | sed 's/^ *//;s/ *$//')
   [ -z "$url" ] && continue
   case "$url" in \#*) continue ;; esac
-  body=$(python3 -c 'import json,sys;print(json.dumps({"url":sys.argv[1],"wait":True}))' "$url")
+  body=$(python3 -c 'import json,sys;fresh=sys.argv[2] not in ("0","false","no","");print(json.dumps({"url":sys.argv[1],"wait":True,"fresh":fresh}))' "$url" "$FRESH")
   started=$(date +%s)
   result=$(curl -sS --max-time 600 -X POST \
     "${auth[@]}" -H 'content-type: application/json' -d "$body" \
