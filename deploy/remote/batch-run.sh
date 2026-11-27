@@ -35,8 +35,11 @@ if [ -z "${DISPLAY:-}" ]; then
   done
 fi
 
-L4M_HEADLESS=0 WORKERS="$WORKERS" API_KEY="$API_KEY" \
-  ${PROXY_LIST:+PROXY_LIST="$PROXY_LIST"} \
+# PROXY_LIST may be unset; `env` keeps the assignment a real assignment. A
+# ${VAR:+VAR=...} word on the command line gets expanded after bash has already
+# decided which words are assignments, so it ran as a command name instead.
+[ -n "${PROXY_LIST:-}" ] && export PROXY_LIST
+env L4M_HEADLESS=0 WORKERS="$WORKERS" API_KEY="$API_KEY" \
   ./target/release/l4m-engine >"$L4M_DIR/engine-batch.log" 2>&1 &
 ENGINE_PID=$!
 trap 'kill "$ENGINE_PID" 2>/dev/null || true; kill "${XVFB_PID:-}" 2>/dev/null || true' EXIT

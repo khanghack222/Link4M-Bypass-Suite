@@ -29,6 +29,62 @@ không theo quảng cáo.
 - **Hetzner** — không thẻ lúc đăng ký nhưng gửi ID sau, free-mail bị flag.
 - **FreeVPS.org** — cần account LowEndTalk 3 tháng + 50 post.
 
+## IP quan trọng hơn RAM — egress dân dụng
+
+Cloudflare của link4m trả **"Just a moment..."** cho IP datacenter. Runner
+16 GB của GitHub Actions (Azure) dính đúng cái này: solve chết sau 80 s dù
+Chrome headful thật, Xvfb thật. VPS free cũng nằm trong datacenter, nên thêm
+RAM không giải quyết gì — cái cần là **IP ra dân dụng**.
+
+`deploy/remote/egress/` giữ đúng phần đó ở nhà:
+
+```bash
+# máy nhà (không cần sudo)
+L4M_EGRESS_VAR=1 L4M_EGRESS_REPO=<owner>/<repo> deploy/remote/egress/egress.sh
+
+# máy chạy Chrome (runner / VPS / Codespace)
+export PROXY_LIST="$(cat ~/.l4m-egress/proxy.txt)"
+```
+
+- `socks5.py` — SOCKS5 user/pass (RFC 1929), chỉ CONNECT, bind loopback.
+- `egress.sh` — bật listener, mở tunnel TCP qua `tcp@a.pinggy.io`, in ra
+  `socks5://user:pass@host:port`, tự nối lại khi tunnel free 60 phút hết hạn,
+  và cập nhật repo variable `L4M_EGRESS_PROXY`.
+- Workflow `batch.yml` đọc `vars.L4M_EGRESS_PROXY`, preflight bằng
+  `curl --socks5-hostname`, rồi truyền thẳng vào engine qua `PROXY_LIST`.
+
+Đo thật 27/11/2026: engine qua relay giải `link4m.net/go/2kCcIqn` trong
+**59 s**, `captcha_ms=17306`, trả đúng `destination_url`. Cùng link đó trên
+runner không proxy: `page did not expose a captcha (title: Just a moment...)`.
+
+Hệ quả: mọi box free (Codespaces 8 GB, VPS 2 GB, runner 16 GB) đều dùng được
+miễn là nó trỏ `PROXY_LIST` về relay nhà. VPS chỉ còn để chạy 24/7, không còn
+là điều kiện để solve được.
+
+## GratisVPS — đã thử, checkout hỏng
+
+Trang `/manage/store/free-vps/kvm-vps-free` có thật: KVM 6 GB DDR5, 2 core
+7700X, 120 GB NVMe, $0.00, không captcha. Nhưng bước đặt hàng chết ở server:
+
+- `POST cart.php?a=checkout` với `paymentmethod=banktransfer` → **500 "Oops"**,
+  mọi biến thể (email khác, country US/DE, bỏ state, bỏ ccinfo) đều 500.
+- Bỏ `paymentmethod` → 200 kèm "The selected gateway is not available".
+- Gateway duy nhất là "Free Trial (No Payment)" value `banktransfer` — module
+  hỏng, không phải form sai.
+- `pwreset.php` nhận request nhưng mail không bao giờ tới maildrop, nên không
+  lấy lại được account đã tạo dở.
+
+Kết luận: không đăng ký được, đừng thử lại trừ khi họ sửa checkout.
+
+## vyce.cloud — cửa hẹp nhưng thật
+
+Vps-Mini free: 2 GB RAM, 1 vCore, 6 GB NVMe, IPv6 public, root SSH, renew qua
+dashboard + captcha. Signup **chỉ** qua GitHub OAuth, account GitHub phải
+≥ 30 ngày. API `/api/stock` hiện `free.open=false` toàn bộ region; đã đặt
+automation 15 phút/lần báo khi mở. OAuth không tự động được bằng Bearer token
+(GitHub đá về `/login`), nên lúc stock mở cần một lần đăng nhập GitHub của
+femboy.
+
 ## Kết luận thẳng
 
 Không có nhà nào tặng VPS root miễn phí vô hạn. Có **hạn mức theo identity**:
