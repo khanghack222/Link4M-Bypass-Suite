@@ -12,6 +12,8 @@
 | [`UNIFIED_DISPATCH.md`](UNIFIED_DISPATCH.md) | Thiết kế dispatch hợp nhất | Dev |
 | [`../engine-rs/README.md`](../engine-rs/README.md) | Engine native Rust: flow, env, deploy, giới hạn | Dev/Ops |
 | [`../engine-rs/docs/SCALE.md`](../engine-rs/docs/SCALE.md) | Công thức dung lượng, nút thắt, scale ngang | Ops |
+| [`CAPTCHA_SOLVERS.md`](CAPTCHA_SOLVERS.md) | Solver reCAPTCHA ngoài, đánh giá Turnstile | Dev/Ops |
+| [`REMOTE_VPS.md`](REMOTE_VPS.md) | Chạy engine trên Spaces/Codespaces/VPS, client từ xa | Ops |
 | [`../server-rs/README.md`](../server-rs/README.md) | Façade HTTP đa provider | Dev/Ops |
 | [`../legacy/README.md`](../legacy/README.md) | Mã cũ đã dời; không dùng cho production | Tham khảo |
 | [`archive/`](archive/) | Báo cáo nghiên cứu, kế hoạch, tài liệu lịch sử | Tham khảo |

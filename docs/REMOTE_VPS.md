@@ -1,55 +1,64 @@
-# Chạy engine trên VPS sandbox, máy local chỉ gửi lệnh
+# Chạy engine trên sandbox miễn phí, máy local chỉ gửi lệnh
 
-Máy 3.7 GB không cần gánh Chrome. Engine đã là một HTTP service độc lập
-(`/api/v1/bypass`, `/health`), nên chỉ cần một box Linux có Chrome + Xvfb +
-Rust, rồi từ laptop gọi qua SSH. Không mở port ra internet.
+Engine là HTTP service độc lập (`/api/v1/bypass`, `/health`). Máy 3.7 GB chỉ
+cần `curl` hoặc `ssh`; Chrome + whisper chạy trên box khác.
 
-## Chọn nhà cung cấp
+## Chọn nơi không cần thẻ
 
-| Nơi | Free tier | RAM | Chrome headful | Ghi chú |
-|---|---|---|---|---|
-| **Oracle Cloud Always Free** | 4 OCPU ARM + 24 GB RAM, vĩnh viễn | 24 GB | Có (Xvfb) | Tốt nhất cho chạy 24/7. Cần thẻ để verify, không bị charge |
-| **GitHub Codespaces** | 120 core-hours/tháng (2-core/8 GB) | 8 GB | Có (Xvfb) | Không cần thẻ. Sleep sau 30 phút idle, bật lại ~1 phút |
-| **GitHub Actions** | 4 vCPU/16 GB mỗi job, 6 h | 16 GB | Có (Xvfb) | Chỉ hợp batch: chạy một lô link rồi tải artifact, không phải service |
-| **Hugging Face Spaces** | 2 vCPU/16 GB CPU basic | 16 GB | Có (Docker) | Sleep sau 48 h không truy cập; Space là public, phải đặt `API_KEY` |
-| Fly.io / Koyeb / Render free | 256–512 MB | — | Không | Không đủ cho Chrome + whisper |
+| Nơi | Không cần thẻ | Free tier | RAM | Thức 24/7 | Ghi chú |
+|---|---|---|---|---|---|
+| **Hugging Face Spaces** | ✔ | 2 vCPU / 16 GB, CPU basic | 16 GB | ✔ nhờ ping 6 h/lần | **Khuyến nghị**. Docker, có URL công khai, sleep sau 48 h không truy cập |
+| **GitHub Codespaces** | ✔ | 120 core-hours/tháng | 8 GB | ✘ (sleep 30 phút, hết giờ là dừng) | 2-core ≈ 60 giờ/tháng; tốt để test, không chạy liên tục |
+| **GitHub Actions** | ✔ | 4 vCPU / 16 GB mỗi job | 16 GB | ✘ | Batch một lô link rồi tải artifact; job tối đa 6 h |
+| Oracle Cloud Always Free | ✘ cần thẻ verify | 4 OCPU / 24 GB | 24 GB | ✔ | Rẻ nhất về RAM nhưng chặn ở bước thẻ |
+| Fly.io / Koyeb / Render free | — | 256–512 MB | — | — | Không đủ cho Chrome |
 
-Với engine 1 worker: Chrome headful ~700 MB + whisper tiny ~200 MB + OCR
-sidecar ~145 MB ≈ **1.1–1.5 GB**. Oracle 24 GB chạy được `WORKERS=3` trên 4
-OCPU; Codespaces 8 GB để `WORKERS=1` cho quest ổn định.
+RAM thực tế 1 worker: Chrome headful ~700 MB + whisper tiny ~200 MB + OCR
+sidecar ~145 MB ≈ **1.1–1.5 GB**. Spaces 16 GB thoải mái `WORKERS=1`; đừng đẩy
+`WORKERS` cao vì chỉ có 2 vCPU.
 
-## Oracle Cloud (khuyến nghị, 24/7)
+## Hugging Face Spaces (khuyến nghị)
 
-1. Tạo instance Ampere A1 (4 OCPU, 24 GB), Ubuntu 24.04, mở SSH.
-2. Cài:
+Repo đã có `Dockerfile` ở gốc và `.dockerignore`; image tự build engine, Chrome,
+Xvfb, RapidOCR, model whisper. Không cần cài gì trên máy.
+
+1. Tạo Space: **New Space → Docker → Blank**, tên `l4m-engine`, public.
+2. Đẩy repo lên Space:
 
 ```bash
-git clone https://github.com/khanghack222/Link4M-Bypass-Suite.git /opt/l4m-engine
-sudo REPO_URL=https://github.com/khanghack222/Link4M-Bypass-Suite.git \
-  /opt/l4m-engine/deploy/remote/bootstrap.sh
+git remote add space https://huggingface.co/spaces/<user>/l4m-engine
+git push space main
 ```
 
-Script cài Chrome từ repo Google, Xvfb, Rust, RapidOCR, tải model whisper,
-build release, tạo user `l4m`, và bật hai unit `l4m-xvfb` + `l4m-engine`
-(`HOST=127.0.0.1:8080`).
+3. Trong **Settings → Variables and secrets**:
 
-3. Từ laptop:
+| Tên | Giá trị |
+|---|---|
+| `API_KEY` (secret) | chuỗi dài bất kỳ, bắt buộc vì URL công khai |
+| `WORKERS` | `1` |
+
+`app_port` mặc định 7860, Dockerfile đã `EXPOSE 7860`.
+
+4. Chờ build (~10–15 phút), rồi từ laptop:
 
 ```bash
-export L4M_REMOTE=ubuntu@<ip>
+export L4M_REMOTE=https://<user>-l4m-engine.hf.space
+export L4M_API_KEY=<chuỗi ở trên>
 ./scripts/remote-l4m.sh health
 ./scripts/remote-l4m.sh solve https://link4m.net/go/2kCcIqn
+./scripts/remote-l4m.sh batch links.txt
 ```
 
-`remote-l4m.sh` chạy `curl` **trên VPS** qua SSH, nên API không bao giờ lộ ra
-ngoài. Muốn dùng trình duyệt/Postman thì mở tunnel:
+5. Giữ Space thức: Space free ngủ sau 48 h không có request. Workflow
+`.github/workflows/keepalive.yml` ping `/health` mỗi 6 h — thêm secret
+`L4M_SPACE_URL` = URL Space trong repo GitHub là xong. Cron của Actions miễn
+phí trên repo public.
 
-```bash
-ssh -N -L 8080:127.0.0.1:8080 ubuntu@<ip>
-curl -sS http://127.0.0.1:8080/health
-```
+Lưu ý: URL Space là công khai, nên `API_KEY` không được để rỗng. Không đặt
+`HOST` khác `0.0.0.0` trong Space — HF cần container lắng nghe trên cổng 7860.
+Mỗi lần push code mới, Space rebuild image (queue vài phút).
 
-## GitHub Codespaces (không cần thẻ)
+## GitHub Codespaces (không cần thẻ, giờ có hạn)
 
 ```bash
 gh codespace create -R <owner>/Link4M-Bypass-Suite -m basicLinux32gb
@@ -58,33 +67,44 @@ gh codespace ssh -c <name>
 sudo apt-get update && sudo apt-get install -y xvfb
 sudo REPO_URL=https://github.com/<owner>/Link4M-Bypass-Suite.git \
   /workspaces/Link4M-Bypass-Suite/deploy/remote/bootstrap.sh
-# systemd không chạy trong container → dùng runner foreground:
 sudo -u vscode L4M_DIR=/workspaces/Link4M-Bypass-Suite \
   /workspaces/Link4M-Bypass-Suite/deploy/remote/run-foreground.sh
 ```
 
-Codespace sleep sau 30 phút không tương tác; `gh codespace ssh` đánh thức lại.
-Dữ liệu `data/` nằm trong workspace nên queue/board sống qua lần sleep.
+120 core-hours/tháng = 60 giờ ở máy 2-core. Codespace sleep sau 30 phút không
+tương tác; `gh codespace ssh` đánh thức. Hợp để test headful/quest, không hợp
+treo 24/7.
 
-## GitHub Actions (batch, không phải service)
+## Oracle Cloud (có thẻ, nếu sau này có)
 
-Workflow `.github/workflows/engine.yml` đã build + smoke check trên
-`windows-latest`. Thêm job batch nếu cần chạy một danh sách link trên runner
-16 GB: checkout, chạy `bootstrap.sh` (hoặc chỉ `apt-get install xvfb` + Chrome
-có sẵn trên runner), `run-foreground.sh`, gọi API nội bộ, upload JSON. Runner
-bị xoá sau job — chỉ dùng cho lô một lần.
+```bash
+sudo REPO_URL=https://github.com/khanghack222/Link4M-Bypass-Suite.git \
+  /opt/l4m-engine/deploy/remote/bootstrap.sh
+```
+
+Script cài Chrome từ repo Google, Xvfb, Rust, RapidOCR, model whisper, build
+release, tạo user `l4m`, bật `l4m-xvfb` + `l4m-engine` (loopback 8080). Dùng
+`L4M_REMOTE=ubuntu@<ip>` với `remote-l4m.sh`.
+
+## Docker ở bất kỳ đâu
+
+```bash
+docker build -t l4m-engine .
+docker run -d --shm-size=1g -p 7860:7860 -e API_KEY=change-me l4m-engine
+```
+
+`--shm-size=1g` là bắt buộc trên nhiều host: Chrome chết tab khi `/dev/shm`
+mặc định 64 MB.
 
 ## Vận hành
 
 ```bash
-journalctl -u l4m-engine -f            # log
-systemctl restart l4m-engine           # restart
-curl -sS http://127.0.0.1:8080/health  # trạng thái + stats
+journalctl -u l4m-engine -f            # VPS systemd
+curl -sS "$L4M_REMOTE/health" -H "x-api-key: $L4M_API_KEY"
 ```
 
-- `HOST=0.0.0.0` chỉ khi thật sự cần; luôn kèm `API_KEY` dài và một reverse
-  proxy có TLS. Mặc định giữ loopback + SSH.
-- Đổi `WORKERS` theo RAM: `(RAM_MB - 900) / 1400`, tối đa bằng số vCPU.
-- Oracle ARM: Chrome có build arm64 trong repo Google; bootstrap cài đúng gói.
-- Nếu box không có `cmake`/`g++`, build `--no-default-features` và trỏ
-  `ASR_URL` sang whisper.cpp server (xem README engine).
+- `WORKERS` = `(RAM_MB - 900) / 1400`, nhưng không vượt số vCPU.
+- Box không có `cmake`/`g++`: build `--no-default-features` và trỏ `ASR_URL`
+  sang whisper.cpp server (xem README engine).
+- Space free bị rebuild sẽ mất `data/` tạm thời (queue/board nằm trong image
+  layer, không persistent). Muốn giữ queue/board lâu dài thì dùng VPS có đĩa.

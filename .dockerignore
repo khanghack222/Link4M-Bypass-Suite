@@ -1,14 +1,10 @@
-# Build artifacts and runtime state never belong in a server image.
 .git
-.gitignore
-.venv
-venv
-node_modules
-server-rs/target
-**/__pycache__
-**/*.pyc
-logs
+.github
 data
-destination_url*.txt
-DESTINATION_FINAL_URL.txt
-*.log
+engine-rs/target
+engine-rs/data
+engine-rs/models
+.venv
+**/__pycache__
+**/*.log
+tmp

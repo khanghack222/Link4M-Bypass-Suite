@@ -1,52 +1,75 @@
 #!/usr/bin/env bash
-# Thin client: keep the laptop cold, run the browser on the remote engine.
+# Thin client: keep the laptop cold, run the browser on a remote engine.
 #
+#   # SSH mode (VPS / Codespace with SSH)
 #   export L4M_REMOTE=user@vps
+#   # HTTP mode (Hugging Face Space / any public engine)
+#   export L4M_REMOTE=https://user-space.hf.space L4M_API_KEY=...
+#
 #   ./scripts/remote-l4m.sh health
 #   ./scripts/remote-l4m.sh solve https://link4m.net/go/2kCcIqn
-#   ./scripts/remote-l4m.sh once  https://link4m.net/go/2kCcIqn
+#   ./scripts/remote-l4m.sh once  https://link4m.net/go/2kCcIqn   # SSH only
 #   ./scripts/remote-l4m.sh batch links.txt
-#   ./scripts/remote-l4m.sh logs
-#   ./scripts/remote-l4m.sh shell
+#   ./scripts/remote-l4m.sh logs                                  # SSH only
+#   ./scripts/remote-l4m.sh shell                                 # SSH only
 #
 # Env:
-#   L4M_REMOTE      ssh target (required)
+#   L4M_REMOTE      ssh target or http(s) base URL (required)
 #   L4M_REMOTE_DIR  repo path on the remote (default /opt/l4m-engine)
-#   L4M_API_KEY     forwarded as ?key= when the remote sets API_KEY
-#   L4M_PORT        remote engine port (default 8080)
+#   L4M_API_KEY     x-api-key header when the remote sets API_KEY
+#   L4M_PORT        remote engine port in SSH mode (default 8080)
 set -euo pipefail
 
-REMOTE=${L4M_REMOTE:?set L4M_REMOTE=user@host}
+REMOTE=${L4M_REMOTE:?set L4M_REMOTE=user@host or https://host}
 REMOTE_DIR=${L4M_REMOTE_DIR:-/opt/l4m-engine}
 PORT=${L4M_PORT:-8080}
 KEY=${L4M_API_KEY:-}
 
+case "$REMOTE" in
+  http://*|https://*) MODE=http; BASE=${REMOTE%/} ;;
+  *) MODE=ssh; BASE=http://127.0.0.1:$PORT ;;
+esac
+
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 }
 
+auth_args() {
+  [ -n "$KEY" ] && printf '%s' "-H x-api-key:$KEY"
+}
+
+# Run a shell command on the remote (SSH mode only).
 remote() {
+  [ "$MODE" = ssh ] || { echo "this command needs SSH mode" >&2; exit 1; }
   ssh -o BatchMode=yes -o ConnectTimeout=15 "$REMOTE" "$@"
 }
 
-query() {
-  if [ -n "$KEY" ]; then
-    printf '%s?key=%s' "$1" "$KEY"
+http_get() {
+  local path=$1
+  if [ "$MODE" = http ]; then
+    # shellcheck disable=SC2046
+    curl -fsS --max-time 60 $(auth_args) "$BASE$path"
   else
-    printf '%s' "$1"
+    remote "curl -fsS --max-time 60 $(auth_args) '$BASE$path'"
   fi
 }
 
-auth_header() {
-  if [ -n "$KEY" ]; then
-    printf -- '-H x-api-key:%s' "$KEY"
+http_post() {
+  local path=$1 body=$2
+  if [ "$MODE" = http ]; then
+    # shellcheck disable=SC2046
+    curl -fsS --max-time 900 -X POST $(auth_args) \
+      -H 'content-type: application/json' -d "$body" "$BASE$path"
+  else
+    remote "curl -fsS --max-time 900 -X POST $(auth_args) \
+      -H 'content-type: application/json' -d '$body' '$BASE$path'"
   fi
 }
 
 case ${1:-} in
   health)
-    remote "curl -fsS http://127.0.0.1:$PORT/health"
+    http_get /health
     ;;
   solve)
     [ $# -ge 2 ] || usage
@@ -55,14 +78,12 @@ case ${1:-} in
     body=$(printf '{"url":%s,"wait":%s}' \
       "$(printf '%s' "$url" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')" \
       "$wait")
-    remote "curl -fsS -X POST http://127.0.0.1:$PORT/api/v1/bypass \
-      -H 'content-type: application/json' $(auth_header) -d '$body'"
+    http_post /api/v1/bypass "$body"
     ;;
   once)
     [ $# -ge 2 ] || usage
-    url=$2
     remote "cd $REMOTE_DIR/engine-rs && L4M_HEADLESS=0 DISPLAY=:99 \
-      ./target/release/l4m-engine --once '$url'"
+      ./target/release/l4m-engine --once '$2'"
     ;;
   batch)
     [ $# -ge 2 ] || usage

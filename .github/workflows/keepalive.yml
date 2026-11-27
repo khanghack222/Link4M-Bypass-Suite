@@ -1,0 +1,22 @@
+name: keepalive
+
+# Free Spaces/instances sleep after a quiet window. One health ping every six
+# hours keeps the engine warm without spending Codespaces core-hours.
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: health
+        env:
+          URL: ${{ secrets.L4M_SPACE_URL }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "L4M_SPACE_URL secret is not set; nothing to ping"
+            exit 0
+          fi
+          curl -fsS --max-time 30 --retry 3 --retry-delay 10 "$URL/health"
