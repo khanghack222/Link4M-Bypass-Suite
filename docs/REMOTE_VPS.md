@@ -115,6 +115,24 @@ Script cài Chrome từ repo Google, Xvfb, Rust, RapidOCR, model whisper, build
 release, tạo user `l4m`, bật `l4m-xvfb` + `l4m-engine` (loopback 8080). Dùng
 `L4M_REMOTE=ubuntu@<ip>` với `remote-l4m.sh`.
 
+## Tự host trên điện thoại Android (Termux)
+
+Không cần thẻ, không giới hạn giờ; đổi lại máy phải cắm sạc và không ngủ.
+Điện thoại 8 GB RAM mạnh hơn box 3.7 GB này.
+
+```bash
+pkg install proot-distro
+proot-distro install debian
+proot-distro login debian
+apt-get update && apt-get install -y curl
+curl -fsSL https://raw.githubusercontent.com/khanghack222/Link4M-Bypass-Suite/main/deploy/termux/start.sh | bash
+```
+
+Script cài Chromium + Xvfb + RapidOCR, tải tarball `linux-arm64` từ release,
+bật engine ở `0.0.0.0:8080` và (mặc định) mở cloudflared tunnel in ra URL +
+API key. Tắt tunnel: `TUNNEL=0`. Giữ session proot mở; muốn sống qua khoá màn
+hình thì chạy trong `tmux` và bật wakelock của Termux.
+
 ## Docker ở bất kỳ đâu
 
 ```bash

@@ -51,6 +51,40 @@ jobs:
               --title "$TAG" --notes "engine build $GITHUB_SHA"
           gh release upload "$TAG" l4m-engine-linux-x86_64.tar.gz --clobber
 
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine-rs
+      - name: build
+        working-directory: engine-rs
+        env:
+          WHISPER_DONT_GENERATE_BINDINGS: "1"
+        run: cargo build --release
+      - name: package
+        run: |
+          mkdir -p dist
+          cp engine-rs/target/release/l4m-engine dist/
+          cp -r engine-rs/tools dist/tools
+          mkdir -p dist/models
+          curl -fL --retry 3 \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin \
+            -o dist/models/ggml-tiny.en.bin
+          cp deploy/remote/run-foreground.sh deploy/remote/batch-run.sh dist/
+          tar -C dist -czf l4m-engine-linux-arm64.tar.gz .
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --target "$GITHUB_SHA" \
+              --title "$TAG" --notes "engine build $GITHUB_SHA"
+          gh release upload "$TAG" l4m-engine-linux-arm64.tar.gz --clobber
+
   windows:
     runs-on: windows-latest
     steps:
