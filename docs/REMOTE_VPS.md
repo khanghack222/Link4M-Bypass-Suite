@@ -87,22 +87,33 @@ cùng script, cùng cách.
 Free tier giờ chỉ còn cho Pro. `Dockerfile` ở gốc vẫn dùng được nếu có Pro
 hoặc tự host Docker; với tài khoản free thì bỏ qua mục này.
 
-## GitHub Codespaces (không cần thẻ, giờ có hạn)
+## GitHub Codespaces — sandbox code (không cần thẻ)
+
+Đây là chỗ để **code và test**, không phải service treo 24/7. Repo có sẵn
+`.devcontainer/` nên Codespace tự cài Chrome, Xvfb, Rust, RapidOCR, model
+whisper và build sẵn engine.
 
 ```bash
 gh codespace create -R <owner>/Link4M-Bypass-Suite -m basicLinux32gb
-gh codespace ssh -c <name>
-# trong codespace:
-sudo apt-get update && sudo apt-get install -y xvfb
-sudo REPO_URL=https://github.com/<owner>/Link4M-Bypass-Suite.git \
-  /workspaces/Link4M-Bypass-Suite/deploy/remote/bootstrap.sh
-sudo -u vscode L4M_DIR=/workspaces/Link4M-Bypass-Suite \
-  /workspaces/Link4M-Bypass-Suite/deploy/remote/run-foreground.sh
+gh codespace code -c <name>
 ```
 
-120 core-hours/tháng = 60 giờ ở máy 2-core. Codespace sleep sau 30 phút không
-tương tác; `gh codespace ssh` đánh thức. Hợp để test headful/quest, không hợp
-treo 24/7.
+Lần tạo đầu chạy `postCreateCommand` ~5–8 phút. Sau đó trong terminal của
+Codespace:
+
+```bash
+Xvfb :99 -screen 0 1280x1000x24 -ac &
+export DISPLAY=:99
+cd engine-rs
+WHISPER_DONT_GENERATE_BINDINGS=1 PATH="$PWD/../.venv/bin:$PATH" cargo test
+./target/release-fast/l4m-engine --once https://link4m.net/go/<alias>
+```
+
+Máy này chỉ mở VS Code nối vào Codespace; mọi thứ nặng chạy bên kia.
+
+Giới hạn free: 120 core-hours/tháng (2-core ≈ 60 giờ), sleep sau 30 phút
+không tương tác, `gh codespace ssh` đánh thức. Không dùng để treo 24/7 — việc
+đó để workflow `batch` lo.
 
 ## Oracle Cloud (có thẻ, nếu sau này có)
 
@@ -114,24 +125,6 @@ sudo REPO_URL=https://github.com/khanghack222/Link4M-Bypass-Suite.git \
 Script cài Chrome từ repo Google, Xvfb, Rust, RapidOCR, model whisper, build
 release, tạo user `l4m`, bật `l4m-xvfb` + `l4m-engine` (loopback 8080). Dùng
 `L4M_REMOTE=ubuntu@<ip>` với `remote-l4m.sh`.
-
-## Tự host trên điện thoại Android (Termux)
-
-Không cần thẻ, không giới hạn giờ; đổi lại máy phải cắm sạc và không ngủ.
-Điện thoại 8 GB RAM mạnh hơn box 3.7 GB này.
-
-```bash
-pkg install proot-distro
-proot-distro install debian
-proot-distro login debian
-apt-get update && apt-get install -y curl
-curl -fsSL https://raw.githubusercontent.com/khanghack222/Link4M-Bypass-Suite/main/deploy/termux/start.sh | bash
-```
-
-Script cài Chromium + Xvfb + RapidOCR, tải tarball `linux-arm64` từ release,
-bật engine ở `0.0.0.0:8080` và (mặc định) mở cloudflared tunnel in ra URL +
-API key. Tắt tunnel: `TUNNEL=0`. Giữ session proot mở; muốn sống qua khoá màn
-hình thì chạy trong `tmux` và bật wakelock của Termux.
 
 ## Docker ở bất kỳ đâu
 
