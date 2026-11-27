@@ -98,13 +98,23 @@ async fn main() -> Result<()> {
     let state = Arc::new(ApiState { inner, pool });
     let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
     info!(target: "engine", "listening on http://{}:{}", cfg.host, cfg.port);
-    let server = axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown_signal());
-    if tokio::time::timeout(Duration::from_secs(10), server)
-        .await
-        .is_err()
-    {
-        warn!(target: "engine", "shutdown timed out, dropping open sessions");
+    // The timeout must bound the graceful drain only. Wrapping the whole
+    // serve future in a 10 s timeout killed every long-running instance ten
+    // seconds after boot, so API clients saw an empty reply mid-request.
+    let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = axum::serve(listener, router(state)).with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        let _ = drain_tx.send(());
+    });
+    let drain_deadline = async {
+        let _ = drain_rx.await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    };
+    tokio::select! {
+        result = server => result?,
+        _ = drain_deadline => {
+            warn!(target: "engine", "shutdown timed out, dropping open sessions");
+        }
     }
     Ok(())
 }
