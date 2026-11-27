@@ -532,16 +532,50 @@ fn decode_image_bytes(src: &str, proxy: Option<&Proxy>) -> Option<Vec<u8>> {
 }
 
 fn image_payloads(images: &[String], proxy: Option<&Proxy>) -> Vec<ImagePayload> {
-    images
-        .iter()
-        .enumerate()
-        .filter_map(|(index, src)| {
-            decode_image_bytes(src, proxy).map(|data| ImagePayload {
-                name: format!("instr-{index}.png"),
-                data,
+    // Instruction strips come from the same host; fetching them one by one
+    // serialises four TLS handshakes behind the OCR that needs them. Four
+    // workers is enough for the usual 2–4 strips and keeps memory flat.
+    if images.len() <= 1 {
+        return images
+            .iter()
+            .enumerate()
+            .filter_map(|(index, src)| {
+                decode_image_bytes(src, proxy).map(|data| ImagePayload {
+                    name: format!("instr-{index}.png"),
+                    data,
+                })
             })
-        })
-        .collect()
+            .collect();
+    }
+    let workers = images.len().min(4);
+    let next = AtomicUsize::new(0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let tx = tx.clone();
+            let next = &next;
+            scope.spawn(move || loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(src) = images.get(index) else {
+                    break;
+                };
+                let payload = decode_image_bytes(src, proxy).map(|data| ImagePayload {
+                    name: format!("instr-{index}.png"),
+                    data,
+                });
+                if tx.send((index, payload)).is_err() {
+                    break;
+                }
+            });
+        }
+    });
+    drop(tx);
+    let mut collected: Vec<(usize, ImagePayload)> = rx
+        .into_iter()
+        .filter_map(|(index, payload)| payload.map(|payload| (index, payload)))
+        .collect();
+    collected.sort_by_key(|(index, _)| *index);
+    collected.into_iter().map(|(_, payload)| payload).collect()
 }
 
 fn spill_payloads(payloads: &[ImagePayload]) -> Vec<PathBuf> {
