@@ -11,7 +11,7 @@ use crate::codes;
 use crate::instr;
 use crate::quest;
 use crate::rcsolver;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use crate::cdp::Cdp;
 use crate::proxy::Proxy;
@@ -19,6 +19,20 @@ use base64::Engine;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
+
+/// Value of a query parameter in a URL, without pulling in the `url` crate at
+/// the call sites that only need `k=` or `hl=`.
+fn url_param(url: &str, key: &str) -> Option<String> {
+    let query = url.split_once('?')?.1;
+    let query = query.split('#').next().unwrap_or(query);
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if name == key && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
 
 #[derive(Debug, Clone)]
 pub struct FlowError {
@@ -65,6 +79,20 @@ const STATE_JS: &str = r#"(() => {
     campaign: campInput ? campInput.value : '',
     title: document.title || ''
   };
+})()"#;
+
+/// Sitekey of the widget that lives in the campaign form.
+///
+/// The page carries two or three reCAPTCHA widgets with *different* sitekeys
+/// (campaign form, report modal). reCAPTCHA renders the challenge iframe at
+/// body level, outside the widget container, so the challenge cannot be traced
+/// back to its form by walking the DOM — the sitekey is the only stable link
+/// between a `bframe?k=...` and the form that will accept its token.
+const CAMPAIGN_SITEKEY_JS: &str = r#"(() => {
+  const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
+  if (!form) return '';
+  const box = form.querySelector('[data-sitekey]');
+  return box ? (box.getAttribute('data-sitekey') || '') : '';
 })()"#;
 
 const TOKEN_JS: &str = r#"(() => {
@@ -379,7 +407,11 @@ impl<'a> Flow<'a> {
                 self.reload().await?;
                 prepared = self.ensure_code_roll(&url).await?;
             }
-            if !self.click_anchor().await? {
+            let campaign_key = self.campaign_sitekey().await;
+            if let Some(key) = &campaign_key {
+                debug!(target: "engine", key = %key, "campaign sitekey");
+            }
+            if !self.click_anchor(campaign_key.as_deref()).await? {
                 warn!(target: "engine", "anchor not found");
                 tokio::time::sleep(Duration::from_millis(150)).await;
                 continue;
@@ -402,6 +434,10 @@ impl<'a> Flow<'a> {
             let watch = (Instant::now() + Duration::from_secs(10)).min(self.deadline);
             let watch_start = Instant::now();
             let mut probe_step = 0usize;
+            // Widgets proven to hand their token to the wrong form. Skipping
+            // them lets the same attempt try the campaign widget instead of
+            // reloading the page and solving the same wrong one again.
+            let mut skip: HashSet<String> = HashSet::new();
             while Instant::now() < watch && token.is_none() {
                 if let Ok(value) = self.cdp.eval(None, TOKEN_PROBE_JS).await {
                     let len = value.get("len").and_then(Value::as_u64).unwrap_or(0);
@@ -412,13 +448,14 @@ impl<'a> Flow<'a> {
                     }
                 }
                 if watch_start.elapsed() >= Duration::from_millis(1200) {
-                    if let Some(frame) = self.challenge_frame().await? {
+                    if let Some(frame) = self.challenge_frame(campaign_key.as_deref(), &skip).await? {
                         debug!(target: "engine", frame = %frame.0, "challenge open");
                         match self.solve_audio(&frame.0).await {
                             Ok(found) => match self.campaign_token_ready().await {
                                 Some(true) => token = Some(found),
                                 Some(false) => {
-                                    warn!(target: "engine", "token landed in a non-campaign widget, retrying");
+                                    warn!(target: "engine", frame = %frame.0, "token landed in a non-campaign widget, skipping it");
+                                    skip.insert(frame.0.clone());
                                     last_err = Some(FlowError::new(
                                         "audio",
                                         "solved widget was not the campaign form",
@@ -949,7 +986,30 @@ impl<'a> Flow<'a> {
         )
     }
 
-    async fn click_anchor(&self) -> FlowResult<bool> {
+    /// Sitekey the campaign form will accept a token for.
+    ///
+    /// Read from the form's own `.g-recaptcha[data-sitekey]`. When the marker
+    /// is missing (older layout), fall back to the anchor frame that sits
+    /// inside the campaign container and take its `k=` parameter.
+    async fn campaign_sitekey(&self) -> Option<String> {
+        if let Ok(Value::String(key)) = self.cdp.eval(None, CAMPAIGN_SITEKEY_JS).await {
+            let key = key.trim().to_string();
+            if key.len() > 10 {
+                return Some(key);
+            }
+        }
+        for (id, url) in self.frames().await.ok()? {
+            if !url.contains("/anchor") || !self.is_main_widget(&id).await {
+                continue;
+            }
+            if let Some(key) = url_param(&url, "k") {
+                return Some(key);
+            }
+        }
+        None
+    }
+
+    async fn click_anchor(&self, campaign_key: Option<&str>) -> FlowResult<bool> {
         let until = Instant::now() + Duration::from_secs(10);
         while Instant::now() < until {
             let mut all: Vec<(String, String)> = Vec::new();
@@ -958,9 +1018,19 @@ impl<'a> Flow<'a> {
                     all.push((id, url));
                 }
             }
+            // Sitekey first, container id second. The report modal carries a
+            // different sitekey; clicking its anchor opens a challenge whose
+            // token Link4M then rejects.
             let mut ordered: Vec<(String, String)> = Vec::new();
+            if let Some(key) = campaign_key {
+                for pair in &all {
+                    if url_param(&pair.1, "k").as_deref() == Some(key) {
+                        ordered.push(pair.clone());
+                    }
+                }
+            }
             for pair in &all {
-                if self.is_main_widget(&pair.0).await {
+                if !ordered.iter().any(|(id, _)| id == &pair.0) && self.is_main_widget(&pair.0).await {
                     ordered.push(pair.clone());
                 }
             }
@@ -1019,16 +1089,30 @@ impl<'a> Flow<'a> {
         Ok(true)
     }
 
-    async fn challenge_frame(&self) -> FlowResult<Option<(String, i64)>> {
+    async fn challenge_frame(
+        &self,
+        campaign_key: Option<&str>,
+        skip: &HashSet<String>,
+    ) -> FlowResult<Option<(String, i64)>> {
         let frames: Vec<(String, String)> = self
             .frames()
             .await?
             .into_iter()
-            .filter(|(_, url)| url.contains("bframe"))
+            .filter(|(id, url)| url.contains("bframe") && !skip.contains(id))
             .collect();
+        // Order: campaign sitekey, then the widget whose container is the
+        // campaign form, then everything else. Challenge iframes live at body
+        // level, so the sitekey is the only reliable link to their form.
         let mut ordered: Vec<(String, String)> = Vec::new();
+        if let Some(key) = campaign_key {
+            for pair in &frames {
+                if url_param(&pair.1, "k").as_deref() == Some(key) {
+                    ordered.push(pair.clone());
+                }
+            }
+        }
         for pair in &frames {
-            if self.is_main_widget(&pair.0).await {
+            if !ordered.iter().any(|(id, _)| id == &pair.0) && self.is_main_widget(&pair.0).await {
                 ordered.push(pair.clone());
             }
         }
