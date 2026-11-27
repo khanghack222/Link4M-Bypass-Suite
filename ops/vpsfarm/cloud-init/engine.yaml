@@ -1,0 +1,84 @@
+#cloud-config
+# First boot for a farm VM: Chrome + Xvfb + the engine release tarball.
+# The engine resumes from data/queue.json, so a provider restart (Lightning,
+# spot reclaim) does not lose queued links.
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - xvfb
+  - x11-utils
+  - python3
+  - python3-venv
+  - python3-pip
+  - fonts-dejavu-core
+  - libnss3
+  - libatk1.0-0
+  - libatk-bridge2.0-0
+  - libcups2
+  - libdrm2
+  - libxkbcommon0
+  - libxcomposite1
+  - libxdamage1
+  - libxfixes3
+  - libxrandr2
+  - libgbm1
+  - libasound2t64
+  - libpango-1.0-0
+  - libcairo2
+  - libatspi2.0-0
+
+write_files:
+  - path: /etc/systemd/system/l4m-xvfb.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Xvfb for the Link4M engine
+      After=network.target
+
+      [Service]
+      ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x1000x24 -ac -nolisten tcp
+      Restart=always
+      RestartSec=2
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/l4m-engine.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Link4M engine
+      After=l4m-xvfb.service network-online.target
+      Wants=l4m-xvfb.service
+
+      [Service]
+      User=ubuntu
+      WorkingDirectory=/opt/l4m-engine/engine-rs
+      Environment=DISPLAY=:99
+      Environment=HOST=127.0.0.1
+      Environment=PORT=8080
+      Environment=WORKERS=1
+      Environment=L4M_HEADLESS=0
+      Environment=L4M_PREWARM=1
+      Environment=L4M_OCR_SERVE=1
+      Environment=WHISPER_MODEL=models/ggml-tiny.en.bin
+      Environment=RUST_LOG=engine=info
+      ExecStart=/opt/l4m-engine/engine-rs/target/release/l4m-engine
+      Restart=always
+      RestartSec=5
+      KillMode=control-group
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - [bash, -lc, "install -d -m 0755 /etc/apt/keyrings && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub -o /etc/apt/keyrings/google-chrome.asc && echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main' > /etc/apt/sources.list.d/google-chrome.list && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends google-chrome-stable"]
+  - [bash, -lc, "curl -fL --retry 3 https://github.com/khanghack222/Link4M-Bypass-Suite/releases/latest/download/l4m-engine-linux-x86_64.tar.gz -o /tmp/l4m.tar.gz && mkdir -p /opt/l4m-engine && tar -C /opt/l4m-engine -xzf /tmp/l4m.tar.gz && mkdir -p /opt/l4m-engine/engine-rs/target/release && cp /opt/l4m-engine/l4m-engine /opt/l4m-engine/engine-rs/target/release/ && cp -r /opt/l4m-engine/tools /opt/l4m-engine/engine-rs/tools && cp -r /opt/l4m-engine/models /opt/l4m-engine/engine-rs/models && chown -R ubuntu:ubuntu /opt/l4m-engine"]
+  - [bash, -lc, "sudo -u ubuntu python3 -m venv /opt/l4m-engine/.venv && sudo -u ubuntu /opt/l4m-engine/.venv/bin/pip install -q rapidocr_onnxruntime opencv-python-headless pillow"]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, l4m-xvfb]
+  - [systemctl, enable, --now, l4m-engine]

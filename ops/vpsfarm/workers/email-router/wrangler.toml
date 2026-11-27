@@ -1,0 +1,13 @@
+name = "l4m-mail-router"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+# Create the namespace, paste the id here:
+#   wrangler kv namespace create INBOX
+[[kv_namespaces]]
+binding = "INBOX"
+id = "REPLACE_WITH_KV_ID"
+
+[vars]
+# MAIL_SECRET is a secret, not a var:
+#   wrangler secret put MAIL_SECRET

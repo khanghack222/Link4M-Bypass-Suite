@@ -14,6 +14,7 @@
 | [`../engine-rs/docs/SCALE.md`](../engine-rs/docs/SCALE.md) | Công thức dung lượng, nút thắt, scale ngang | Ops |
 | [`CAPTCHA_SOLVERS.md`](CAPTCHA_SOLVERS.md) | Solver reCAPTCHA ngoài, đánh giá Turnstile | Dev/Ops |
 | [`REMOTE_VPS.md`](REMOTE_VPS.md) | Chạy engine trên Spaces/Codespaces/VPS, client từ xa | Ops |
+| [`VPS_FARM.md`](VPS_FARM.md) | Bảng chọn nơi chạy free (thẻ/không thẻ), kết luận 27/11/2026 | Ops |
 | [`../server-rs/README.md`](../server-rs/README.md) | Façade HTTP đa provider | Dev/Ops |
 | [`../legacy/README.md`](../legacy/README.md) | Mã cũ đã dời; không dùng cho production | Tham khảo |
 | [`archive/`](archive/) | Báo cáo nghiên cứu, kế hoạch, tài liệu lịch sử | Tham khảo |

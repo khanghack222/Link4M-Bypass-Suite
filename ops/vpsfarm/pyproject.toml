@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vpsfarm"
+version = "0.1.0"
+description = "Identity + VM automation for the Link4M engine"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+  "patchright>=1.49",
+]
+
+[project.optional-dependencies]
+aws = ["boto3>=1.35"]
+camoufox = ["camoufox[geoip]>=0.4"]
+
+[project.scripts]
+vpsfarm = "vpsfarm.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["vpsfarm*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
