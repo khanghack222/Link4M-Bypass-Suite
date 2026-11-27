@@ -1,1 +1,1 @@
-{"url": "https://link4m.net/go/2kCcIqn", "took_s": 9, "status": "error"}
+{"url": "https://link4m.net/go/2kCcIqn", "took_s": 80, "cached": false, "destination_url": null, "elapsed_ms": 80113.38229000001, "error": "page: page did not expose a captcha (title: Just a moment...)", "job_id": "bc118ebd6d4fc08d559", "provider": "link4m", "status": "failed"}
