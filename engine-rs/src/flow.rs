@@ -2,12 +2,15 @@
 //! challenge with local whisper, then hand back the destination URL.
 //!
 //! No Playwright, no Python, no captcha API. The only external service is the
-//! page itself and Google's reCAPTCHA, exactly like a normal browser.
+//! page itself and Google's reCAPTCHA, exactly like a normal browser. An
+//! optional browserless solver (`RC_SOLVER_CMD`) can mint the token instead;
+//! the page still owns the final POST.
 
 use crate::asr::Asr;
 use crate::codes;
 use crate::instr;
 use crate::quest;
+use crate::rcsolver;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::cdp::Cdp;
@@ -382,6 +385,13 @@ impl<'a> Flow<'a> {
                 continue;
             }
 
+            // Optional browserless solver: mint the token over Google's API
+            // chain while the page's own challenge is still arming. The token
+            // is injected into this page by `finish`, so the Link4M session
+            // that posts it remains ours.
+            let sitekey = rcsolver::sitekey(self.cdp).await;
+            let mut external = rcsolver::spawn(url.clone(), sitekey);
+
             // Race the token against the challenge panel: a checkbox that passes
             // silently returns a token in a second or two, while a challenge
             // (audio/grid) opens in the same window. The first 1.2 s belongs to
@@ -430,6 +440,33 @@ impl<'a> Flow<'a> {
                 };
                 tokio::time::sleep(delay).await;
                 probe_step += 1;
+            }
+
+            if token.is_none() {
+                if let Some(mut handle) = external.take() {
+                    let budget = Duration::from_secs(
+                        std::env::var("RC_SOLVER_TIMEOUT")
+                            .ok()
+                            .and_then(|raw| raw.trim().parse::<u64>().ok())
+                            .unwrap_or(180)
+                            .clamp(30, 900),
+                    )
+                    .min(self.remaining());
+                    match tokio::time::timeout(budget, &mut handle).await {
+                        Ok(Ok(Some(found))) => {
+                            info!(target: "engine", len = found.len(), "external token ready");
+                            token = Some(found);
+                        }
+                        Ok(Ok(None)) => debug!(target: "engine", "external solver gave no token"),
+                        Ok(Err(err)) => debug!(target: "engine", error = %err, "external solver task failed"),
+                        Err(_) => {
+                            debug!(target: "engine", "external solver wait timed out");
+                            handle.abort();
+                        }
+                    }
+                }
+            } else if let Some(handle) = external.take() {
+                handle.abort();
             }
 
             let Some(token) = token else { continue };

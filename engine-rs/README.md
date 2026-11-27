@@ -244,6 +244,12 @@ Có `API_KEY` thì mở `/status?key=<key>`; endpoint JSON/SSE cũng nhận `?ke
 | `ASR_URL` | rỗng | bật ASR remote; bare host tự thêm `/inference`, path cụ thể giữ nguyên |
 | `ASR_LANGUAGE` | `en` | ngôn ngữ gửi kèm request ASR remote |
 | `ASR_TIMEOUT` | `90` | giây timeout request ASR remote (tối thiểu 5) |
+| `RC_SOLVER_CMD` | rỗng | solver reCAPTCHA v2 ngoài; ví dụ `.venv/bin/python /path/recaptcha-vm/solve_service.py`. Rỗng = chỉ dùng audio trong page |
+| `RC_SOLVER_SUBCOMMAND` | rỗng | chèn trước args solver, ví dụ `solve` cho `window-vm.exe` |
+| `RC_SOLVER_SITEKEY` | rỗng | sitekey dự phòng khi page không có `data-sitekey` |
+| `RC_SOLVER_MODEL` | `tiny.en` | model whisper của solver ngoài |
+| `RC_SOLVER_ROUNDS` | `4` | số vòng anchor→reload→audio của solver ngoài (1–12) |
+| `RC_SOLVER_TIMEOUT` | `180` | giây chờ solver ngoài (30–900) |
 | `RUST_LOG` | `l4m_engine=info,engine=info` | mức log |
 
 ## 6.1 Proxy — phá giới hạn IP

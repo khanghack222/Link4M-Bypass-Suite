@@ -10,4 +10,5 @@ pub mod quest;
 pub mod pool;
 pub mod proxy;
 pub mod providers;
+pub mod rcsolver;
 pub mod state;

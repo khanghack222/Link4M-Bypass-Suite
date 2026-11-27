@@ -66,7 +66,16 @@ const CLEAR_QUEST_JS: &str = r#"(() => {
 
 const STATUS_JS: &str = r#"(() => {
   const e = document.getElementById(KEY);
-  return e ? (e.innerText || '').trim() : '';
+  let text = e ? (e.innerText || '').trim() : '';
+  // Some widget builds move the countdown/code node out of the keyed div and
+  // append it to <body> as `.whatoncode` (service-v3 does exactly this after
+  // the first press). Read that node too, otherwise the press looks idle and
+  // the quest is abandoned while it is actually running.
+  if (!text) {
+    const live = document.querySelector('.whatoncode');
+    if (live) text = (live.innerText || '').trim();
+  }
+  return text;
 })()"#;
 
 const RECT_JS: &str = r#"(() => {

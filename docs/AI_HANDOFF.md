@@ -123,7 +123,8 @@ Chi tiết quy tắc: bảng trạng thái trong `README.md`.
   `CACHE_*`, `L4M_CODE*`, `L4M_CAMPAIGN*`, `QUEUE_FILE`, `LINKS_FILE`,
   `QUEUE_RESUME*`, `ASR_THREADS`, `ASR_URL`, `ASR_LANGUAGE`, `ASR_TIMEOUT`,
   `OCR_URL`, `OCR_TIMEOUT`, `OCR_LANGUAGE`, `L4M_OCR_CACHE`, `L4M_PREWARM`,
-  `CHROME_FLAGS`.
+  `CHROME_FLAGS`, `RC_SOLVER_CMD`, `RC_SOLVER_SUBCOMMAND`, `RC_SOLVER_SITEKEY`,
+  `RC_SOLVER_MODEL`, `RC_SOLVER_ROUNDS`, `RC_SOLVER_TIMEOUT`.
 - 5 file test Python đóng băng: được đọc, không được sửa.
 - `server-rs` vẫn gọi `python -m src.bypass_api`; đổi contract stdout
   `__BYPASS_JSON__{...}` là phá façade.

@@ -201,6 +201,10 @@ Auth: nếu đặt `API_KEY`, gửi `x-api-key: <key>` hoặc `?key=`.
 | `L4M_CODE` | rỗng | truyền mã có sẵn, bỏ quest |
 | `ASR_THREADS` | `2` | thread whisper local |
 | `ASR_URL` / `ASR_LANGUAGE` / `ASR_TIMEOUT` | rỗng / `en` / `90` | dùng ASR server ngoài thay whisper local |
+| `RC_SOLVER_CMD` | rỗng | solver reCAPTCHA v2 ngoài (vd `.venv/bin/python solve_service.py`); rỗng = tắt |
+| `RC_SOLVER_SUBCOMMAND` | rỗng | chèn trước args solver, vd `solve` cho `window-vm.exe` |
+| `RC_SOLVER_SITEKEY` | rỗng | sitekey dự phòng khi không đọc được từ page |
+| `RC_SOLVER_MODEL` / `RC_SOLVER_ROUNDS` / `RC_SOLVER_TIMEOUT` | `tiny.en` / `4` / `180` | cấu hình solver ngoài |
 
 ## 8. Bằng chứng live (26/11/2026, Linux 3.7 GB, qua proxy relay)
 

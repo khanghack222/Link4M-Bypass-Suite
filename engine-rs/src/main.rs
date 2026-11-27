@@ -10,7 +10,7 @@ use l4m_engine::asr::Asr;
 use l4m_engine::asr::ensure_model;
 use l4m_engine::cdp::Cdp;
 use l4m_engine::chrome::ChromeProc;
-use l4m_engine::flow::run_alias;
+use l4m_engine::flow::{run_alias, FlowError};
 use l4m_engine::pool::Pool;
 use l4m_engine::state::{Config, Inner};
 use std::sync::Arc;
@@ -223,16 +223,23 @@ async fn run_once(cfg: Config, asr: Arc<Asr>, target: &str) -> Result<()> {
     let cdp = Cdp::connect(&ws).await?;
     let started = std::time::Instant::now();
     let code = std::env::var("L4M_CODE").ok().filter(|c| !c.trim().is_empty());
-    let result = run_alias(
-        &cdp,
-        &asr,
-        &alias,
-        code.as_deref(),
-        chrome.port,
-        proxy.clone(),
-        cfg.job_timeout,
-    )
-    .await;
+    let result = tokio::select! {
+        result = run_alias(
+            &cdp,
+            &asr,
+            &alias,
+            code.as_deref(),
+            chrome.port,
+            proxy.clone(),
+            cfg.job_timeout,
+        ) => result,
+        // `timeout` and Ctrl-C otherwise kill the process before ChromeProc's
+        // Drop runs, leaving a browser tree behind on a memory-tight box.
+        _ = shutdown_signal() => Err(FlowError {
+            kind: "shutdown",
+            message: "shutdown requested".into(),
+        }),
+    };
     let elapsed = started.elapsed().as_secs_f64() * 1000.0;
     match result {
         Ok(destination) => {
@@ -258,7 +265,9 @@ async fn run_once(cfg: Config, asr: Arc<Asr>, target: &str) -> Result<()> {
                     "elapsed_ms": elapsed,
                 })
             );
-            std::process::exit(1);
+            // Return instead of process::exit: exit skips ChromeProc::drop and
+            // leaves a whole browser tree holding RAM on a small box.
+            return Err(anyhow!("{}", err.message));
         }
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
