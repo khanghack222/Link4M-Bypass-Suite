@@ -1,0 +1,82 @@
+name: release
+
+# Builds the engine once and publishes a tarball, so a Colab/Kaggle session
+# starts in ~2 minutes instead of compiling whisper.cpp every time.
+on:
+  push:
+    tags:
+      - "engine-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: release tag
+        default: engine-latest
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine-rs
+      - name: build
+        working-directory: engine-rs
+        env:
+          WHISPER_DONT_GENERATE_BINDINGS: "1"
+        run: cargo build --release
+      - name: package
+        run: |
+          mkdir -p dist
+          cp engine-rs/target/release/l4m-engine dist/
+          cp -r engine-rs/tools dist/tools
+          mkdir -p dist/models
+          curl -fL --retry 3 \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin \
+            -o dist/models/ggml-tiny.en.bin
+          cp deploy/remote/run-foreground.sh deploy/remote/batch-run.sh dist/
+          tar -C dist -czf l4m-engine-linux-x86_64.tar.gz .
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --target "$GITHUB_SHA" \
+              --title "$TAG" --notes "engine build $GITHUB_SHA"
+          gh release upload "$TAG" l4m-engine-linux-x86_64.tar.gz --clobber
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine-rs
+      - name: build
+        working-directory: engine-rs
+        run: cargo build --release --no-default-features
+      - name: package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item engine-rs\target\release\l4m-engine.exe dist\
+          Copy-Item -Recurse engine-rs\tools dist\tools
+          Compress-Archive -Path dist\* -DestinationPath l4m-engine-windows-x86_64.zip
+      - name: publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release view "$env:TAG" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:TAG" --target "$env:GITHUB_SHA" --title "$env:TAG" --notes "engine build"
+          }
+          gh release upload "$env:TAG" l4m-engine-windows-x86_64.zip --clobber

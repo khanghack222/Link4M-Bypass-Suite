@@ -1,0 +1,112 @@
+name: batch
+
+# Free no-card worker: GitHub-hosted runner, 4 vCPU / 16 GB, up to ~5.5 h.
+# Put links in data/batch.txt (one per line) and the schedule picks them up.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: batch
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      L4M_HEADLESS: "0"
+      L4M_PREWARM: "1"
+      L4M_OCR_SERVE: "1"
+      WORKERS: "1"
+      RUST_LOG: engine=info
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: skip when the list is empty
+        id: gate
+        run: |
+          if grep -qvE '^\s*(#|$)' data/batch.txt 2>/dev/null; then
+            echo "run=1" >>"$GITHUB_OUTPUT"
+          else
+            echo "run=0" >>"$GITHUB_OUTPUT"
+            echo "no links in data/batch.txt"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.gate.outputs.run == '1'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.gate.outputs.run == '1'
+        with:
+          workspaces: engine-rs
+
+      - name: deps
+        if: steps.gate.outputs.run == '1'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet rapidocr_onnxruntime opencv-python-headless pillow
+
+      - name: chrome path
+        if: steps.gate.outputs.run == '1'
+        run: |
+          for candidate in /usr/bin/google-chrome /opt/google/chrome/chrome; do
+            if [ -x "$candidate" ]; then
+              echo "CHROME_BIN=$candidate" >>"$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "chrome not found on the runner" >&2
+          exit 1
+
+      - name: whisper model cache
+        if: steps.gate.outputs.run == '1'
+        uses: actions/cache@v4
+        with:
+          path: engine-rs/models
+          key: whisper-tiny-en-v1
+
+      - name: build
+        if: steps.gate.outputs.run == '1'
+        working-directory: engine-rs
+        env:
+          WHISPER_DONT_GENERATE_BINDINGS: "1"
+        run: cargo build --release
+
+      - name: run batch
+        if: steps.gate.outputs.run == '1'
+        env:
+          L4M_DIR: ${{ github.workspace }}
+        run: |
+          chmod +x deploy/remote/batch-run.sh
+          ./deploy/remote/batch-run.sh data/batch.txt data/batch-results.jsonl
+
+      - name: keep the results
+        if: always() && steps.gate.outputs.run == '1'
+        run: |
+          cp engine-batch.log data/batch-engine.log 2>/dev/null || true
+          git config user.name "l4m-bot"
+          git config user.email "l4m-bot@users.noreply.github.com"
+          git add data/batch-results.jsonl data/batch-engine.log 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "nothing new"
+            exit 0
+          fi
+          git commit -m "batch: $(date -u +%Y-%m-%dT%H:%MZ)"
+          git pull --rebase --autostash origin main
+          git push
+
+      - name: upload results
+        if: always() && steps.gate.outputs.run == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-results
+          path: |
+            data/batch-results.jsonl
+            engine-batch.log
+          if-no-files-found: warn

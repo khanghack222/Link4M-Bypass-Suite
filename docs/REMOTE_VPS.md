@@ -7,9 +7,10 @@ cần `curl` hoặc `ssh`; Chrome + whisper chạy trên box khác.
 
 | Nơi | Không cần thẻ | Free tier | RAM | Thức 24/7 | Ghi chú |
 |---|---|---|---|---|---|
-| **Hugging Face Spaces** | ✔ | 2 vCPU / 16 GB, CPU basic | 16 GB | ✔ nhờ ping 6 h/lần | **Khuyến nghị**. Docker, có URL công khai, sleep sau 48 h không truy cập |
-| **GitHub Codespaces** | ✔ | 120 core-hours/tháng | 8 GB | ✘ (sleep 30 phút, hết giờ là dừng) | 2-core ≈ 60 giờ/tháng; tốt để test, không chạy liên tục |
-| **GitHub Actions** | ✔ | 4 vCPU / 16 GB mỗi job | 16 GB | ✘ | Batch một lô link rồi tải artifact; job tối đa 6 h |
+| **GitHub Actions (batch)** | ✔ | 4 vCPU / 16 GB mỗi job, repo public không giới hạn phút | 16 GB | chạy theo cron 6 h | **Khuyến nghị hiện tại**. Xử lý danh sách link, kết quả commit lại repo |
+| **Colab / Kaggle / SageMaker** | ✔ | VM CPU 12–16 GB, phiên ~12 h | 12–16 GB | ✘ (chạy lại mỗi phiên) | Dựng engine + cloudflared tunnel, có URL public, hợp test headful |
+| **GitHub Codespaces** | ✔ | 120 core-hours/tháng | 8 GB | ✘ | 2-core ≈ 60 giờ/tháng, sleep 30 phút |
+| Hugging Face Spaces | ✘ (Pro) | — | — | — | Free tier đã siết về Pro, bỏ |
 | Oracle Cloud Always Free | ✘ cần thẻ verify | 4 OCPU / 24 GB | 24 GB | ✔ | Rẻ nhất về RAM nhưng chặn ở bước thẻ |
 | Fly.io / Koyeb / Render free | — | 256–512 MB | — | — | Không đủ cho Chrome |
 
@@ -17,46 +18,74 @@ RAM thực tế 1 worker: Chrome headful ~700 MB + whisper tiny ~200 MB + OCR
 sidecar ~145 MB ≈ **1.1–1.5 GB**. Spaces 16 GB thoải mái `WORKERS=1`; đừng đẩy
 `WORKERS` cao vì chỉ có 2 vCPU.
 
-## Hugging Face Spaces (khuyến nghị)
+## GitHub Actions batch (khuyến nghị, không cần thẻ)
 
-Repo đã có `Dockerfile` ở gốc và `.dockerignore`; image tự build engine, Chrome,
-Xvfb, RapidOCR, model whisper. Không cần cài gì trên máy.
+Runner GitHub: 4 vCPU / 16 GB, Chrome cài sẵn, repo public không giới hạn phút.
+Đây là chỗ duy nhất free mà mạnh hơn máy này nhiều lần.
 
-1. Tạo Space: **New Space → Docker → Blank**, tên `l4m-engine`, public.
-2. Đẩy repo lên Space:
+1. Thêm link vào `data/batch.txt` (mỗi dòng một URL) rồi commit.
+2. Workflow `.github/workflows/batch.yml` chạy lúc 23 phút mỗi 6 giờ
+   (hoặc bấm tay):
 
 ```bash
-git remote add space https://huggingface.co/spaces/<user>/l4m-engine
-git push space main
+gh workflow run batch
+gh run watch
 ```
 
-3. Trong **Settings → Variables and secrets**:
+3. Kết quả: `data/batch-results.jsonl` được commit lại repo, log ở
+   `data/batch-engine.log`, artifact `batch-results` trong run.
 
-| Tên | Giá trị |
-|---|---|
-| `API_KEY` (secret) | chuỗi dài bất kỳ, bắt buộc vì URL công khai |
-| `WORKERS` | `1` |
+Cách hoạt động: workflow build engine (cache Rust + model whisper), cài
+`xvfb`, chạy `deploy/remote/batch-run.sh` — script bật engine loopback, POST
+từng URL vào `/api/v1/bypass`, ghi JSONL. Một link mất ~2–3 phút (quest 75 s
+là timer của site), nên một job 5,5 h xử lý được ~100 link.
 
-`app_port` mặc định 7860, Dockerfile đã `EXPOSE 7860`.
+Giới hạn: runner bị xoá sau job nên queue/board không sống qua lần chạy; muốn
+giữ thì commit `data/` như trên. Job tối đa 6 h.
 
-4. Chờ build (~10–15 phút), rồi từ laptop:
+## Colab / Kaggle / SageMaker (phiên ~12 h, có URL public)
+
+Không cần thẻ, VM CPU 12–16 GB. Dùng khi cần chạy headful liên tục vài giờ
+hoặc debug quest.
+
+Bước một lần: tạo release có binary sẵn để phiên sau khỏi build lại:
 
 ```bash
-export L4M_REMOTE=https://<user>-l4m-engine.hf.space
-export L4M_API_KEY=<chuỗi ở trên>
+gh workflow run release -f tag=engine-latest
+```
+
+Trong notebook:
+
+```python
+!git clone https://github.com/khanghack222/Link4M-Bypass-Suite.git /content/l4m
+!bash /content/l4m/deploy/remote/colab-start.sh
+```
+
+Script cài Chrome + Xvfb + cloudflared, tải tarball release, dựng engine và
+in ra:
+
+```
+public  : https://<random>.trycloudflare.com
+api key : <random>
+```
+
+Trên laptop:
+
+```bash
+export L4M_REMOTE=https://<random>.trycloudflare.com
+export L4M_API_KEY=<random>
 ./scripts/remote-l4m.sh health
 ./scripts/remote-l4m.sh solve https://link4m.net/go/2kCcIqn
-./scripts/remote-l4m.sh batch links.txt
 ```
 
-5. Giữ Space thức: Space free ngủ sau 48 h không có request. Workflow
-`.github/workflows/keepalive.yml` ping `/health` mỗi 6 h — thêm secret
-`L4M_SPACE_URL` = URL Space trong repo GitHub là xong. Cron của Actions miễn
-phí trên repo public.
+Giữ cell chạy. Colab free ngắt sau ~12 h (hoặc sớm hơn nếu idle lâu); chạy
+lại hai dòng là có tunnel mới. Tunnel URL đổi mỗi phiên. Kaggle/SageMaker
+cùng script, cùng cách.
 
-Lưu ý: URL Space là công khai, nên `API_KEY` không được để rỗng. Không đặt
-`HOST` khác `0.0.0.0` trong Space — HF cần container lắng nghe trên cổng 7860.
-Mỗi lần push code mới, Space rebuild image (queue vài phút).
+## Hugging Face Spaces
+
+Free tier giờ chỉ còn cho Pro. `Dockerfile` ở gốc vẫn dùng được nếu có Pro
+hoặc tự host Docker; với tài khoản free thì bỏ qua mục này.
 
 ## GitHub Codespaces (không cần thẻ, giờ có hạn)
 

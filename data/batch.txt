@@ -1,0 +1,5 @@
+# One URL per line. The scheduled `batch` workflow solves every entry on a
+# GitHub-hosted runner (4 vCPU / 16 GB) and commits data/batch-results.jsonl.
+# Lines starting with # and blank lines are ignored.
+#
+# https://link4m.net/go/2kCcIqn
