@@ -14,6 +14,13 @@ WORKERS=${WORKERS:-1}
 API_KEY=${L4M_API_KEY:-}
 PORT=${PORT:-8080}
 
+# The script changes directory into engine-rs, so both paths are pinned to
+# absolute here; relative arguments used to resolve under engine-rs/ and the
+# workflow failed with "data/batch.txt: No such file or directory".
+LIST=$(realpath "$LIST")
+OUT=$(realpath -m "$OUT")
+mkdir -p "$(dirname "$OUT")"
+
 cd "$L4M_DIR/engine-rs"
 export PATH="$L4M_DIR/.venv/bin:$PATH"
 
