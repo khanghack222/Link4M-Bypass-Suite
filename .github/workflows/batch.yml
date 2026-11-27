@@ -24,6 +24,10 @@ jobs:
       L4M_OCR_SERVE: "1"
       WORKERS: "1"
       RUST_LOG: engine=info
+      # Set L4M_EGRESS_PROXY (repo variable) to a socks5:// URL that exits
+      # through a residential IP. Without it link4m's Cloudflare edge answers
+      # this runner with "Just a moment..." and every job burns out.
+      PROXY_LIST: ${{ vars.L4M_EGRESS_PROXY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +74,18 @@ jobs:
         with:
           path: engine-rs/models
           key: whisper-tiny-en-v1
+
+      - name: egress preflight
+        if: steps.gate.outputs.run == '1' && vars.L4M_EGRESS_PROXY != ''
+        run: |
+          cred=$(printf '%s' "$PROXY_LIST" | sed -E 's#^socks5://([^@]*)@.*#\1#')
+          hostport=$(printf '%s' "$PROXY_LIST" | sed -E 's#^socks5://([^@]*@)?##')
+          ip=$(curl -sS --max-time 25 --socks5-hostname "$hostport" --proxy-user "$cred" https://api.ipify.org || true)
+          if [ -z "$ip" ]; then
+            echo "egress proxy $hostport is dead; refusing to burn the run" >&2
+            exit 1
+          fi
+          echo "egress exits through $ip"
 
       - name: build
         if: steps.gate.outputs.run == '1'

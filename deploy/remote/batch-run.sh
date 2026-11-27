@@ -36,6 +36,7 @@ if [ -z "${DISPLAY:-}" ]; then
 fi
 
 L4M_HEADLESS=0 WORKERS="$WORKERS" API_KEY="$API_KEY" \
+  ${PROXY_LIST:+PROXY_LIST="$PROXY_LIST"} \
   ./target/release/l4m-engine >"$L4M_DIR/engine-batch.log" 2>&1 &
 ENGINE_PID=$!
 trap 'kill "$ENGINE_PID" 2>/dev/null || true; kill "${XVFB_PID:-}" 2>/dev/null || true' EXIT
