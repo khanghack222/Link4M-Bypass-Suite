@@ -254,6 +254,8 @@ const POST_LINK_INFO_JS: &str = r#"(async () => {
   const params = new URLSearchParams(new FormData(form));
   const injected = window.__l4m_code || '';
   if (injected) params.set('password', injected);
+  const token = (form.querySelector('textarea[name=g-recaptcha-response]') || {}).value || '';
+  if (token) params.set('g-recaptcha-response', token);
   const body = params.toString();
   try {
     const response = await fetch(api + '/links/get-link-info', {
@@ -437,7 +439,7 @@ impl<'a> Flow<'a> {
             // Widgets proven to hand their token to the wrong form. Skipping
             // them lets the same attempt try the campaign widget instead of
             // reloading the page and solving the same wrong one again.
-            let mut skip: HashSet<String> = HashSet::new();
+            let skip: HashSet<String> = HashSet::new();
             while Instant::now() < watch && token.is_none() {
                 if let Ok(value) = self.cdp.eval(None, TOKEN_PROBE_JS).await {
                     let len = value.get("len").and_then(Value::as_u64).unwrap_or(0);
@@ -451,18 +453,11 @@ impl<'a> Flow<'a> {
                     if let Some(frame) = self.challenge_frame(campaign_key.as_deref(), &skip).await? {
                         debug!(target: "engine", frame = %frame.0, "challenge open");
                         match self.solve_audio(&frame.0).await {
-                            Ok(found) => match self.campaign_token_ready().await {
-                                Some(true) => token = Some(found),
-                                Some(false) => {
-                                    warn!(target: "engine", frame = %frame.0, "token landed in a non-campaign widget, skipping it");
-                                    skip.insert(frame.0.clone());
-                                    last_err = Some(FlowError::new(
-                                        "audio",
-                                        "solved widget was not the campaign form",
-                                    ));
-                                }
-                                None => token = Some(found),
-                            },
+                            Ok(found) => {
+                                info!(target: "engine", len = found.len(), "audio solved token accepted");
+                                token = Some(found);
+                                break;
+                            }
                             Err(err) => {
                                 warn!(target: "engine", "audio attempt failed: {err}");
                                 last_err = Some(err);
@@ -928,6 +923,7 @@ impl<'a> Flow<'a> {
     }
 
     /// True when the campaign form itself owns a token.
+    #[allow(dead_code)]
     async fn campaign_token_ready(&self) -> Option<bool> {
         match self.cdp.eval(None, TOKEN_PROBE_JS).await {
             Ok(value) => Some(value.get("len").and_then(Value::as_u64).unwrap_or(0) > 50),
@@ -1337,7 +1333,7 @@ impl<'a> Flow<'a> {
             // and the site's data-callback fires on its own. If the challenge
             // was solved in another widget (the page renders three), copy the
             // token into the main form so its POST can validate it.
-            if !injected && state.token <= 50 {
+            if !injected {
                 let _ = self.cdp.eval(None, &inject_token_js(&token)).await;
                 injected = true;
             }
@@ -1428,7 +1424,7 @@ impl<'a> Flow<'a> {
                 return Ok(Some(url.to_string()));
             }
         }
-        debug!(target: "engine", reply = %text.chars().take(200).collect::<String>(), "link-info reply");
+        info!(target: "engine", reply = %text.chars().take(200).collect::<String>(), "link-info reply");
         if let Some(info) = value.get("info").and_then(Value::as_str) {
             if info.contains("Mã không hợp lệ")
                 || info.contains("Sai url")
