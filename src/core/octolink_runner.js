@@ -9,31 +9,57 @@ const path = require('path');
 const { execSync, execFileSync } = require('child_process');
 
 function getChromePath() {
-  const paths = [
+  if (process.env.CHROME_BIN && fs.existsSync(process.env.CHROME_BIN)) {
+    return process.env.CHROME_BIN;
+  }
+  const linuxPaths = [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/opt/google/chrome/chrome',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser'
+  ];
+  for (const p of linuxPaths) {
+    if (fs.existsSync(p)) return p;
+  }
+  const winPaths = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
     path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
   ];
-  for (const p of paths) {
+  for (const p of winPaths) {
     if (fs.existsSync(p)) return p;
   }
-  return 'chrome';
+  return process.platform === 'win32' ? 'chrome' : 'google-chrome';
 }
 
 function getPythonPath() {
-  const candidates = [
+  if (process.env.PYTHON_PATH && fs.existsSync(process.env.PYTHON_PATH)) {
+    return process.env.PYTHON_PATH;
+  }
+  const linuxCandidates = [
+    path.join(__dirname, '../../.venv/bin/python'),
+    path.join(__dirname, '../../.venv/bin/python3'),
+    '/usr/bin/python3',
+    '/usr/local/bin/python3',
+    '/usr/bin/python'
+  ];
+  for (const p of linuxCandidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  const winCandidates = [
     'C:\\Users\\XUAN\\AppData\\Local\\Programs\\Python\\Python311\\python.exe',
     path.join(process.env.LOCALAPPDATA || '', 'Programs\\Python\\Python311\\python.exe'),
     path.join(process.env.LOCALAPPDATA || '', 'Programs\\Python\\Python312\\python.exe'),
     'C:\\Python311\\python.exe',
     'C:\\Python312\\python.exe'
   ];
-  for (const p of candidates) {
+  for (const p of winCandidates) {
     if (p && fs.existsSync(p)) return p;
   }
-  return 'python';
+  return process.platform === 'win32' ? 'python' : 'python3';
 }
 
 const CHROME_PATH = getChromePath();

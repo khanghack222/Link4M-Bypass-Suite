@@ -13,24 +13,37 @@
  * - 🌐 24/7 Keep-alive HTTP Server & Metrics for Render/Railway/Koyeb
  */
 
-require("dotenv").config();
+try {
+    require("dotenv").config();
+} catch (e) {}
+
+let discord = null;
+try {
+    discord = require("discord.js");
+} catch (e) {}
+
 const {
-    Client,
-    GatewayIntentBits,
-    SlashCommandBuilder,
-    REST,
-    Routes,
-    EmbedBuilder,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
-    ModalBuilder,
-    TextInputBuilder,
-    TextInputStyle,
-    ActivityType,
-    ComponentType,
-    MessageFlags
-} = require("discord.js");
+    Client = class {},
+    GatewayIntentBits = { Guilds: 1 },
+    SlashCommandBuilder = class {
+        setName() { return this; }
+        setDescription() { return this; }
+        addStringOption() { return this; }
+        toJSON() { return {}; }
+    },
+    REST = class {},
+    Routes = {},
+    EmbedBuilder = class {},
+    ActionRowBuilder = class {},
+    ButtonBuilder = class {},
+    ButtonStyle = {},
+    ModalBuilder = class {},
+    TextInputBuilder = class {},
+    TextInputStyle = {},
+    ActivityType = {},
+    ComponentType = {},
+    MessageFlags = {}
+} = discord || {};
 const { spawn, execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -48,9 +61,21 @@ const TOKEN = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || "";
 const CLIENT_ID = process.env.CLIENT_ID || process.env.APPLICATION_ID || "";
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "2", 10);
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 phút cache
-const TASK_TIMEOUT_MS = 300 * 1000; // 300 giây (5 phút) bảo đảm hoàn tất cả chiến dịch 2-3 bước đếm ngược
+const TASK_TIMEOUT_MS = 480 * 1000; // 480 giây (8 phút) bao trọn 3x auto-retries trong pool.rs
 
-if (!TOKEN) {
+const L4M_ENGINE_URL = (process.env.L4M_ENGINE_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
+const L4M_API_KEY = process.env.L4M_API_KEY || "";
+
+function extractDestinationUrl(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    const dest = payload.destination_url || payload.destination || payload.final_url || payload.finalUrl;
+    if (typeof dest === "string" && dest.trim().startsWith("http")) {
+        return dest.trim();
+    }
+    return null;
+}
+
+if (require.main === module && !TOKEN) {
     console.error("[FATAL] DISCORD_TOKEN is missing! Please set DISCORD_TOKEN in .env or environment variables.");
     process.exit(1);
 }
@@ -116,7 +141,10 @@ function cleanExpiredCache() {
         if (oldestKey) bypassCache.delete(oldestKey);
     }
 }
-setInterval(cleanExpiredCache, 5 * 60 * 1000);
+let cleanExpiredCacheTimer = null;
+if (require.main === module) {
+    cleanExpiredCacheTimer = setInterval(cleanExpiredCache, 5 * 60 * 1000);
+}
 
 // ==========================================
 // TỰ ĐỘNG TÌM ĐƯỜNG DẪN PYTHON RUNTIME
@@ -174,11 +202,14 @@ function formatUptime(ms) {
 // ==========================================
 // Sử dụng Guilds intent tiêu chuẩn để hoạt động ngay 100% trên Cloud/Hosting
 // mà không cần phải bật Privileged Intent (Message Content) trong Discord Developer Portal.
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds
-    ]
-});
+let client = null;
+if (discord) {
+    client = new Client({
+        intents: [
+            GatewayIntentBits.Guilds
+        ]
+    });
+}
 
 // ==========================================
 // DANH SÁCH LỆNH SLASH (SLASH COMMANDS)
@@ -241,6 +272,87 @@ function processQueue() {
         activeWorkers--;
         processQueue();
     });
+}
+
+// ==========================================
+// ĐIỀU PHỐI NATIVE ENGINE (L4M ENGINE-RS API)
+// ==========================================
+function isLink4M(url) {
+    if (!url || typeof url !== "string") return false;
+    try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.toLowerCase();
+        return /^(?:.*\.)?link4m\.(?:net|com|org|co)$/i.test(host);
+    } catch (e) {
+        return /link4m\.(?:net|com|org|co)/i.test(url);
+    }
+}
+
+async function bypassViaEngine(targetUrl, onLog) {
+    const startTime = Date.now();
+    const headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    };
+    if (L4M_API_KEY) {
+        headers["x-api-key"] = L4M_API_KEY;
+        headers["authorization"] = `Bearer ${L4M_API_KEY}`;
+    }
+
+    if (typeof onLog === "function") {
+        onLog("[*] Kết nối tới Antigravity Engine-RS API...");
+        onLog("[+] Gửi yêu cầu bypass Link4M...");
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), TASK_TIMEOUT_MS);
+
+    try {
+        const resp = await fetch(`${L4M_ENGINE_URL}/api/v1/bypass`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                url: targetUrl,
+                wait: true,
+                timeout: Math.floor(TASK_TIMEOUT_MS / 1000)
+            }),
+            signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (resp.status >= 500) {
+            const errText = await resp.text().catch(() => "");
+            throw new Error(`Engine returned 5xx status ${resp.status}: ${errText}`);
+        }
+
+        const data = await resp.json();
+        const duration = Math.max(1, Math.round((Date.now() - startTime) / 1000));
+        const resolvedDest = extractDestinationUrl(data);
+
+        if ((data.status === "success" || data.ok || resolvedDest) && resolvedDest) {
+            if (typeof onLog === "function") {
+                onLog("[+] Bypass thành công qua Engine-RS!");
+            }
+            return {
+                success: true,
+                destinationUrl: resolvedDest,
+                duration,
+                viaEngine: true,
+            };
+        } else {
+            const errorMsg = data.error || (data.status === "timeout" ? "Timeout waiting for job" : "Engine failed to resolve link");
+            return {
+                success: false,
+                error: errorMsg,
+                duration,
+                viaEngine: true,
+            };
+        }
+    } catch (err) {
+        clearTimeout(timeoutId);
+        throw err;
+    }
 }
 
 // ==========================================
@@ -322,16 +434,13 @@ function runBypassProcess(targetUrl, onLog) {
 
             const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
             let finalUrl = capturedUrl;
-            if (!finalUrl) {
-                for (const p of [runDestFile, FINAL_DEST_FILE, DEST_FILE]) {
-                    if (fs.existsSync(p)) {
-                        const content = fs.readFileSync(p, "utf-8").trim();
-                        if (content.startsWith("http")) {
-                            finalUrl = content;
-                            break;
-                        }
+            if (!finalUrl && fs.existsSync(runDestFile)) {
+                try {
+                    const content = fs.readFileSync(runDestFile, "utf-8").trim();
+                    if (content.startsWith("http")) {
+                        finalUrl = content;
                     }
-                }
+                } catch (e) {}
             }
             // Dọn dẹp runDestFile sau khi đọc xong
             try { if (fs.existsSync(runDestFile)) fs.unlinkSync(runDestFile); } catch (e) {}
@@ -355,7 +464,7 @@ function runBypassProcess(targetUrl, onLog) {
 // ĐIỀU PHỐI TÁC VỤ & GIAO DIỆN LIVE STATUS
 // ==========================================
 async function executeBypassTask(task) {
-    const { updateMessage, targetUrl, userTag, userAvatar, channelId } = task;
+    const { updateMessage, targetUrl, userTag, userAvatar, channelId, mode } = task;
     botStats.totalRequests++;
 
     // 1. Kiểm tra Cache tức thì (Instant Memory Hit)
@@ -487,14 +596,29 @@ async function executeBypassTask(task) {
         } finally {
             tickerUpdating = false;
         }
-    }, 2200);
+    }, 4000);
 
     try {
         await updateMessage({ embeds: [buildLiveEmbed()] });
 
-        const result = await runBypassProcess(targetUrl, (logLine) => {
-            pushLog(logLine);
-        });
+        let result = null;
+        if (isLink4M(targetUrl) && mode !== "stealth") {
+            try {
+                result = await bypassViaEngine(targetUrl, (logLine) => {
+                    pushLog(logLine);
+                });
+            } catch (engineErr) {
+                pushLog(`[!] Engine HTTP fallback: ${engineErr.message.slice(0, 50)}`);
+                pushLog("[*] Chuyển tiếp sang Python Core Engine...");
+                result = null;
+            }
+        }
+
+        if (!result) {
+            result = await runBypassProcess(targetUrl, (logLine) => {
+                pushLog(logLine);
+            });
+        }
 
         isTaskRunning = false;
         clearInterval(ticker);
@@ -539,7 +663,7 @@ async function executeBypassTask(task) {
                 .addFields(
                     { name: "🔗 Link đầu vào", value: `\`${targetUrl}\``, inline: false },
                     { name: "⏱ Thời gian chạy", value: `\`${result.duration}s\``, inline: true },
-                    { name: "💡 Gợi ý", value: "Thử lại sau ít phút hoặc kiểm tra xem link có còn hiệu lực không.", inline: false }
+                    { name: "💡 Chi tiết lỗi", value: result.error ? `\`${result.error}\`` : "Thử lại sau ít phút hoặc kiểm tra xem link có còn hiệu lực không.", inline: false }
                 )
                 .setFooter({ text: `Yêu cầu bởi ${userTag} • Link4M Ultra Suite`, iconURL: userAvatar })
                 .setTimestamp();
@@ -564,6 +688,7 @@ async function executeBypassTask(task) {
 }
 
 // ==========================================
+if (client) {
 client.once("clientReady", async () => {
     const appId = CLIENT_ID || client.user.id;
 
@@ -677,15 +802,21 @@ client.on("interactionCreate", async (interaction) => {
 
             // Đưa từng link vào hàng đợi
             for (const url of urls) {
+                let modalFollowupMsg = null;
                 queue.push({
                     targetUrl: url,
+                    mode: "auto",
                     userTag: interaction.user.tag,
                     userAvatar: interaction.user.displayAvatarURL(),
                     channelId: interaction.channelId,
                     updateMessage: async (payload) => {
-                        // Cập nhật phản hồi riêng tư (Ephemeral)
+                        // Cập nhật phản hồi riêng tư (Ephemeral) - edit message on subsequent ticks to avoid spam
                         try {
-                            await interaction.followUp({ ...payload, flags: MessageFlags.Ephemeral });
+                            if (!modalFollowupMsg) {
+                                modalFollowupMsg = await interaction.followUp({ ...payload, flags: MessageFlags.Ephemeral });
+                            } else {
+                                await modalFollowupMsg.edit(payload);
+                            }
                         } catch (e) {
                             try { await interaction.editReply(payload); } catch (e2) {}
                         }
@@ -842,8 +973,10 @@ client.on("interactionCreate", async (interaction) => {
             });
         }
 
+        const mode = interaction.options.getString("mode") || "auto";
         queue.push({
             targetUrl: rawUrl,
+            mode,
             userTag: interaction.user.tag,
             userAvatar: interaction.user.displayAvatarURL(),
             channelId: interaction.channelId,
@@ -930,66 +1063,83 @@ client.on("messageCreate", async (message) => {
         processQueue();
     }
 });
+}
 
 // ==========================================
 // 24/7 HTTP HEALTHCHECK VÀ DASHBOARD CHO CLOUD HOSTING
 // ==========================================
-const PORT = process.env.PORT || 10000;
-const server = http.createServer((req, res) => {
-    const mem = process.memoryUsage();
-    if (req.url === "/healthz" || req.url === "/") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        return res.end(JSON.stringify({
-            status: "online",
-            bot: client.user ? client.user.tag : "connecting",
-            uptime_seconds: Math.round(process.uptime()),
-            guilds_count: client.guilds ? client.guilds.cache.size : 0,
-            guilds: client.guilds ? client.guilds.cache.map(g => ({ id: g.id, name: g.name, members: g.memberCount })) : [],
-            invite_url: client.user ? `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=277025773632&integration_type=0&scope=bot%20applications.commands` : "",
-            queue_length: queue.length,
-            active_workers: activeWorkers,
-            max_concurrent: MAX_CONCURRENT,
-            cached_links: bypassCache.size,
-            ram_usage: formatBytes(mem.rss),
-            total_bypasses: botStats.successfulBypasses
-        }));
+function startBotServices() {
+    const PORT = process.env.PORT || 10000;
+    const server = http.createServer((req, res) => {
+        const mem = process.memoryUsage();
+        if (req.url === "/healthz" || req.url === "/") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({
+                status: "online",
+                bot: client.user ? client.user.tag : "connecting",
+                uptime_seconds: Math.round(process.uptime()),
+                guilds_count: client.guilds ? client.guilds.cache.size : 0,
+                guilds: client.guilds ? client.guilds.cache.map(g => ({ id: g.id, name: g.name, members: g.memberCount })) : [],
+                invite_url: client.user ? `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=277025773632&integration_type=0&scope=bot%20applications.commands` : "",
+                queue_length: queue.length,
+                active_workers: activeWorkers,
+                max_concurrent: MAX_CONCURRENT,
+                cached_links: bypassCache.size,
+                ram_usage: formatBytes(mem.rss),
+                total_bypasses: botStats.successfulBypasses
+            }));
+        }
+        res.writeHead(404);
+        res.end();
+    });
+
+    server.on("error", (err) => {
+        if (err.code === "EADDRINUSE") {
+            console.log(`[HTTP SERVER] Cổng ${PORT} đang bận, bỏ qua tự động để tiếp tục chạy bot.`);
+        } else {
+            console.error("[HTTP SERVER ERROR]", err);
+        }
+    });
+
+    server.listen(PORT, () => {
+        console.log(`[HTTP SERVER] 🚀 24/7 Keep-alive server listening on port ${PORT}`);
+    });
+
+    function cleanup() {
+        console.log("\n[SHUTDOWN] Đang dọn dẹp tiến trình...");
+        server.close();
+        client.destroy();
+        process.exit(0);
     }
-    res.writeHead(404);
-    res.end();
-});
+    process.on("SIGINT", cleanup);
+    process.on("SIGTERM", cleanup);
 
-server.on("error", (err) => {
-    if (err.code === "EADDRINUSE") {
-        console.log(`[HTTP SERVER] Cổng ${PORT} đang bận, bỏ qua tự động để tiếp tục chạy bot.`);
-    } else {
-        console.error("[HTTP SERVER ERROR]", err);
+    process.on("unhandledRejection", (reason, promise) => {
+        console.error("[UNHANDLED REJECTION]", reason);
+    });
+    process.on("uncaughtException", (err) => {
+        console.error("[UNCAUGHT EXCEPTION]", err);
+    });
+
+    if (!discord) {
+        console.error("[FATAL] discord.js is not installed! Run: npm install discord.js dotenv");
+        process.exit(1);
     }
-});
 
-server.listen(PORT, () => {
-    console.log(`[HTTP SERVER] 🚀 24/7 Keep-alive server listening on port ${PORT}`);
-});
-
-// ==========================================
-// GRACEFUL SHUTDOWN (DỌN TIẾN TRÌNH KHI TẮT CONTAINER)
-// ==========================================
-function cleanup() {
-    console.log("\n[SHUTDOWN] Đang dọn dẹp tiến trình...");
-    server.close();
-    client.destroy();
-    process.exit(0);
+    // Đăng nhập bot
+    client.login(TOKEN).catch((err) => {
+        console.error("[FATAL LOGIN ERROR] Không thể đăng nhập Discord Bot:", err.message);
+    });
 }
-process.on("SIGINT", cleanup);
-process.on("SIGTERM", cleanup);
 
-process.on("unhandledRejection", (reason, promise) => {
-    console.error("[UNHANDLED REJECTION]", reason);
-});
-process.on("uncaughtException", (err) => {
-    console.error("[UNCAUGHT EXCEPTION]", err);
-});
+if (require.main === module) {
+    startBotServices();
+}
 
-// Đăng nhập bot
-client.login(TOKEN).catch((err) => {
-    console.error("[FATAL LOGIN ERROR] Không thể đăng nhập Discord Bot:", err.message);
-});
+module.exports = {
+    TASK_TIMEOUT_MS,
+    MAX_CONCURRENT,
+    extractDestinationUrl,
+    isLink4M,
+    loadProviderRegistry
+};

@@ -16,6 +16,34 @@ import subprocess
 # Configure UTF-8 for Windows Terminal
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+
+def _has_interactive_stdin() -> bool:
+    """Check whether stdin is connected to an interactive user console.
+
+    On Windows, NUL (e.g. subprocess.DEVNULL) returns True for isatty() under UCRT,
+    so we check GetConsoleMode to verify it is an actual Win32 console buffer.
+    """
+    if sys.stdin is None:
+        return False
+    try:
+        if not sys.stdin.isatty():
+            return False
+    except Exception:
+        return False
+
+    if os.name == "nt":
+        try:
+            import msvcrt
+            import ctypes
+            handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+            mode = ctypes.c_ulong()
+            if ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)) == 0:
+                return False
+            return True
+        except Exception:
+            return False
+    return True
+
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 CORE_DIR = os.path.join(ROOT_DIR, "src", "core")
 if CORE_DIR not in sys.path:
@@ -226,12 +254,13 @@ def main():
 
     # Prompt user directly for link if not provided via CLI argument
     if not target_url:
+        is_interactive = _has_interactive_stdin() and not args.quiet and not args.json
+        if not is_interactive:
+            print(f"[ERROR] URL is required. Provide a link via --url <url> or as positional argument.", file=sys.stderr)
+            sys.exit(1)
         default_demo = "https://gtraffic.io/X3BR2OQ"
-        if args.quiet or args.json:
-            target_url = default_demo
-        else:
-            ans = input(f"  {C_BOLD}{C_CYAN}➤ Nhập link cần vượt {C_DIM}(Enter để dùng demo {default_demo}){C_RESET}: ").strip()
-            target_url = ans if ans.startswith("http") else default_demo
+        ans = input(f"  {C_BOLD}{C_CYAN}➤ Nhập link cần vượt {C_DIM}(Enter để dùng demo {default_demo}){C_RESET}: ").strip()
+        target_url = ans if ans.startswith("http") else default_demo
 
     execute_bypass(target_url, headless=headless, quiet=args.quiet, output_json=args.json,
                    engine=args.engine)

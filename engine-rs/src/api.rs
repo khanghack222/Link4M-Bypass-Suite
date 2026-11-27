@@ -117,6 +117,17 @@ where
     }))
 }
 
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.as_bytes()
+        .iter()
+        .zip(b.as_bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
 fn check_auth(inner: &Inner, headers: &HeaderMap, query_key: Option<&str>) -> Result<(), ApiError> {
     let expected = inner.cfg.api_key.trim();
     if expected.is_empty() {
@@ -127,7 +138,10 @@ fn check_auth(inner: &Inner, headers: &HeaderMap, query_key: Option<&str>) -> Re
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    if header_key == Some(expected) || bearer == Some(expected) || query_key == Some(expected) {
+    let matched = header_key.map_or(false, |k| constant_time_eq(k, expected))
+        || bearer.map_or(false, |k| constant_time_eq(k, expected))
+        || query_key.map_or(false, |k| constant_time_eq(k, expected));
+    if matched {
         Ok(())
     } else {
         Err(ApiError::unauthorized())
@@ -543,6 +557,8 @@ async fn root() -> Json<Value> {
         "endpoints": [
             "POST /api/v1/bypass",
             "GET /api/v1/bypass?url=...",
+            "POST /bypass",
+            "GET /bypass?url=...",
             "GET /api/v1/jobs/{id}",
             "POST /api/v1/batch",
             "GET /api/v1/stats",
@@ -564,6 +580,7 @@ pub fn router(state: Arc<ApiState>) -> Router {
         .route("/api/v1/links", get(links))
         .route("/api/v1/events", get(events))
         .route("/api/v1/bypass", post(bypass_post).get(bypass_get))
+        .route("/bypass", post(bypass_post).get(bypass_get))
         .route("/api/v1/jobs/{id}", get(job_get))
         .route("/api/v1/batch", post(batch))
         .route("/status", get(status_page))
@@ -712,6 +729,36 @@ mod tests {
         let (status, body) = call(
             app,
             Request::builder().uri(uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["destination_url"], "https://example.com/x");
+    }
+
+    #[tokio::test]
+    async fn bypass_route_alias_works() {
+        let app = router(state("", 1, 8));
+        let payload = json!({ "url": DECODE_URL, "wait": true }).to_string();
+        let (status, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/bypass")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "success");
+        assert_eq!(body["destination_url"], "https://example.com/x");
+
+        let (status, body) = call(
+            app,
+            Request::builder()
+                .uri(format!("/bypass?url={DECODE_URL}"))
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -991,5 +1038,14 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body["detail"].as_str().unwrap().contains("50"));
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        assert!(constant_time_eq("secret123", "secret123"));
+        assert!(!constant_time_eq("secret123", "secret124"));
+        assert!(!constant_time_eq("secret123", "secret"));
+        assert!(!constant_time_eq("", "secret"));
+        assert!(constant_time_eq("", ""));
     }
 }

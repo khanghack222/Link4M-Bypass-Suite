@@ -11,7 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex as AsyncMutex;
@@ -47,13 +48,39 @@ fn load() -> HashMap<String, Entry> {
         .unwrap_or_default()
 }
 
-fn save(map: &HashMap<String, Entry>) {
-    let path = path();
+fn temp_sibling(path: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("codes.json");
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), seq))
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) {
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        if !dir.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(dir);
+        }
     }
+    let tmp = temp_sibling(path);
+    if std::fs::write(&tmp, bytes).is_err() {
+        return;
+    }
+    if std::fs::rename(&tmp, path).is_ok() {
+        return;
+    }
+    let _ = std::fs::remove_file(path);
+    if std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn save(map: &HashMap<String, Entry>) {
+    let p = path();
     if let Ok(raw) = serde_json::to_string_pretty(map) {
-        let _ = std::fs::write(path, raw);
+        atomic_write(&p, raw.as_bytes());
     }
 }
 
@@ -81,7 +108,7 @@ pub fn put(campaign: &str, code: &str) {
     if campaign.is_empty() || code.trim().is_empty() {
         return;
     }
-    let mut guard = store().lock().expect("code cache");
+    let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
     guard.insert(
         campaign.to_string(),
         Entry { code: code.trim().to_string(), ts: now() },
@@ -93,7 +120,7 @@ pub fn invalidate(campaign: &str) {
     if campaign.is_empty() {
         return;
     }
-    let mut guard = store().lock().expect("code cache");
+    let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
     if guard.remove(campaign).is_some() {
         save(&guard);
     }
@@ -118,7 +145,8 @@ mod tests {
 
     #[test]
     fn round_trip_and_expiry() {
-        std::env::set_var("L4M_CODE_FILE", "/tmp/l4m-codes-test.json");
+        let test_path = std::env::temp_dir().join(format!("l4m-codes-test-{}.json", std::process::id()));
+        std::env::set_var("L4M_CODE_FILE", test_path.to_str().unwrap());
         std::env::set_var("L4M_CODE_TTL", "900");
         let _ = std::fs::remove_file(path());
         assert!(get("camp-x").is_none());
@@ -126,5 +154,28 @@ mod tests {
         assert_eq!(get("camp-x").as_deref(), Some("AbC123"));
         invalidate("camp-x");
         assert!(get("camp-x").is_none());
+        let _ = std::fs::remove_file(path());
+    }
+
+    #[test]
+    fn atomic_save_and_load_roundtrip() {
+        let test_path = std::env::temp_dir().join(format!("l4m-codes-atomic-{}.json", std::process::id()));
+        let mut map = HashMap::new();
+        map.insert(
+            "camp-atomic".to_string(),
+            Entry {
+                code: "SECRET_999".to_string(),
+                ts: now(),
+            },
+        );
+        let raw = serde_json::to_string_pretty(&map).unwrap();
+        atomic_write(&test_path, raw.as_bytes());
+
+        let read_back: HashMap<String, Entry> = std::fs::read_to_string(&test_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap();
+        assert_eq!(read_back.get("camp-atomic").unwrap().code, "SECRET_999");
+        let _ = std::fs::remove_file(&test_path);
     }
 }

@@ -54,8 +54,10 @@ fi
 # ${VAR:+VAR=...} word on the command line gets expanded after bash has already
 # decided which words are assignments, so it ran as a command name instead.
 [ -n "${PROXY_LIST:-}" ] && export PROXY_LIST
+ENGINE_BIN="./target/release-fast/l4m-engine"
+[ ! -x "$ENGINE_BIN" ] && ENGINE_BIN="./target/release/l4m-engine"
 env L4M_HEADLESS="$HEADLESS" WORKERS="$WORKERS" API_KEY="$API_KEY" \
-  ./target/release/l4m-engine >"$L4M_DIR/engine-batch.log" 2>&1 &
+  "$ENGINE_BIN" >"$L4M_DIR/engine-batch.log" 2>&1 &
 ENGINE_PID=$!
 trap 'kill "$ENGINE_PID" 2>/dev/null || true; kill "${XVFB_PID:-}" 2>/dev/null || true' EXIT
 

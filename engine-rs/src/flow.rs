@@ -41,7 +41,7 @@ pub struct FlowError {
 }
 
 impl FlowError {
-    fn new(kind: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(kind: &'static str, message: impl Into<String>) -> Self {
         Self { kind, message: message.into() }
     }
 }
@@ -81,6 +81,24 @@ const STATE_JS: &str = r#"(() => {
   };
 })()"#;
 
+pub const WARP_SPOOF_JS: &str = r#"
+(() => {
+  if (window.__l4m_warp_patched || typeof window.fetch !== 'function') return;
+  window.__l4m_warp_patched = true;
+  const origFetch = window.fetch.bind(window);
+  window.fetch = async function(...args) {
+    const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
+    if (url.includes('cdn-cgi/trace')) {
+      return new Response('fl=mock\nh=1.1.1.1\nip=127.0.0.1\nwarp=off\ngateway=off\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' }
+      });
+    }
+    return origFetch(...args);
+  };
+})();
+"#;
+
 /// Sitekey of the widget that lives in the campaign form.
 ///
 /// The page carries two or three reCAPTCHA widgets with *different* sitekeys
@@ -90,35 +108,101 @@ const STATE_JS: &str = r#"(() => {
 /// between a `bframe?k=...` and the form that will accept its token.
 const CAMPAIGN_SITEKEY_JS: &str = r#"(() => {
   const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
-  if (!form) return '';
-  const box = form.querySelector('[data-sitekey]');
-  return box ? (box.getAttribute('data-sitekey') || '') : '';
+  const rc = document.getElementById('recaptcha') || document.getElementById('recaptcha-2');
+
+  // 1. Check anchor frame k= inside main form or #recaptcha
+  const anchor = (form ? form.querySelector('iframe[src*="/anchor"]') : null) || (rc ? rc.querySelector('iframe[src*="/anchor"]') : null);
+  if (anchor && anchor.src) {
+    const match = anchor.src.match(/[?&]k=([^&]+)/);
+    if (match && match[1] && match[1].length > 10) return decodeURIComponent(match[1]);
+  }
+
+  // 2. Check window.recaptcha_key if set dynamically (must not match report modal key if report modal exists)
+  const reportEl = document.getElementById('recaptcha-report');
+  const reportKey = reportEl ? (reportEl.getAttribute('data-sitekey') || '').trim() : '';
+  if (typeof recaptcha_key === 'string' && recaptcha_key.trim().length > 10) {
+    const k = recaptcha_key.trim();
+    if (!reportKey || k !== reportKey) {
+      return k;
+    }
+  }
+
+  // 3. Check data-sitekey on main form or #recaptcha
+  if (form) {
+    const box = form.querySelector('[data-sitekey]');
+    const k = box ? (box.getAttribute('data-sitekey') || '').trim() : '';
+    if (k.length > 10) return k;
+  }
+  if (rc) {
+    const k = (rc.getAttribute('data-sitekey') || '').trim();
+    if (k.length > 10) return k;
+  }
+
+  // 4. Fallback to window.recaptcha_key
+  if (typeof recaptcha_key === 'string' && recaptcha_key.trim().length > 10) {
+    return recaptcha_key.trim();
+  }
+
+  // 5. Global [data-sitekey] fallback, strictly skipping #modal-report and #recaptcha-report
+  const candidates = Array.from(document.querySelectorAll('[data-sitekey]'));
+  for (const el of candidates) {
+    if (el.id === 'recaptcha-report' || (el.closest && el.closest('#modal-report, #modal-report-form, #recaptcha-report'))) {
+      continue;
+    }
+    const k = (el.getAttribute('data-sitekey') || '').trim();
+    if (k.length > 10) return k;
+  }
+
+  return '';
 })()"#;
 
 const TOKEN_JS: &str = r#"(() => {
-  const values = Array.from(document.querySelectorAll('textarea[name=g-recaptcha-response]')).map(t => t.value || '');
-  return values.sort((a, b) => b.length - a.length)[0] || '';
+  const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
+  if (form) {
+    const own = form.querySelector('textarea[name=g-recaptcha-response]');
+    if (own && own.value && own.value.length > 50) return own.value;
+  }
+  const rc = document.getElementById('recaptcha') || document.getElementById('recaptcha-2');
+  if (rc) {
+    const t = rc.querySelector('textarea[name=g-recaptcha-response]');
+    if (t && t.value && t.value.length > 50) return t.value;
+  }
+  return '';
 })()"#;
 
-/// One round-trip for the token fast path: `len` is the length of the token
-/// owned by the campaign form (the only one Link4M accepts), `token` is the
-/// longest token on the page (the widget can solve in another form, and that
-/// value still gets injected into the campaign form later).
+/// One round-trip for the token fast path: `len` and `token` are strictly read
+/// from the campaign form / #recaptcha container (never from the report modal).
 const TOKEN_PROBE_JS: &str = r#"(() => {
   const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
-  const own = form ? form.querySelector('textarea[name=g-recaptcha-response]') : null;
-  const values = Array.from(document.querySelectorAll('textarea[name=g-recaptcha-response]')).map(t => t.value || '');
-  const token = values.sort((a, b) => b.length - a.length)[0] || '';
-  return {len: own ? (own.value || '').length : 0, token: token};
+  const rc = document.getElementById('recaptcha') || document.getElementById('recaptcha-2');
+  let token = '';
+  if (form) {
+    const own = form.querySelector('textarea[name=g-recaptcha-response]');
+    if (own && own.value && own.value.length > 50) token = own.value;
+  }
+  if (!token && rc) {
+    const t = rc.querySelector('textarea[name=g-recaptcha-response]');
+    if (t && t.value && t.value.length > 50) token = t.value;
+  }
+  return {len: token.length, token: token};
 })()"#;
 
-/// Landing-page boot signals. The flow used to sleep a flat 2.2 s after the
-/// form appeared; polling these lets an already-armed page proceed at once.
-const BOOT_JS: &str = r#"(() => ({
-  complete: document.readyState === 'complete',
-  grecaptcha: typeof grecaptcha !== 'undefined',
-  anchor: [...document.querySelectorAll('iframe')].some(f => (f.src || '').includes('/anchor'))
-}))()"#;
+/// Landing-page boot signals. Waits specifically for #main-form / #recaptcha's
+/// own anchor iframe or rendered container, NOT the static report modal's anchor.
+const BOOT_JS: &str = r#"(() => {
+  const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
+  const rc = document.getElementById('recaptcha') || document.getElementById('recaptcha-2');
+  const anchorInForm = form ? !!form.querySelector('iframe[src*="/anchor"]') : false;
+  const anchorInRc = rc ? !!rc.querySelector('iframe[src*="/anchor"]') : false;
+  const rcRendered = rc ? (rc.children.length > 0 || !!rc.querySelector('iframe')) : false;
+  return {
+    complete: document.readyState === 'complete',
+    grecaptcha: typeof grecaptcha !== 'undefined',
+    form: !!form,
+    anchor: anchorInForm || anchorInRc,
+    rendered: rcRendered
+  };
+})()"#;
 
 const ANCHOR_CLICK_JS: &str = r#"(() => {
   const el = document.getElementById('recaptcha-anchor');
@@ -233,6 +317,13 @@ const FINISH_STATE_JS: &str = r#"(() => {
     const t = form.querySelector('textarea[name=g-recaptcha-response]');
     token = t ? (t.value || '').length : 0;
   }
+  if (!token) {
+    const rc = document.getElementById('recaptcha') || document.getElementById('recaptcha-2');
+    if (rc) {
+      const t = rc.querySelector('textarea[name=g-recaptcha-response]');
+      token = t ? (t.value || '').length : 0;
+    }
+  }
   return {
     url: location.href,
     href: el ? (el.getAttribute('href') || '') : '',
@@ -245,20 +336,23 @@ const FINISH_STATE_JS: &str = r#"(() => {
 })()"#;
 
 /// Same POST the page's own `checkCaptcha`/`checkPassword` handlers send.
-/// Doing it from page context keeps cookies, origin and site scripts intact,
-/// but returns the destination without relying on a click navigating away.
+/// When password/code exists, posts to `/links/get-link-info`;
+/// when captcha-only (no password input), posts to `/links/check-captcha`.
 const POST_LINK_INFO_JS: &str = r#"(async () => {
   const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
   if (!form) return JSON.stringify({error: 'no form'});
   const api = (typeof api_domain === 'string' && api_domain) ? api_domain : 'https://s1.link4m.app';
   const params = new URLSearchParams(new FormData(form));
+  const pwInput = form.querySelector('input[name=password]');
   const injected = window.__l4m_code || '';
   if (injected) params.set('password', injected);
   const token = (form.querySelector('textarea[name=g-recaptcha-response]') || {}).value || '';
   if (token) params.set('g-recaptcha-response', token);
+  const hasPassword = !!(pwInput || injected);
+  const endpoint = hasPassword ? '/links/get-link-info' : '/links/check-captcha';
   const body = params.toString();
   try {
-    const response = await fetch(api + '/links/get-link-info', {
+    const response = await fetch(api + endpoint, {
       method: 'POST',
       credentials: 'include',
       headers: {
@@ -324,6 +418,22 @@ impl<'a> Flow<'a> {
             .call("DOM.enable", json!({}))
             .await
             .map_err(|e| FlowError::new("cdp", e.to_string()))?;
+
+        let spoof_warp = std::env::var("L4M_SPOOF_WARP")
+            .map(|v| v != "0")
+            .unwrap_or(true);
+        if spoof_warp {
+            let res = self
+                .cdp
+                .call(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    json!({ "source": WARP_SPOOF_JS }),
+                )
+                .await;
+            if let Err(err) = res {
+                warn!(target: "engine", "failed to install warp spoof script: {err}");
+            }
+        }
 
         let url = format!("https://link4m.net/go/{}", self.alias);
         self.navigate(&url).await?;
@@ -449,7 +559,7 @@ impl<'a> Flow<'a> {
                         break;
                     }
                 }
-                if watch_start.elapsed() >= Duration::from_millis(1200) {
+                if watch_start.elapsed() >= Duration::from_millis(400) {
                     if let Some(frame) = self.challenge_frame(campaign_key.as_deref(), &skip).await? {
                         debug!(target: "engine", frame = %frame.0, "challenge open");
                         match self.solve_audio(&frame.0).await {
@@ -465,7 +575,7 @@ impl<'a> Flow<'a> {
                         }
                     }
                 }
-                let delay = if watch_start.elapsed() < Duration::from_millis(1200) {
+                let delay = if watch_start.elapsed() < Duration::from_millis(400) {
                     Duration::from_millis(80)
                 } else {
                     poll_delay(probe_step)
@@ -523,6 +633,9 @@ impl<'a> Flow<'a> {
                 }
                 Err(err) => {
                     warn!(target: "engine", "token did not unlock: {err}");
+                    if err.kind == "rate_limit" {
+                        return Err(err);
+                    }
                     if err.kind == "code" {
                         if let Some((campaign, _)) = &prepared {
                             warn!(target: "engine", campaign = %campaign, "cached code rejected, invalidating");
@@ -724,8 +837,17 @@ impl<'a> Flow<'a> {
     async fn await_document_swap(&self, before: Option<f64>) {
         let Some(before) = before else {
             // No stamp to compare (e.g. the context is mid-navigation): keep a
-            // short settle so callers never evaluate the previous document.
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            // short settle and poll document.readyState briefly so callers don't pay
+            // dead wait while avoiding evaluating the previous document.
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            for _ in 0..3 {
+                if let Ok(Value::String(state)) = self.cdp.eval(None, "document.readyState").await {
+                    if state == "complete" || state == "interactive" {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
             return;
         };
         // Commit normally lands in well under a second; 10 s is only a guard
@@ -824,7 +946,8 @@ impl<'a> Flow<'a> {
                     let complete = value.get("complete").and_then(Value::as_bool).unwrap_or(false);
                     let grecaptcha = value.get("grecaptcha").and_then(Value::as_bool).unwrap_or(false);
                     let anchor = value.get("anchor").and_then(Value::as_bool).unwrap_or(false);
-                    complete && (password_only || grecaptcha || anchor)
+                    let rendered = value.get("rendered").and_then(Value::as_bool).unwrap_or(false);
+                    complete && (password_only || anchor || (grecaptcha && rendered))
                 }
                 Err(_) => false,
             };
@@ -844,9 +967,10 @@ impl<'a> Flow<'a> {
         let mut step = 0usize;
         while Instant::now() < until {
             if let Ok(value) = self.cdp.eval(None, BOOT_JS).await {
-                let grecaptcha = value.get("grecaptcha").and_then(Value::as_bool).unwrap_or(false);
                 let anchor = value.get("anchor").and_then(Value::as_bool).unwrap_or(false);
-                if grecaptcha || anchor {
+                let rendered = value.get("rendered").and_then(Value::as_bool).unwrap_or(false);
+                let grecaptcha = value.get("grecaptcha").and_then(Value::as_bool).unwrap_or(false);
+                if anchor || (grecaptcha && rendered) {
                     return;
                 }
             }
@@ -933,10 +1057,10 @@ impl<'a> Flow<'a> {
 
     /// Name of the reCAPTCHA widget that owns a frame, or the containing form id.
     ///
-    /// The page renders three widgets with the same sitekey (main form, second
-    /// form, report modal). A token solved in the wrong widget is valid for
-    /// Google but rejected by Link4M, which is exactly the "captcha wrong or
-    /// expired" failure. Match the frame to its widget before clicking.
+    /// The page renders multiple widgets with different sitekeys (main form,
+    /// report modal). A token solved in the report modal is rejected by Link4M.
+    /// Trace the frame to its container cleanly using closest/ancestor walk,
+    /// identifying recaptcha-report and modal-report.
     async fn owner_widget(&self, frame_id: &str) -> Option<String> {
         let owner = self
             .cdp
@@ -960,7 +1084,7 @@ impl<'a> Flow<'a> {
                 "Runtime.callFunctionOn",
                 json!({
                     "objectId": object_id,
-                    "functionDeclaration": "function(){ let n=this; for(let i=0;i<10&&n;i++){ if(n.id==='recaptcha'||n.id==='recaptcha-2'||n.id==='recaptcha-report') return n.id; if(n.id==='main-form'||n.id==='main-form-2'||n.id==='main-form-3') return n.id; n=n.parentElement; } return ''; }",
+                    "functionDeclaration": "function(){ let n=this; if(!n) return ''; if(n.closest){ if(n.closest('#recaptcha-report, #modal-report, #modal-report-form, .modal-report')) return 'recaptcha-report'; if(n.closest('#recaptcha')) return 'recaptcha'; if(n.closest('#recaptcha-2')) return 'recaptcha-2'; if(n.closest('#main-form')) return 'main-form'; if(n.closest('#main-form-2')) return 'main-form-2'; if(n.closest('#main-form-3')) return 'main-form-3'; } for(let i=0;i<20&&n;i++){ if(n.id==='recaptcha'||n.id==='recaptcha-2'||n.id==='recaptcha-report') return n.id; if(n.id==='main-form'||n.id==='main-form-2'||n.id==='main-form-3'||n.id==='modal-report'||n.id==='modal-report-form') return n.id; n=n.parentElement; } return ''; }",
                     "returnByValue": true
                 }),
             )
@@ -978,15 +1102,38 @@ impl<'a> Flow<'a> {
     async fn is_main_widget(&self, frame_id: &str) -> bool {
         matches!(
             self.owner_widget(frame_id).await.as_deref(),
-            Some("recaptcha") | Some("main-form")
+            Some("recaptcha") | Some("recaptcha-2") | Some("main-form") | Some("main-form-2") | Some("main-form-3")
         )
+    }
+
+    /// True when the frame belongs to the report modal / report widget.
+    async fn is_report_widget(&self, frame_id: &str) -> bool {
+        matches!(
+            self.owner_widget(frame_id).await.as_deref(),
+            Some("recaptcha-report") | Some("modal-report") | Some("modal-report-form")
+        )
+    }
+
+    /// Sitekey of the report modal if present on the page.
+    async fn report_sitekey(&self) -> Option<String> {
+        let script = r#"(() => {
+          const el = document.getElementById('recaptcha-report');
+          return el ? (el.getAttribute('data-sitekey') || '') : '';
+        })()"#;
+        if let Ok(Value::String(key)) = self.cdp.eval(None, script).await {
+            let key = key.trim().to_string();
+            if key.len() > 10 {
+                return Some(key);
+            }
+        }
+        None
     }
 
     /// Sitekey the campaign form will accept a token for.
     ///
-    /// Read from the form's own `.g-recaptcha[data-sitekey]`. When the marker
-    /// is missing (older layout), fall back to the anchor frame that sits
-    /// inside the campaign container and take its `k=` parameter.
+    /// Evaluates CAMPAIGN_SITEKEY_JS first. When needed, inspects main widget
+    /// anchor frames and takes their `k=` parameter, strictly excluding any
+    /// report modal widgets.
     async fn campaign_sitekey(&self) -> Option<String> {
         if let Ok(Value::String(key)) = self.cdp.eval(None, CAMPAIGN_SITEKEY_JS).await {
             let key = key.trim().to_string();
@@ -994,11 +1141,23 @@ impl<'a> Flow<'a> {
                 return Some(key);
             }
         }
+        let report_key = self.report_sitekey().await;
         for (id, url) in self.frames().await.ok()? {
-            if !url.contains("/anchor") || !self.is_main_widget(&id).await {
+            if !url.contains("/anchor") {
+                continue;
+            }
+            if self.is_report_widget(&id).await {
+                continue;
+            }
+            if !self.is_main_widget(&id).await {
                 continue;
             }
             if let Some(key) = url_param(&url, "k") {
+                if let Some(rk) = &report_key {
+                    if &key == rk {
+                        continue;
+                    }
+                }
                 return Some(key);
             }
         }
@@ -1007,16 +1166,25 @@ impl<'a> Flow<'a> {
 
     async fn click_anchor(&self, campaign_key: Option<&str>) -> FlowResult<bool> {
         let until = Instant::now() + Duration::from_secs(10);
+        let report_key = self.report_sitekey().await;
         while Instant::now() < until {
             let mut all: Vec<(String, String)> = Vec::new();
             for (id, url) in self.frames().await? {
                 if url.contains("/api2/anchor") || url.contains("/enterprise/anchor") {
+                    if self.is_report_widget(&id).await {
+                        continue;
+                    }
+                    if let Some(k) = url_param(&url, "k") {
+                        if let Some(rk) = &report_key {
+                            if &k == rk {
+                                continue;
+                            }
+                        }
+                    }
                     all.push((id, url));
                 }
             }
-            // Sitekey first, container id second. The report modal carries a
-            // different sitekey; clicking its anchor opens a challenge whose
-            // token Link4M then rejects.
+            // Sitekey first, container id second. Never fall back to non-main / report widgets.
             let mut ordered: Vec<(String, String)> = Vec::new();
             if let Some(key) = campaign_key {
                 for pair in &all {
@@ -1030,11 +1198,7 @@ impl<'a> Flow<'a> {
                     ordered.push(pair.clone());
                 }
             }
-            for pair in &all {
-                if !ordered.iter().any(|(id, _)| id == &pair.0) {
-                    ordered.push(pair.clone());
-                }
-            }
+
             for (id, _) in ordered {
                 let Ok(mut context) = self.context_cached(&id).await else { continue };
                 if let Ok(Value::Bool(true)) = self.eval_frame(&id, &mut context, ANCHOR_CLICK_JS).await {
@@ -1056,10 +1220,22 @@ impl<'a> Flow<'a> {
             .eval(
                 None,
                 r#"(() => {
-                  const f = [...document.querySelectorAll('iframe')]
-                    .find(x => (x.src || '').includes('recaptcha') && (x.src || '').includes('anchor'));
+                  const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
+                  let f = form ? form.querySelector('iframe[src*="/anchor"]') : null;
+                  if (!f) {
+                    const rc = document.getElementById('recaptcha') || document.getElementById('recaptcha-2');
+                    if (rc) f = rc.querySelector('iframe[src*="/anchor"]');
+                  }
                   if (!f) return null;
+                  // Dismiss report modal / modal backdrop if overlaying
+                  const reportModal = document.getElementById('modal-report');
+                  if (reportModal) {
+                    reportModal.classList.remove('show');
+                    reportModal.style.display = 'none';
+                  }
+                  document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
                   const r = f.getBoundingClientRect();
+                  if (r.width === 0 || r.height === 0) return null;
                   return {x: r.x + 28, y: r.y + r.height / 2};
                 })()"#,
             )
@@ -1090,31 +1266,47 @@ impl<'a> Flow<'a> {
         campaign_key: Option<&str>,
         skip: &HashSet<String>,
     ) -> FlowResult<Option<(String, i64)>> {
+        let report_key = self.report_sitekey().await;
         let frames: Vec<(String, String)> = self
             .frames()
             .await?
             .into_iter()
             .filter(|(id, url)| url.contains("bframe") && !skip.contains(id))
             .collect();
-        // Order: campaign sitekey, then the widget whose container is the
-        // campaign form, then everything else. Challenge iframes live at body
-        // level, so the sitekey is the only reliable link to their form.
+        // Exclude report widgets or frames matching report modal's sitekey
+        let mut candidates: Vec<(String, String)> = Vec::new();
+        for (id, url) in frames {
+            if self.is_report_widget(&id).await {
+                continue;
+            }
+            if let Some(k) = url_param(&url, "k") {
+                if let Some(rk) = &report_key {
+                    if &k == rk {
+                        continue;
+                    }
+                }
+            }
+            candidates.push((id, url));
+        }
+
         let mut ordered: Vec<(String, String)> = Vec::new();
         if let Some(key) = campaign_key {
-            for pair in &frames {
+            for pair in &candidates {
                 if url_param(&pair.1, "k").as_deref() == Some(key) {
                     ordered.push(pair.clone());
                 }
             }
         }
-        for pair in &frames {
+        for pair in &candidates {
             if !ordered.iter().any(|(id, _)| id == &pair.0) && self.is_main_widget(&pair.0).await {
                 ordered.push(pair.clone());
             }
         }
-        for pair in frames {
-            if !ordered.iter().any(|(id, _)| id == &pair.0) {
-                ordered.push(pair);
+        if campaign_key.is_none() {
+            for pair in &candidates {
+                if !ordered.iter().any(|(id, _)| id == &pair.0) {
+                    ordered.push(pair.clone());
+                }
             }
         }
         for (id, _) in ordered {
@@ -1363,7 +1555,7 @@ impl<'a> Flow<'a> {
                 match self.post_link_info().await {
                     Ok(Some(destination)) => return Ok(destination),
                     Ok(None) => debug!(target: "engine", "direct post returned no url"),
-                    Err(err) if err.kind == "code" => return Err(err),
+                    Err(err) if err.kind == "code" || err.kind == "captcha" || err.kind == "rate_limit" => return Err(err),
                     Err(err) => debug!(target: "engine", "direct post failed: {err}"),
                 }
             }
@@ -1426,6 +1618,17 @@ impl<'a> Flow<'a> {
         }
         info!(target: "engine", reply = %text.chars().take(200).collect::<String>(), "link-info reply");
         if let Some(info) = value.get("info").and_then(Value::as_str) {
+            let lower = info.to_lowercase();
+            if lower.contains("captcha") {
+                return Err(FlowError::new("captcha", info.to_string()));
+            }
+            if lower.contains("vượt quá giới hạn")
+                || lower.contains("quay lại sau")
+                || lower.contains("rate limit")
+                || lower.contains("too many requests")
+            {
+                return Err(FlowError::new("rate_limit", info.to_string()));
+            }
             if info.contains("Mã không hợp lệ")
                 || info.contains("Sai url")
                 || info.contains("Không lấy được code")
@@ -1647,5 +1850,79 @@ mod tests {
         let back = crate::asr::pcm16_to_f32(&bytes);
         assert_eq!(back.len(), 4);
         assert!((back[1] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn campaign_sitekey_js_checks_window_key_and_excludes_report() {
+        assert!(CAMPAIGN_SITEKEY_JS.contains("recaptcha-report"));
+        assert!(CAMPAIGN_SITEKEY_JS.contains("modal-report"));
+        assert!(CAMPAIGN_SITEKEY_JS.contains("recaptcha_key"));
+        assert!(CAMPAIGN_SITEKEY_JS.contains("iframe[src*=\"/anchor\"]"));
+    }
+
+    #[test]
+    fn token_js_reads_strictly_from_main_form_not_report() {
+        assert!(TOKEN_JS.contains("main-form"));
+        assert!(TOKEN_JS.contains("textarea[name=g-recaptcha-response]"));
+        assert!(!TOKEN_JS.contains("querySelectorAll('textarea"));
+
+        assert!(TOKEN_PROBE_JS.contains("main-form"));
+        assert!(!TOKEN_PROBE_JS.contains("querySelectorAll('textarea"));
+    }
+
+    #[test]
+    fn boot_js_checks_main_form_and_recaptcha_not_global_anchors() {
+        assert!(BOOT_JS.contains("main-form"));
+        assert!(BOOT_JS.contains("recaptcha"));
+        assert!(!BOOT_JS.contains("document.querySelectorAll('iframe')"));
+    }
+
+    #[test]
+    fn post_link_info_js_switches_endpoint_on_password() {
+        assert!(POST_LINK_INFO_JS.contains("/links/get-link-info"));
+        assert!(POST_LINK_INFO_JS.contains("/links/check-captcha"));
+        assert!(POST_LINK_INFO_JS.contains("hasPassword"));
+    }
+
+    #[test]
+    fn captcha_error_classification() {
+        let error_info = "Mã captcha đã sai hoặc quá hạn. Bạn vui lòng check lại captcha";
+        let is_captcha_err = error_info.to_lowercase().contains("captcha");
+        assert!(is_captcha_err);
+
+        let rate_limit_info = "Đã vượt quá giới hạn truy cập vui lòng quay lại sau";
+        let is_rate_limit = rate_limit_info.to_lowercase().contains("vượt quá giới hạn");
+        assert!(is_rate_limit);
+
+        let code_err_info = "Mã không hợp lệ";
+        assert!(!code_err_info.to_lowercase().contains("captcha"));
+        assert!(!code_err_info.to_lowercase().contains("vượt quá giới hạn"));
+        assert!(code_err_info.contains("Mã không hợp lệ"));
+    }
+
+    #[test]
+    fn widget_id_classification() {
+        let is_main = |id: &str| matches!(id, "recaptcha" | "recaptcha-2" | "main-form" | "main-form-2" | "main-form-3");
+        let is_report = |id: &str| matches!(id, "recaptcha-report" | "modal-report" | "modal-report-form");
+
+        assert!(is_main("recaptcha"));
+        assert!(is_main("recaptcha-2"));
+        assert!(is_main("main-form"));
+        assert!(!is_main("recaptcha-report"));
+        assert!(!is_main("modal-report"));
+
+        assert!(is_report("recaptcha-report"));
+        assert!(is_report("modal-report"));
+        assert!(is_report("modal-report-form"));
+        assert!(!is_report("main-form"));
+        assert!(!is_report("recaptcha"));
+    }
+
+    #[test]
+    fn warp_spoof_script_integrity() {
+        assert!(WARP_SPOOF_JS.contains("__l4m_warp_patched"));
+        assert!(WARP_SPOOF_JS.contains("cdn-cgi/trace"));
+        assert!(WARP_SPOOF_JS.contains("warp=off"));
+        assert!(WARP_SPOOF_JS.contains("gateway=off"));
     }
 }

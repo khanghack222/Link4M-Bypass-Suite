@@ -171,7 +171,7 @@ impl ProxyPool {
             return;
         };
         {
-            let guard = self.stamp.lock().expect("proxy stamp");
+            let guard = self.stamp.lock().unwrap_or_else(|e| e.into_inner());
             if guard.as_ref() == Some(&stamp) {
                 return;
             }
@@ -305,6 +305,71 @@ impl Drop for Relay {
     }
 }
 
+/// Copy data bidirectionally between `a` and `b`, resetting an idle timer whenever
+/// bytes are transferred in either direction. If neither side transfers data within
+/// `idle` duration, the transfer completes with Ok.
+pub async fn idle_copy_bidirectional(
+    a: &mut TcpStream,
+    b: &mut TcpStream,
+    idle: Duration,
+) -> std::io::Result<(u64, u64)> {
+    let (mut ar, mut aw) = a.split();
+    let (mut br, mut bw) = b.split();
+
+    let mut buf_a = vec![0u8; 8192];
+    let mut buf_b = vec![0u8; 8192];
+
+    let mut a_to_b: u64 = 0;
+    let mut b_to_a: u64 = 0;
+
+    let mut a_done = false;
+    let mut b_done = false;
+
+    let sleep = tokio::time::sleep(idle);
+    tokio::pin!(sleep);
+
+    while !a_done || !b_done {
+        tokio::select! {
+            res = ar.read(&mut buf_a), if !a_done => {
+                match res {
+                    Ok(0) => {
+                        a_done = true;
+                        let _ = bw.shutdown().await;
+                    }
+                    Ok(n) => {
+                        bw.write_all(&buf_a[..n]).await?;
+                        a_to_b += n as u64;
+                        sleep.as_mut().reset(tokio::time::Instant::now() + idle);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            res = br.read(&mut buf_b), if !b_done => {
+                match res {
+                    Ok(0) => {
+                        b_done = true;
+                        let _ = aw.shutdown().await;
+                    }
+                    Ok(n) => {
+                        aw.write_all(&buf_b[..n]).await?;
+                        b_to_a += n as u64;
+                        sleep.as_mut().reset(tokio::time::Instant::now() + idle);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            _ = &mut sleep => {
+                // Idle timeout reached with no transfer on either side
+                break;
+            }
+        }
+    }
+    Ok((a_to_b, b_to_a))
+}
+
+const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const RELAY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Start a relay that forwards every connection to `proxy`.
 pub async fn start_relay(proxy: Proxy) -> std::io::Result<Relay> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
@@ -349,7 +414,9 @@ async fn handle(mut client: TcpStream, proxy: Proxy) -> std::io::Result<()> {
     // Captcha traffic is many small request/response pairs; Nagle adds up to
     // 40 ms to each one behind a proxy hop.
     let _ = client.set_nodelay(true);
-    let head = read_head(&mut client).await?;
+    let head = tokio::time::timeout(RELAY_HANDSHAKE_TIMEOUT, read_head(&mut client))
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "client handshake timeout"))??;
     let Some(end) = header_end(&head) else {
         return Ok(());
     };
@@ -366,7 +433,12 @@ async fn handle(mut client: TcpStream, proxy: Proxy) -> std::io::Result<()> {
         return handle_socks(client, proxy, head, first_line_end, method, target).await;
     }
 
-    let mut upstream = TcpStream::connect((proxy.host.as_str(), proxy.port)).await?;
+    let mut upstream = tokio::time::timeout(
+        RELAY_HANDSHAKE_TIMEOUT,
+        TcpStream::connect((proxy.host.as_str(), proxy.port)),
+    )
+    .await
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream connect timeout"))??;
     let _ = upstream.set_nodelay(true);
     let auth = proxy
         .authorization()
@@ -375,8 +447,12 @@ async fn handle(mut client: TcpStream, proxy: Proxy) -> std::io::Result<()> {
 
     if method.eq_ignore_ascii_case("CONNECT") {
         let request = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n{auth}\r\n");
-        upstream.write_all(request.as_bytes()).await?;
-        let reply = read_head(&mut upstream).await?;
+        tokio::time::timeout(RELAY_HANDSHAKE_TIMEOUT, upstream.write_all(request.as_bytes()))
+            .await
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream write timeout"))??;
+        let reply = tokio::time::timeout(RELAY_HANDSHAKE_TIMEOUT, read_head(&mut upstream))
+            .await
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream read timeout"))??;
         let status = String::from_utf8_lossy(&reply)
             .lines()
             .next()
@@ -394,14 +470,14 @@ async fn handle(mut client: TcpStream, proxy: Proxy) -> std::io::Result<()> {
                 client.write_all(rest).await?;
             }
         }
-        tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
+        let _ = idle_copy_bidirectional(&mut client, &mut upstream, RELAY_IDLE_TIMEOUT).await;
     } else {
         // Plain HTTP proxying: keep the absolute URI, append credentials.
         upstream.write_all(head).await?;
         upstream.write_all(b"\r\n").await?;
         upstream.write_all(auth.as_bytes()).await?;
         upstream.write_all(b"\r\n").await?;
-        tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
+        let _ = idle_copy_bidirectional(&mut client, &mut upstream, RELAY_IDLE_TIMEOUT).await;
     }
     Ok(())
 }
@@ -556,7 +632,7 @@ async fn handle_socks(
         client
             .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
             .await?;
-        tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
+        let _ = idle_copy_bidirectional(&mut client, &mut upstream, RELAY_IDLE_TIMEOUT).await;
         return Ok(());
     }
 
@@ -585,7 +661,7 @@ async fn handle_socks(
     }
     request.push_str("\r\n");
     upstream.write_all(request.as_bytes()).await?;
-    tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
+    let _ = idle_copy_bidirectional(&mut client, &mut upstream, RELAY_IDLE_TIMEOUT).await;
     Ok(())
 }
 
@@ -828,5 +904,25 @@ mod tests {
         std::fs::write(&path, "").expect("truncate");
         assert_eq!(pool.len(), 2);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn test_idle_copy_bidirectional_transfers_and_expires_on_idle() {
+        use std::time::Duration;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let srv = tokio::spawn(async move {
+            let (mut a, _) = listener.accept().await.unwrap();
+            let mut b = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let _ = super::idle_copy_bidirectional(&mut a, &mut b, Duration::from_millis(150)).await;
+        });
+
+        let mut client_a = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        // listener will accept client_a, and server connects client_b back to listener.
+        // Wait briefly for server connection
+        client_a.write_all(b"ping").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _ = srv.await;
     }
 }

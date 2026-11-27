@@ -509,5 +509,7 @@ def run(target_url: str = None, headless: bool = True):
         time.sleep(2)
         context.close()
 
+        return final_destination_url if is_valid_destination(final_destination_url) else None
+
 if __name__ == "__main__":
     run()

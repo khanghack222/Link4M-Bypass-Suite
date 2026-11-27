@@ -37,10 +37,19 @@ IGNORE = {
 JUNK_TLD = ('.app', '.play')
 GOOD_TLD = ('.cc', '.me', '.my', '.vip', '.tv', '.tips', '.net', '.live', '.com', '.games', '.in', '.online')
 
-def has_traffic_widget(d):
+_DNS_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+def _dns_check(domain: str, timeout: float = 2.0) -> bool:
+    """Kiểm tra phân giải DNS có giới hạn thời gian (2s) để tránh treo tiến trình."""
     try:
-        socket.gethostbyname(d)
-    except:
+        future = _DNS_POOL.submit(socket.gethostbyname, domain)
+        future.result(timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+def has_traffic_widget(d):
+    if not _dns_check(d, timeout=2.0):
         return False
 
     try:
@@ -51,7 +60,8 @@ def has_traffic_widget(d):
                 'Referer': 'https://www.google.com/'
             }
         )
-        html = urllib.request.urlopen(req, context=ctx, timeout=4.0).read().decode('utf-8', errors='ignore').lower()
+        with urllib.request.urlopen(req, context=ctx, timeout=4.0) as resp:
+            html = resp.read(1024 * 1024).decode('utf-8', errors='ignore').lower()
         if 'trafficqq.io.vn' in html:
             return False
         return any(k in html for k in ['shortearn', 'octolink', 'trafficvip.vip', 'click90s', '4mmo', 'trafficvn', 'check/job'])
@@ -61,7 +71,8 @@ def has_traffic_widget(d):
 def resolve_domain(img_url):
     try:
         req = urllib.request.Request(img_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Referer': 'https://linkhuongdan.online/'})
-        data = urllib.request.urlopen(req, context=ctx, timeout=5).read()
+        with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+            data = resp.read(5 * 1024 * 1024)
     except Exception as e:
         return []
 

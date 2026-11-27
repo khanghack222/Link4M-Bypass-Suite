@@ -58,11 +58,12 @@ fi
 mkdir -p "$L4M_DIR"
 curl -fL --retry 3 "$ASSET_URL" -o /tmp/l4m-engine.tar.gz
 tar -C "$L4M_DIR" -xzf /tmp/l4m-engine.tar.gz
-# run-foreground.sh expects <root>/engine-rs/target/release/l4m-engine.
-mkdir -p "$L4M_DIR/engine-rs/target/release"
+# run-foreground.sh expects <root>/engine-rs/target/release/l4m-engine or release-fast.
+mkdir -p "$L4M_DIR/engine-rs/target/release" "$L4M_DIR/engine-rs/target/release-fast"
 cp "$L4M_DIR/l4m-engine" "$L4M_DIR/engine-rs/target/release/l4m-engine"
-cp -r "$L4M_DIR/tools" "$L4M_DIR/engine-rs/tools"
-cp -r "$L4M_DIR/models" "$L4M_DIR/engine-rs/models"
+cp "$L4M_DIR/l4m-engine" "$L4M_DIR/engine-rs/target/release-fast/l4m-engine"
+cp -r "$L4M_DIR/tools" "$L4M_DIR/engine-rs/tools" 2>/dev/null || true
+cp -r "$L4M_DIR/models" "$L4M_DIR/engine-rs/models" 2>/dev/null || true
 
 python3 -m venv "$L4M_DIR/.venv"
 "$L4M_DIR/.venv/bin/pip" install -q --upgrade pip

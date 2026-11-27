@@ -126,6 +126,13 @@ impl Asr {
         if pcm_16k.len() < 1600 {
             return Ok(String::new());
         }
+        if pcm_16k.len() > MAX_PCM_SAMPLES {
+            anyhow::bail!(
+                "pcm sample count {} exceeds maximum allowed {}",
+                pcm_16k.len(),
+                MAX_PCM_SAMPLES
+            );
+        }
         match &self.backend {
             #[cfg(feature = "local-asr")]
             Backend::Local { context, threads } => transcribe_local(context, *threads, pcm_16k),
@@ -167,9 +174,18 @@ fn transcribe_local(context: &WhisperContext, threads: i32, pcm_16k: &[f32]) -> 
     Ok(text.trim().to_string())
 }
 
+pub const MAX_PCM_SAMPLES: usize = 16_000 * 60; // 60s max audio clip
+
 /// Encode normalized f32 samples as a 16 kHz mono PCM16 WAV. Both whisper.cpp
 /// and OpenAI-compatible servers accept a plain WAV upload.
-fn wav_bytes(pcm_16k: &[f32]) -> Vec<u8> {
+pub fn wav_bytes(pcm_16k: &[f32]) -> Result<Vec<u8>> {
+    if pcm_16k.len() > MAX_PCM_SAMPLES {
+        anyhow::bail!(
+            "pcm sample count {} exceeds maximum allowed {}",
+            pcm_16k.len(),
+            MAX_PCM_SAMPLES
+        );
+    }
     let data_len = (pcm_16k.len() * 2) as u32;
     let mut out = Vec::with_capacity(44 + data_len as usize);
     out.extend_from_slice(b"RIFF");
@@ -188,7 +204,7 @@ fn wav_bytes(pcm_16k: &[f32]) -> Vec<u8> {
         let value = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
         out.extend_from_slice(&value.to_le_bytes());
     }
-    out
+    Ok(out)
 }
 
 fn transcribe_remote(
@@ -198,7 +214,7 @@ fn transcribe_remote(
     timeout: Duration,
     pcm_16k: &[f32],
 ) -> Result<String> {
-    let wav = wav_bytes(pcm_16k);
+    let wav = wav_bytes(pcm_16k)?;
     let boundary = format!("l4m-asr-{}", std::process::id());
     let mut body = Vec::with_capacity(wav.len() + 1024);
     body.extend_from_slice(
@@ -305,13 +321,26 @@ mod tests {
 
     #[test]
     fn wav_header_is_canonical() {
-        let wav = wav_bytes(&[0.0, 0.5, -0.5, 1.0]);
+        let wav = wav_bytes(&[0.0, 0.5, -0.5, 1.0]).expect("canonical wav");
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
         assert_eq!(u16::from_le_bytes(wav[22..24].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 8);
         assert_eq!(wav.len(), 44 + 8);
+    }
+
+    #[test]
+    fn wav_bytes_guards_against_oversized_pcm() {
+        let empty = wav_bytes(&[]).expect("empty is valid");
+        assert_eq!(&empty[0..4], b"RIFF");
+
+        let normal = wav_bytes(&vec![0.1f32; 16_000]).expect("1s is valid");
+        assert_eq!(normal.len(), 44 + 32_000);
+
+        let oversized = vec![0.0f32; MAX_PCM_SAMPLES + 1];
+        let err = wav_bytes(&oversized).unwrap_err();
+        assert!(err.to_string().contains("exceeds maximum allowed"));
     }
 
     #[test]

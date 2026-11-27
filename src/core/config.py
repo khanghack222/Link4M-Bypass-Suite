@@ -93,6 +93,9 @@ def load_proxies():
     return proxies
 
 def get_chrome_path():
+    env_bin = os.environ.get("CHROME_BIN")
+    if env_bin and os.path.exists(env_bin):
+        return env_bin
     candidates = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -100,6 +103,7 @@ def get_chrome_path():
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         "/usr/bin/google-chrome",
+        "/opt/google/chrome/chrome",
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser"
     ]

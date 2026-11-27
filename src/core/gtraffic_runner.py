@@ -1475,5 +1475,7 @@ def run(target_url: str = None, headless: bool = True):
         if os.path.exists(user_data_dir):
             shutil.rmtree(user_data_dir, ignore_errors=True)
 
+        return final_destination if is_valid_destination(final_destination, sponsor_domain) else None
+
 if __name__ == "__main__":
     run()

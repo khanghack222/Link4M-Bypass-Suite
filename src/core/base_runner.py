@@ -59,6 +59,7 @@ class BaseBypassRunner(ABC):
     provider_key: str = "UNKNOWN"
     # Optional proxy, honoured only by engines that accept one (Link4M legacy).
     proxy: Optional[str] = None
+    timeout: Optional[int] = None
     # Every engine in this suite launches and owns its own browser (or a Node
     # subprocess). Acquiring a BrowserPool context here would open a second
     # browser that is immediately thrown away.

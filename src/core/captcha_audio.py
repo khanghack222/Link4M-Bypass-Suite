@@ -20,9 +20,11 @@ from __future__ import annotations
 import base64
 import os
 import subprocess
+import tempfile
 import time
+import uuid
 
-AUDIO_FILE = "/tmp/rc_audio.mp3"
+AUDIO_FILE = os.path.join(tempfile.gettempdir(), f"rc_audio_{os.getpid()}.mp3")
 MODEL_SIZE = os.environ.get("RC_WHISPER_MODEL", "tiny.en")
 # endpoint Web Speech công khai mà thư viện SpeechRecognition vẫn dùng
 GOOGLE_STT = ("https://www.google.com/speech-api/v2/recognize"
@@ -261,12 +263,27 @@ def _fw_model():
     return _MODEL
 
 
+def _get_unique_temp_path(suffix: str = "") -> str:
+    """Tạo đường dẫn file tạm duy nhất theo PID + UUID để tránh xung đột giữa các worker."""
+    fd, path = tempfile.mkstemp(prefix=f"rc_audio_{os.getpid()}_{uuid.uuid4().hex[:8]}_", suffix=suffix)
+    os.close(fd)
+    return path
+
+
 def _raw16k(path: str) -> bytes:
     """Giải mã về PCM 16k mono bằng sox (nhanh, nhẹ, khỏi đụng tới PyAV)."""
-    raw = "/tmp/rc_audio.raw"
-    subprocess.run(["sox", path, "-r", "16000", "-c", "1", "-e", "signed", "-b", "16",
-                    "-t", "raw", raw], check=True, capture_output=True, timeout=60)
-    return open(raw, "rb").read()
+    raw_path = _get_unique_temp_path(".raw")
+    try:
+        subprocess.run(["sox", path, "-r", "16000", "-c", "1", "-e", "signed", "-b", "16",
+                        "-t", "raw", raw_path], check=True, capture_output=True, timeout=60)
+        with open(raw_path, "rb") as f:
+            return f.read()
+    finally:
+        if os.path.exists(raw_path):
+            try:
+                os.remove(raw_path)
+            except Exception:
+                pass
 
 
 def transcribe_whisper(path: str) -> str:
@@ -295,50 +312,64 @@ def transcribe_vosk(path: str, digits_only: bool = False) -> str:
     mpath = os.environ.get("VOSK_MODEL") or os.path.expanduser("~/.cache/vosk/vosk-model-small-en-us-0.15")
     if not os.path.isdir(mpath):
         raise FileNotFoundError(mpath)
-    wav = "/tmp/rc_audio.wav"
-    subprocess.run(["sox", path, "-r", "16000", "-c", "1", "-e", "signed", "-b", "16", wav],
-                   check=True, capture_output=True, timeout=60)
-    SetLogLevel(-1)
-    if digits_only:
-        grammar = json.dumps(DIGIT_WORDS + ["[unk]"])
-        rec = KaldiRecognizer(Model(mpath), 16000, grammar)
-    else:
-        rec = KaldiRecognizer(Model(mpath), 16000)
-    with wave.open(wav, "rb") as w:
-        while True:
-            d = w.readframes(4000)
-            if not d:
-                break
-            rec.AcceptWaveform(d)
-    return json.loads(rec.FinalResult()).get("text", "").strip()
+    wav_path = _get_unique_temp_path(".wav")
+    try:
+        subprocess.run(["sox", path, "-r", "16000", "-c", "1", "-e", "signed", "-b", "16", wav_path],
+                       check=True, capture_output=True, timeout=60)
+        SetLogLevel(-1)
+        if digits_only:
+            grammar = json.dumps(DIGIT_WORDS + ["[unk]"])
+            rec = KaldiRecognizer(Model(mpath), 16000, grammar)
+        else:
+            rec = KaldiRecognizer(Model(mpath), 16000)
+        with wave.open(wav_path, "rb") as w:
+            while True:
+                d = w.readframes(4000)
+                if not d:
+                    break
+                rec.AcceptWaveform(d)
+        return json.loads(rec.FinalResult()).get("text", "").strip()
+    finally:
+        if os.path.exists(wav_path):
+            try:
+                os.remove(wav_path)
+            except Exception:
+                pass
 
 
 def transcribe_google(path: str) -> str:
     """Kênh dự phòng: Web Speech công khai, cần WAV 16k mono."""
     import json
     import urllib.request
-    wav = "/tmp/rc_audio.wav"
-    raw = wav + ".raw"
-    subprocess.run(["sox", path, "-r", "16000", "-c", "1", "-e", "signed", "-b", "16", raw],
-                   check=True, capture_output=True, timeout=60)
-    data = open(raw, "rb").read()
-    if len(data) < 4000:
+    raw_path = _get_unique_temp_path(".raw")
+    try:
+        subprocess.run(["sox", path, "-r", "16000", "-c", "1", "-e", "signed", "-b", "16", raw_path],
+                       check=True, capture_output=True, timeout=60)
+        with open(raw_path, "rb") as f:
+            data = f.read()
+        if len(data) < 4000:
+            return ""
+        req = urllib.request.Request(GOOGLE_STT, data=data,
+                                     headers={"Content-Type": "audio/l16; rate=16000"})
+        body = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
+        for line in body.splitlines():
+            if not line.strip():
+                continue
+            try:
+                j = json.loads(line)
+            except Exception:
+                continue
+            for alt in j.get("result", [{}])[0].get("alternative", []):
+                t = alt.get("transcript", "").strip()
+                if t:
+                    return t
         return ""
-    req = urllib.request.Request(GOOGLE_STT, data=data,
-                                 headers={"Content-Type": "audio/l16; rate=16000"})
-    body = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
-    for line in body.splitlines():
-        if not line.strip():
-            continue
-        try:
-            j = json.loads(line)
-        except Exception:
-            continue
-        for alt in j.get("result", [{}])[0].get("alternative", []):
-            t = alt.get("transcript", "").strip()
-            if t:
-                return t
-    return ""
+    finally:
+        if os.path.exists(raw_path):
+            try:
+                os.remove(raw_path)
+            except Exception:
+                pass
 
 
 def digits_of(text: str) -> str:
@@ -481,27 +512,35 @@ def solve(pg, tries: int = 4, limit: int = 150) -> str:
         log(f"[audio] vòng {n}: mp3 {len(blob)} bytes")
         if not blob:
             return ""
-        with open(AUDIO_FILE, "wb") as f:
-            f.write(blob)
-        candidates = _answer_candidates(AUDIO_FILE)
-        if not candidates:
-            log("[audio] không chép được lời -> clip khác")
-            _next_clip(ch)
-            continue
-        log("[audio] đáp án thử:", " | ".join(candidates[:4]))
-        advanced = False
-        for answer in candidates[:4]:
-            state, tok = _submit(ch, pg, answer)
-            if state == "ok":
-                return tok
-            if state == "blocked":
-                return ""
-            if state == "advanced":
-                advanced = True
-                break
-            ch = find_audio_frame(pg) or find_challenge(pg) or ch
-        if not advanced:
-            _next_clip(ch)
+        mp3_path = _get_unique_temp_path(".mp3")
+        try:
+            with open(mp3_path, "wb") as f:
+                f.write(blob)
+            candidates = _answer_candidates(mp3_path)
+            if not candidates:
+                log("[audio] không chép được lời -> clip khác")
+                _next_clip(ch)
+                continue
+            log("[audio] đáp án thử:", " | ".join(candidates[:4]))
+            advanced = False
+            for answer in candidates[:4]:
+                state, tok = _submit(ch, pg, answer)
+                if state == "ok":
+                    return tok
+                if state == "blocked":
+                    return ""
+                if state == "advanced":
+                    advanced = True
+                    break
+                ch = find_audio_frame(pg) or find_challenge(pg) or ch
+            if not advanced:
+                _next_clip(ch)
+        finally:
+            if os.path.exists(mp3_path):
+                try:
+                    os.remove(mp3_path)
+                except Exception:
+                    pass
     return token_now(pg)
 
 

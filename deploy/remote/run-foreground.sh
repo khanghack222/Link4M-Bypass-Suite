@@ -37,4 +37,8 @@ fi
 export L4M_HEADLESS=${L4M_HEADLESS:-0}
 export WORKERS=${WORKERS:-1}
 
-exec ./target/release/l4m-engine "$@"
+if [ -x ./target/release-fast/l4m-engine ]; then
+  exec ./target/release-fast/l4m-engine "$@"
+else
+  exec ./target/release/l4m-engine "$@"
+fi

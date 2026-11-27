@@ -670,9 +670,11 @@ impl Inner {
         if jobs.len() > 2000 {
             let mut entries: Vec<(String, u64)> =
                 jobs.iter().map(|(k, v)| (k.clone(), v.created_at)).collect();
-            entries.sort_by_key(|(_, created)| *created);
-            for (key, _) in entries.into_iter().take(500) {
-                jobs.remove(&key);
+            let count_to_remove = 500.min(entries.len());
+            // Partial sort O(N) instead of full O(N log N) sort
+            let (_, _, _) = entries.select_nth_unstable_by_key(count_to_remove - 1, |(_, created)| *created);
+            for (key, _) in &entries[..count_to_remove] {
+                jobs.remove(key);
             }
         }
         jobs.insert(job.job_id.clone(), job);

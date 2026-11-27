@@ -183,7 +183,8 @@ class OctoLinkRunner(BaseBypassRunner):
         return None
 
     def execute_flow(self, page, context, target_url: str) -> str:
-        res = engine_adapters.run_octolink(target_url, headless=True)
+        timeout = getattr(self, "timeout", None) or 480
+        res = engine_adapters.run_octolink(target_url, headless=True, timeout=timeout)
         if res and self.is_valid_destination(res):
             return res
         raise DestinationNotFound(f"OctoLink failed to extract destination for {target_url}")

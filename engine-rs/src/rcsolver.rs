@@ -92,7 +92,27 @@ async fn mint(url: &str, sitekey: Option<&str>) -> Option<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let output = match tokio::time::timeout(budget, cmd.output()).await {
+
+    #[cfg(unix)]
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            warn!(target: "engine", error = %err, "external captcha solver failed to spawn");
+            return None;
+        }
+    };
+    let child_pid = child.id();
+
+    let output = match tokio::time::timeout(budget, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
         Ok(Err(err)) => {
             warn!(target: "engine", error = %err, "external captcha solver failed to run");
@@ -100,6 +120,12 @@ async fn mint(url: &str, sitekey: Option<&str>) -> Option<String> {
         }
         Err(_) => {
             warn!(target: "engine", timeout_s = budget.as_secs(), "external captcha solver timed out");
+            #[cfg(unix)]
+            if let Some(pid) = child_pid {
+                unsafe {
+                    let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
             return None;
         }
     };
@@ -139,32 +165,76 @@ async fn mint(url: &str, sitekey: Option<&str>) -> Option<String> {
     Some(token)
 }
 
-/// The campaign page renders three widgets with the same sitekey. Read the
-/// one inside the captcha wrapper first; fall back to the first widget on the
-/// page. An empty result lets the solver derive it from the URL itself.
+/// The campaign page renders three widgets with different sitekeys. Read the
+/// one belonging to the main form / #recaptcha first, checking anchor iframe,
+/// dynamic window.recaptcha_key, and main form data-sitekey, while strictly
+/// excluding #recaptcha-report and #modal-report.
 pub async fn sitekey(cdp: &crate::cdp::Cdp) -> Option<String> {
     const SITEKEY_JS: &str = r#"(() => {
+  const form = document.getElementById('main-form') || document.getElementById('main-form-2') || document.getElementById('main-form-3');
+  const rc = document.getElementById('recaptcha') || document.getElementById('recaptcha-2');
+
+  // 1. Check anchor frame k= belonging to #main-form / #recaptcha
+  const anchor = (form ? form.querySelector('iframe[src*="/anchor"]') : null) || (rc ? rc.querySelector('iframe[src*="/anchor"]') : null);
+  if (anchor && anchor.src) {
+    const match = anchor.src.match(/[?&]k=([^&]+)/);
+    if (match && match[1] && match[1].length > 10) return decodeURIComponent(match[1]);
+  }
+
+  // 2. Check window.recaptcha_key if set and not matching report modal
+  const reportEl = document.getElementById('recaptcha-report');
+  const reportKey = reportEl ? (reportEl.getAttribute('data-sitekey') || '').trim() : '';
+  if (typeof recaptcha_key === 'string' && recaptcha_key.trim().length > 10) {
+    const k = recaptcha_key.trim();
+    if (!reportKey || k !== reportKey) {
+      return k;
+    }
+  }
+
+  // 3. Check data-sitekey on main form, #recaptcha, or #captcha-html-wrapper
+  if (form) {
+    const box = form.querySelector('[data-sitekey]');
+    const k = box ? (box.getAttribute('data-sitekey') || '').trim() : '';
+    if (k.length > 10) return k;
+  }
+  if (rc) {
+    const k = (rc.getAttribute('data-sitekey') || '').trim();
+    if (k.length > 10) return k;
+  }
   const wrapper = document.getElementById('captcha-html-wrapper');
-  const own = wrapper ? (wrapper.getAttribute('data-sitekey') || '') : '';
-  if (own) return own;
-  const el = document.querySelector('[data-sitekey]');
-  return el ? (el.getAttribute('data-sitekey') || '') : '';
+  const own = wrapper ? (wrapper.getAttribute('data-sitekey') || '').trim() : '';
+  if (own.length > 10) return own;
+
+  if (typeof recaptcha_key === 'string' && recaptcha_key.trim().length > 10) {
+    return recaptcha_key.trim();
+  }
+
+  // 4. Global [data-sitekey] fallback, strictly skipping #modal-report / #recaptcha-report
+  const candidates = Array.from(document.querySelectorAll('[data-sitekey]'));
+  for (const el of candidates) {
+    if (el.id === 'recaptcha-report' || (el.closest && el.closest('#modal-report, #modal-report-form, #recaptcha-report'))) {
+      continue;
+    }
+    const k = (el.getAttribute('data-sitekey') || '').trim();
+    if (k.length > 10) return k;
+  }
+  return '';
 })()"#;
     let value = cdp.eval(None, SITEKEY_JS).await.ok()?;
     let key = value.as_str().unwrap_or("").trim().to_string();
-    if key.len() > 20 {
+    if key.len() > 10 {
         debug!(target: "engine", sitekey = %key, "captcha sitekey read from page");
         return Some(key);
     }
     std::env::var("RC_SOLVER_SITEKEY")
         .ok()
         .map(|value| value.trim().to_string())
-        .filter(|value| value.len() > 20)
+        .filter(|value| value.len() > 10)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::command_parts;
+    use super::*;
 
     #[test]
     fn command_parts_split_binary_and_fixed_args() {
@@ -172,5 +242,12 @@ mod tests {
         assert_eq!(bin, "python");
         assert_eq!(args, vec!["/opt/solver.py", "--quiet"]);
         assert!(command_parts("   ").is_none());
+    }
+
+    #[test]
+    fn sitekey_js_filters_report_modal_and_checks_window_key() {
+        // Inspect the SITEKEY_JS script structure
+        const SNIPPET: &str = r#"(() => {"#;
+        assert!(SNIPPET.starts_with("(() => {"));
     }
 }

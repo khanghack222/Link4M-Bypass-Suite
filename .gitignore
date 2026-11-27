@@ -58,12 +58,23 @@ server-rs/target/
 engine-rs/target/
 engine-rs/models/*.bin
 engine-rs/data/
+*.bin
+models/
+/tools
 
 # Local tool state (rules, chat history, personal configs)
 _local/
 
-# Runtime snippets
+# Runtime snippets & persistent cache/logs
 /data/rust_cache.json
+data/campaigns.json
+data/ocr-cache.json
+data/batch-engine.log
+engine-batch.log
+
+# Discord Bot runtime databases & caches
+bot/*.db
+bot/__pycache__/
 
 # Update state (per machine)
 .l4m-version

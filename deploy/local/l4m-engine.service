@@ -1,0 +1,41 @@
+[Unit]
+Description=Link4M Engine Daemon (Rust CDP + Whisper reCAPTCHA Solver)
+Documentation=https://github.com/khanghack222/Link4M-Bypass-Suite
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Link4M-Bypass-Suite
+EnvironmentFile=-%h/Link4M-Bypass-Suite/.env
+
+# Default Daemon Configuration (Optimized for 3.7GB Low-RAM Host)
+Environment=HOST=127.0.0.1
+Environment=PORT=8080
+Environment=WORKERS=1
+Environment=L4M_PREWARM=0
+Environment=L4M_JOB_RETRIES=3
+Environment=PROXY_ROTATE=1
+Environment=L4M_SPOOF_WARP=1
+Environment=PROXY_FILE=%h/Link4M-Bypass-Suite/proxies.txt
+Environment=L4M_HEADLESS=1
+Environment=WHISPER_MODEL=%h/Link4M-Bypass-Suite/engine-rs/models/ggml-tiny.en.bin
+Environment=CHROME_BIN=/usr/bin/google-chrome
+Environment=RUST_LOG=l4m_engine=info,engine=info
+
+# Executable location (auto-selected release-fast binary)
+ExecStart=%h/Link4M-Bypass-Suite/engine-rs/target/release-fast/l4m-engine
+
+# Reliability & Crash Recovery
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=15
+
+# Memory & Resource Guards for 3.7GB Linux VPS (OOM Prevention)
+MemoryHigh=1500M
+MemoryMax=2000M
+TasksMax=2048
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

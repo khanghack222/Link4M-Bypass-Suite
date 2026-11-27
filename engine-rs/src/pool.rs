@@ -127,7 +127,7 @@ async fn resume_pending(inner: Arc<Inner>, sender: mpsc::Sender<Job>) {
 
 /// Google explicitly says the exit is burned. Only these messages justify
 /// cooling down a proxy; a plain misread must not blacklist a good IP.
-fn ip_blocked(err: &FlowError) -> bool {
+pub fn ip_blocked(err: &FlowError) -> bool {
     if err.kind != "audio" {
         return false;
     }
@@ -137,8 +137,35 @@ fn ip_blocked(err: &FlowError) -> bool {
 
 /// Any audio dead-end is worth a fresh Chrome/anchor; three bad transcripts
 /// can be the profile, not the exit.
-fn audio_blocked(err: &FlowError) -> bool {
+pub fn audio_blocked(err: &FlowError) -> bool {
     ip_blocked(err) || (err.kind == "audio" && err.message.to_lowercase().contains("three clips failed"))
+}
+
+/// True when the failure implies the proxy/IP is burned, rate-limited, blocked or unreachable.
+pub fn is_bad_proxy_error(err: &FlowError) -> bool {
+    matches!(
+        err.kind,
+        "cdp" | "browser" | "timeout" | "rate_limit" | "captcha"
+    ) || audio_blocked(err)
+        || ip_blocked(err)
+}
+
+/// Errors where retrying with a fresh proxy/Chrome session can succeed.
+pub fn is_retryable_error(err: &FlowError) -> bool {
+    matches!(
+        err.kind,
+        "rate_limit" | "audio" | "captcha" | "cdp" | "timeout" | "browser"
+    )
+}
+
+pub fn parse_job_retries(val: Option<&str>) -> usize {
+    val.and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(3)
+        .clamp(1, 5)
+}
+
+pub fn job_retries_limit() -> usize {
+    parse_job_retries(std::env::var("L4M_JOB_RETRIES").ok().as_deref())
 }
 
 /// Terminal failures that happen before `run_alias` still need a
@@ -194,6 +221,9 @@ async fn worker_loop(
             break;
         };
         let started = Instant::now();
+        let mut job = job;
+        let (dummy_tx, _) = oneshot::channel();
+        let mut respond = Some(std::mem::replace(&mut job.respond, dummy_tx));
         // Picked up: keep the entry on disk, marked running, so a crash can
         // requeue the full job (key + code) instead of losing it.
         inner.queue_mark_running(&job.job_id).await;
@@ -215,159 +245,216 @@ async fn worker_loop(
                 .await;
             record_failure(&inner, &job, "asr", "whisper model not loaded", elapsed_ms).await;
             inner.queue_remove(&job.job_id).await;
-            let _ = job.respond.send(JobOutcome {
-                destination: None,
-                error: Some(FlowError {
-                    kind: "asr",
-                    message: "whisper model not loaded".into(),
-                }),
-                elapsed_ms,
-            });
+            if let Some(tx) = respond.take() {
+                let _ = tx.send(JobOutcome {
+                    destination: None,
+                    error: Some(FlowError {
+                        kind: "asr",
+                        message: "whisper model not loaded".into(),
+                    }),
+                    elapsed_ms,
+                });
+            }
             continue;
         };
 
-        if session.is_none() {
-            if let Some(handle) = pending.take() {
-                match handle.await {
-                    Ok(Ok(ready)) => {
+        let max_attempts = job_retries_limit();
+        let mut final_outcome: Option<Result<String, FlowError>> = None;
+
+        for attempt in 1..=max_attempts {
+            if respond.as_ref().map(|tx| tx.is_closed()).unwrap_or(true) {
+                warn!(
+                    target: "engine",
+                    worker = worker_id,
+                    alias = %job.alias,
+                    attempt,
+                    "caller dropped connection/timed out, aborting remaining retries"
+                );
+                break;
+            }
+
+            if session.is_none() {
+                if let Some(handle) = pending.take() {
+                    match handle.await {
+                        Ok(Ok(ready)) => {
+                            info!(
+                                target: "engine",
+                                worker = worker_id,
+                                port = ready.chrome.port,
+                                proxy = %ready.proxy.as_ref().map(|p| format!("{}:{}", p.host, p.port)).unwrap_or_else(|| "direct".into()),
+                                "chrome ready (prewarmed)"
+                            );
+                            session = Some(ready);
+                        }
+                        Ok(Err(err)) => {
+                            warn!(target: "engine", worker = worker_id, "prewarm failed: {err}");
+                        }
+                        Err(err) => {
+                            warn!(target: "engine", worker = worker_id, "prewarm task failed: {err}");
+                        }
+                    }
+                }
+            }
+            if session.is_none() {
+                match start_session(&inner, worker_id).await {
+                    Ok(ready) => {
                         info!(
                             target: "engine",
                             worker = worker_id,
                             port = ready.chrome.port,
                             proxy = %ready.proxy.as_ref().map(|p| format!("{}:{}", p.host, p.port)).unwrap_or_else(|| "direct".into()),
-                            "chrome ready (prewarmed)"
+                            "chrome ready"
                         );
                         session = Some(ready);
                     }
-                    Ok(Err(err)) => {
-                        warn!(target: "engine", worker = worker_id, "prewarm failed: {err}");
-                    }
                     Err(err) => {
-                        warn!(target: "engine", worker = worker_id, "prewarm task failed: {err}");
+                        error!(target: "engine", worker = worker_id, "chrome failed: {err}");
+                        if attempt < max_attempts {
+                            warn!(
+                                target: "engine",
+                                worker = worker_id,
+                                alias = %job.alias,
+                                attempt,
+                                max_attempts,
+                                error = %err,
+                                "retrying session start on next proxy"
+                            );
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            continue;
+                        }
+                        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                        inner
+                            .link_finish(
+                                &job.track_id,
+                                "failed",
+                                None,
+                                Some(format!("browser: {err}")),
+                                elapsed_ms,
+                                false,
+                            )
+                            .await;
+                        record_failure(&inner, &job, "browser", &err.to_string(), elapsed_ms).await;
+                        inner.queue_remove(&job.job_id).await;
+                        if let Some(tx) = respond.take() {
+                            let _ = tx.send(JobOutcome {
+                                destination: None,
+                                error: Some(FlowError {
+                                    kind: "browser",
+                                    message: err.to_string(),
+                                }),
+                                elapsed_ms,
+                            });
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        final_outcome = None;
+                        break;
                     }
                 }
             }
-        }
-        if session.is_none() {
-            match start_session(&inner, worker_id).await {
-                Ok(ready) => {
-                    info!(
-                        target: "engine",
-                        worker = worker_id,
-                        port = ready.chrome.port,
-                        proxy = %ready.proxy.as_ref().map(|p| format!("{}:{}", p.host, p.port)).unwrap_or_else(|| "direct".into()),
-                        "chrome ready"
-                    );
-                    session = Some(ready);
+
+            let Some(active) = session.as_ref() else { continue };
+            let chrome_port = active.chrome.port;
+            let cdp = active.cdp.clone();
+            let active_proxy = active.proxy.clone();
+            let attempt_timeout = inner.cfg.job_timeout.min(Duration::from_secs(150));
+            let outcome = run_alias(
+                &cdp,
+                &asr,
+                &job.alias,
+                job.code.as_deref(),
+                chrome_port,
+                active_proxy.clone(),
+                attempt_timeout,
+            )
+            .await;
+
+            let dead = match &outcome {
+                Ok(_) => false,
+                Err(err) => err.kind == "cdp" || err.kind == "timeout",
+            };
+            if dead {
+                warn!(target: "engine", worker = worker_id, "browser died, dropping session");
+                session = None;
+            }
+            let blocked = matches!(&outcome, Err(err) if audio_blocked(err));
+            if let (Some(pool), Some(bad)) = (proxy::shared(), active_proxy.as_ref()) {
+                match &outcome {
+                    Err(err) if is_bad_proxy_error(err) => {
+                        pool.mark_bad(bad)
+                    }
+                    Ok(_) => pool.mark_good(bad),
+                    _ => {}
+                }
+            }
+            let mut quota_reached = false;
+            if outcome.is_ok() {
+                successes_on_exit += 1;
+                if rotate_after > 0
+                    && successes_on_exit >= rotate_after
+                    && proxy::shared().map(|pool| pool.len() > 1).unwrap_or(false)
+                {
+                    if let (Some(pool), Some(used)) = (proxy::shared(), active_proxy.as_ref()) {
+                        pool.mark_bad(used);
+                    }
+                    successes_on_exit = 0;
+                    quota_reached = true;
+                }
+            }
+            let rotate = std::env::var("PROXY_ROTATE")
+                .map(|value| value != "0")
+                .unwrap_or(false);
+            let restart = blocked || (active_proxy.is_some() && (rotate || quota_reached));
+            if restart && session.is_some() {
+                info!(
+                    target: "engine",
+                    worker = worker_id,
+                    reason = if blocked {
+                        "captcha block"
+                    } else if quota_reached {
+                        "proxy quota"
+                    } else {
+                        "rotate"
+                    },
+                    "relaunching chrome"
+                );
+                session = None;
+            }
+
+            match outcome {
+                Ok(destination) => {
+                    final_outcome = Some(Ok(destination));
+                    break;
                 }
                 Err(err) => {
-                    error!(target: "engine", worker = worker_id, "chrome failed: {err}");
-                    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-                    inner
-                        .link_finish(
-                            &job.track_id,
-                            "failed",
-                            None,
-                            Some(format!("browser: {err}")),
-                            elapsed_ms,
-                            false,
-                        )
-                        .await;
-                    record_failure(&inner, &job, "browser", &err.to_string(), elapsed_ms).await;
-                    inner.queue_remove(&job.job_id).await;
-                    let _ = job.respond.send(JobOutcome {
-                        destination: None,
-                        error: Some(FlowError {
-                            kind: "browser",
-                            message: err.to_string(),
-                        }),
-                        elapsed_ms,
-                    });
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    continue;
+                    if is_bad_proxy_error(&err) {
+                        session = None;
+                    }
+                    if attempt < max_attempts && is_retryable_error(&err) {
+                        warn!(
+                            target: "engine",
+                            worker = worker_id,
+                            alias = %job.alias,
+                            attempt,
+                            max_attempts,
+                            error = %err,
+                            "retrying job on next proxy"
+                        );
+                        continue;
+                    }
+                    final_outcome = Some(Err(err));
+                    break;
                 }
             }
         }
 
-        let Some(active) = session.as_ref() else { continue };
-        let chrome_port = active.chrome.port;
-        let cdp = active.cdp.clone();
-        let active_proxy = active.proxy.clone();
-        let outcome = run_alias(
-            &cdp,
-            &asr,
-            &job.alias,
-            job.code.as_deref(),
-            chrome_port,
-            active_proxy.clone(),
-            inner.cfg.job_timeout,
-        )
-        .await;
+        let Some(outcome) = final_outcome else {
+            if session.is_none() && prewarm && pending.is_none() {
+                pending = Some(spawn_session(inner.clone(), worker_id));
+            }
+            continue;
+        };
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-        let dead = match &outcome {
-            Ok(_) => false,
-            // A timeout can be a wedged page or a burned exit. Relaunching is
-            // the only way to guarantee the next job starts from a clean
-            // browser, so treat it like a dead session.
-            Err(err) => err.kind == "cdp" || err.kind == "timeout",
-        };
-        if dead {
-            warn!(target: "engine", worker = worker_id, "browser died, dropping session");
-            session = None;
-        }
-        // reCAPTCHA answers "automated queries / try again later" when the IP
-        // is burned. That is not a transient audio mistake: burn the exit and
-        // let the next job start on a different one.
-        let blocked = matches!(&outcome, Err(err) if audio_blocked(err));
-        if let (Some(pool), Some(bad)) = (proxy::shared(), active_proxy.as_ref()) {
-            match &outcome {
-                Err(err) if matches!(err.kind, "cdp" | "browser" | "timeout") || ip_blocked(err) => {
-                    pool.mark_bad(bad)
-                }
-                Ok(_) => pool.mark_good(bad),
-                _ => {}
-            }
-        }
-        let mut quota_reached = false;
-        if outcome.is_ok() {
-            successes_on_exit += 1;
-            if rotate_after > 0
-                && successes_on_exit >= rotate_after
-                && proxy::shared().map(|pool| pool.len() > 1).unwrap_or(false)
-            {
-                if let (Some(pool), Some(used)) = (proxy::shared(), active_proxy.as_ref()) {
-                    pool.mark_bad(used);
-                }
-                successes_on_exit = 0;
-                quota_reached = true;
-            }
-        }
-        // PROXY_ROTATE=1 gives every job a fresh exit; the cost is a Chrome
-        // relaunch (~5 s) and a fresh profile boot. A blocked audio challenge
-        // also gets a new browser even without a proxy pool: the profile and
-        // the reCAPTCHA session are part of what Google scores.
-        let rotate = std::env::var("PROXY_ROTATE")
-            .map(|value| value != "0")
-            .unwrap_or(false);
-        let restart = blocked || (active_proxy.is_some() && (rotate || quota_reached));
-        if restart && session.is_some() {
-            info!(
-                target: "engine",
-                worker = worker_id,
-                reason = if blocked {
-                    "captcha block"
-                } else if quota_reached {
-                    "proxy quota"
-                } else {
-                    "rotate"
-                },
-                "relaunching chrome"
-            );
-            session = None;
-        }
-        // Boot the replacement while the result is written and the worker
-        // waits on the queue, so rotation does not cost the next job ~3 s.
         if session.is_none() && prewarm && pending.is_none() {
             pending = Some(spawn_session(inner.clone(), worker_id));
         }
@@ -410,13 +497,14 @@ async fn worker_loop(
             )
             .await;
         inner.job_put(snapshot).await;
-        // Terminal: the on-disk queue must not replay this job next boot.
         inner.queue_remove(&job.job_id).await;
 
-        let _ = job.respond.send(match outcome {
-            Ok(destination) => JobOutcome { destination: Some(destination), error: None, elapsed_ms },
-            Err(err) => JobOutcome { destination: None, error: Some(err), elapsed_ms },
-        });
+        if let Some(tx) = respond.take() {
+            let _ = tx.send(match outcome {
+                Ok(destination) => JobOutcome { destination: Some(destination), error: None, elapsed_ms },
+                Err(err) => JobOutcome { destination: None, error: Some(err), elapsed_ms },
+            });
+        }
     }
 }
 
@@ -462,6 +550,9 @@ async fn start_session(inner: &Arc<Inner>, worker_id: usize) -> anyhow::Result<S
     }
     let pool = proxy::shared();
     let chosen = pool.as_ref().and_then(|pool| pool.next());
+    if pool.is_some() && chosen.is_none() {
+        anyhow::bail!("all proxies in pool are cooling/unreachable");
+    }
     let relay = match &chosen {
         Some(upstream) => Some(proxy::start_relay(upstream.clone()).await?),
         None => None,
@@ -474,4 +565,63 @@ async fn start_session(inner: &Arc<Inner>, worker_id: usize) -> anyhow::Result<S
     let ws = chrome.page_ws()?;
     let cdp = Cdp::connect(&ws).await?;
     Ok(Session { chrome, cdp, _relay: relay, proxy: chosen })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_job_retries_clamping() {
+        assert_eq!(parse_job_retries(None), 3);
+        assert_eq!(parse_job_retries(Some("")), 3);
+        assert_eq!(parse_job_retries(Some("not-a-number")), 3);
+        assert_eq!(parse_job_retries(Some("0")), 1);
+        assert_eq!(parse_job_retries(Some("1")), 1);
+        assert_eq!(parse_job_retries(Some("2")), 2);
+        assert_eq!(parse_job_retries(Some("3")), 3);
+        assert_eq!(parse_job_retries(Some("4")), 4);
+        assert_eq!(parse_job_retries(Some("5")), 5);
+        assert_eq!(parse_job_retries(Some("6")), 5);
+        assert_eq!(parse_job_retries(Some("99")), 5);
+    }
+
+    #[test]
+    fn test_bad_proxy_and_retryable_errors() {
+        let rate_limit_err = FlowError::new("rate_limit", "Đã vượt quá giới hạn truy cập vui lòng quay lại sau");
+        assert!(is_bad_proxy_error(&rate_limit_err));
+        assert!(is_retryable_error(&rate_limit_err));
+
+        let captcha_err = FlowError::new("captcha", "Mã captcha đã sai hoặc quá hạn");
+        assert!(is_bad_proxy_error(&captcha_err));
+        assert!(is_retryable_error(&captcha_err));
+
+        let cdp_err = FlowError::new("cdp", "connection reset by peer");
+        assert!(is_bad_proxy_error(&cdp_err));
+        assert!(is_retryable_error(&cdp_err));
+
+        let timeout_err = FlowError::new("timeout", "timeout waiting for challenge frame");
+        assert!(is_bad_proxy_error(&timeout_err));
+        assert!(is_retryable_error(&timeout_err));
+
+        let browser_err = FlowError::new("browser", "failed to launch chrome");
+        assert!(is_bad_proxy_error(&browser_err));
+        assert!(is_retryable_error(&browser_err));
+
+        let audio_blocked_err = FlowError::new("audio", "automated queries / try again later");
+        assert!(is_bad_proxy_error(&audio_blocked_err));
+        assert!(is_retryable_error(&audio_blocked_err));
+        assert!(ip_blocked(&audio_blocked_err));
+        assert!(audio_blocked(&audio_blocked_err));
+
+        let three_clips_err = FlowError::new("audio", "three clips failed");
+        assert!(audio_blocked(&three_clips_err));
+        assert!(is_bad_proxy_error(&three_clips_err));
+        assert!(is_retryable_error(&three_clips_err));
+        assert!(!ip_blocked(&three_clips_err));
+
+        let non_retryable = FlowError::new("auth", "invalid key");
+        assert!(!is_bad_proxy_error(&non_retryable));
+        assert!(!is_retryable_error(&non_retryable));
+    }
 }

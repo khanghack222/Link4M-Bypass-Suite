@@ -256,7 +256,7 @@ fn ocr_cache_put(campaign: &str, hash: u64, lines: &[String]) {
     let Some(path) = ocr_cache_path() else {
         return;
     };
-    let mut guard = ocr_cache_slot().lock().expect("ocr cache");
+    let mut guard = ocr_cache_slot().lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         *guard = Some(ocr_cache_load_path(&path));
     }
@@ -306,7 +306,7 @@ fn cache_put(campaign_id: &str, value: &Campaign) {
     if campaign_id.is_empty() {
         return;
     }
-    let mut guard = cache().lock().expect("campaign cache");
+    let mut guard = cache().lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         *guard = Some(load_cache());
     }
@@ -323,7 +323,7 @@ pub fn forget(campaign_id: &str) {
     if campaign_id.is_empty() {
         return;
     }
-    let mut guard = cache().lock().expect("campaign cache");
+    let mut guard = cache().lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         *guard = Some(load_cache());
     }

@@ -171,7 +171,7 @@ def _result_fail(url: str, key: Optional[str], code: str, message: str,
 
 
 def execute(url: str, *, engine: Optional[str] = None, headless: bool = True,
-            proxy: Optional[str] = None) -> BypassResult:
+            proxy: Optional[str] = None, timeout: Optional[int] = None) -> BypassResult:
     start = time.perf_counter()
     raw = (url or "").strip()
     if not raw:
@@ -208,6 +208,8 @@ def execute(url: str, *, engine: Optional[str] = None, headless: bool = True,
         return _result_fail(raw, spec.key, "ERR_RUNNER_NOT_FOUND",
                             f"No runner registered for engine: {spec.key}", headless, start)
     runner.proxy = proxy
+    if timeout is not None:
+        runner.timeout = timeout
 
     fast = fast_decode(raw)
     if fast and runner.is_valid_destination(fast):

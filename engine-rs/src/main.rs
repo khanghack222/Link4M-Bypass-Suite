@@ -219,11 +219,13 @@ async fn run_once(cfg: Config, asr: Arc<Asr>, target: &str) -> Result<()> {
         None => None,
     };
     let proxy_port = relay.as_ref().map(|relay| relay.port);
+    let once_dir = std::env::temp_dir().join(format!("l4m-once-{}", std::process::id()));
+    let once_dir_clone = once_dir.clone();
     let chrome = tokio::task::spawn_blocking(move || {
         ChromeProc::launch(
             &binary,
             headless,
-            std::env::temp_dir().join(format!("l4m-once-{}", std::process::id())),
+            once_dir_clone,
             true,
             proxy_port,
         )
@@ -246,11 +248,16 @@ async fn run_once(cfg: Config, asr: Arc<Asr>, target: &str) -> Result<()> {
         ) => result,
         // `timeout` and Ctrl-C otherwise kill the process before ChromeProc's
         // Drop runs, leaving a browser tree behind on a memory-tight box.
-        _ = shutdown_signal() => Err(FlowError {
-            kind: "shutdown",
-            message: "shutdown requested".into(),
-        }),
+        _ = shutdown_signal() => {
+            l4m_engine::chrome::sweep(&[once_dir.clone()]);
+            Err(FlowError {
+                kind: "shutdown",
+                message: "shutdown requested".into(),
+            })
+        }
     };
+    drop(chrome);
+    l4m_engine::chrome::sweep(&[once_dir]);
     let elapsed = started.elapsed().as_secs_f64() * 1000.0;
     match result {
         Ok(destination) => {

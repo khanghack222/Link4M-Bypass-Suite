@@ -371,6 +371,83 @@ async fn load_and_scroll(cdp: &Cdp, url: &str, referrer: Option<&str>) -> QuestR
     Ok(())
 }
 
+async fn reload_and_scroll(cdp: &Cdp) -> QuestResult<()> {
+    let before = document_signature(cdp).await;
+    cdp.call("Page.reload", json!({}))
+        .await
+        .map_err(|e| QuestError::new("cdp", e.to_string()))?;
+    if let Some(before) = before {
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until {
+            if let Some(now) = document_signature(cdp).await {
+                if now != before {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(60)).await;
+        }
+    } else {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    let until = Instant::now() + Duration::from_secs(8);
+    let mut step = 0usize;
+    while Instant::now() < until {
+        if let Ok(Value::String(found)) = cdp.eval(None, FIND_WIDGET_JS).await {
+            if !found.is_empty() {
+                return Ok(());
+            }
+        }
+        if step % 8 == 0 {
+            let _ = wheel(cdp, 240).await;
+        }
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        step += 1;
+    }
+    Ok(())
+}
+
+pub fn sponsor_with_hash(sponsor: &str, key_hint: &str) -> String {
+    let clean = sponsor.trim_end_matches('/');
+    if key_hint.is_empty() {
+        clean.to_string()
+    } else {
+        format!("{clean}#ss-{key_hint}")
+    }
+}
+
+pub fn check_countdown_stall(
+    left: u32,
+    last_countdown: &mut Option<u32>,
+    last_progress: &mut Instant,
+    now: Instant,
+    stall_bounce_threshold: Duration,
+    stall_abort_threshold: Duration,
+) -> Result<bool, &'static str> {
+    match *last_countdown {
+        Some(prev) if left < prev => {
+            *last_countdown = Some(left);
+            *last_progress = now;
+            Ok(false)
+        }
+        Some(prev) if left == prev => {
+            let stalled = now.duration_since(*last_progress);
+            if stalled >= stall_abort_threshold {
+                Err("countdown stalled")
+            } else if stalled >= stall_bounce_threshold {
+                Ok(true) // trigger bounce
+            } else {
+                Ok(false)
+            }
+        }
+        _ => {
+            *last_countdown = Some(left);
+            *last_progress = now;
+            Ok(false)
+        }
+    }
+}
+
 const DIAG_JS: &str = r#"(() => {
   const scripts = [...document.querySelectorAll('script[src*="/widget/"]')]
     .map(s => s.src.slice(0, 90));
@@ -420,6 +497,11 @@ async fn wait_step(cdp: &Cdp, key: &str, step: u8, budget: Duration) -> QuestRes
     let mut last = String::new();
     let mut saw_countdown = false;
     let mut empty_polls = 0u8;
+
+    let mut scroll_dir: usize = 0;
+    let mut last_countdown: Option<u32> = None;
+    let mut last_progress = Instant::now();
+
     // The widget text is the signal; 120 ms polling catches a countdown or a
     // code almost immediately. Scrolling and the visibility check are
     // housekeeping, so they stay on a ~1 s cadence.
@@ -433,7 +515,12 @@ async fn wait_step(cdp: &Cdp, key: &str, step: u8, budget: Duration) -> QuestRes
                     let _ = cdp.call("Page.bringToFront", json!({})).await;
                 }
             }
-            let _ = wheel(cdp, 70).await;
+            // Alternate scroll direction each second tick so pageYOffset keeps
+            // changing and satisfies the widget's mouseScroll watchdog without
+            // pinning permanently to the document bottom.
+            let dy = if scroll_dir % 2 == 0 { 160 } else { -160 };
+            scroll_dir += 1;
+            let _ = wheel(cdp, dy).await;
         }
         let text = status(cdp, key).await;
         if text != last {
@@ -448,6 +535,27 @@ async fn wait_step(cdp: &Cdp, key: &str, step: u8, budget: Duration) -> QuestRes
             let wanted = Instant::now() + Duration::from_secs(u64::from(left) + 20);
             if wanted > deadline {
                 deadline = wanted.min(hard_cap);
+            }
+
+            let now = Instant::now();
+            match check_countdown_stall(
+                left,
+                &mut last_countdown,
+                &mut last_progress,
+                now,
+                Duration::from_secs(18),
+                Duration::from_secs(40),
+            ) {
+                Ok(true) => {
+                    debug!(target: "engine", left, "countdown frozen, triggering aggressive scroll bounce");
+                    let _ = wheel(cdp, -320).await;
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    let _ = wheel(cdp, 320).await;
+                }
+                Ok(false) => {}
+                Err(msg) => {
+                    return Err(QuestError::new("widget", msg));
+                }
             }
         }
         if step == 1 {
@@ -567,20 +675,32 @@ async fn drive(
     // bare navigation, a Google list requires a Google referrer. The probe
     // already read which list this key ships, so load with the right one.
     let google = Some("https://www.google.com/");
-    let attempts: Vec<(&str, Option<&str>)> = match refs {
-        "google" => vec![(sponsor, google)],
-        "none" => vec![(sponsor, None)],
-        _ => vec![(sponsor, None), (sponsor, google)],
-    };
+    let mut target_urls = Vec::new();
+    if !key_hint.is_empty() {
+        target_urls.push(sponsor_with_hash(sponsor, key_hint));
+    }
+    target_urls.push(sponsor.to_string());
+
+    let mut attempts: Vec<(String, Option<&str>)> = Vec::new();
+    for u in target_urls {
+        match refs {
+            "google" => attempts.push((u, google)),
+            "none" => attempts.push((u, None)),
+            _ => {
+                attempts.push((u.clone(), None));
+                attempts.push((u, google));
+            }
+        }
+    }
     let mut key = String::new();
-    for (url, referrer) in attempts {
-        load_and_scroll(cdp, url, referrer).await?;
+    for (url, referrer) in &attempts {
+        load_and_scroll(cdp, url, *referrer).await?;
         // A quest left by a previous visit makes the widget jump straight to
         // step 2 with an expired id; start clean.
         if let Ok(Value::Array(keys)) = cdp.eval(None, CLEAR_QUEST_JS).await {
             if !keys.is_empty() {
                 debug!(target: "engine", stale = keys.len(), "clearing stale quest state");
-                load_and_scroll(cdp, url, referrer).await?;
+                load_and_scroll(cdp, url, *referrer).await?;
             }
         }
         key = find_widget(cdp).await;
@@ -590,9 +710,10 @@ async fn drive(
     }
     // Last resort: the widget's own `#ss-<key>` hatch forces the button on.
     if key.is_empty() && !key_hint.is_empty() {
-        let forced = format!("{}#ss-{}", sponsor.trim_end_matches('/'), key_hint);
-        debug!(target: "engine", url = %forced, "retrying with forced widget hash");
+        let forced = sponsor_with_hash(sponsor, key_hint);
+        debug!(target: "engine", url = %forced, "retrying with forced widget hash and document reload");
         load_and_scroll(cdp, &forced, None).await?;
+        reload_and_scroll(cdp).await?;
         key = find_widget(cdp).await;
     }
     if key.is_empty() {
@@ -667,5 +788,80 @@ mod tests {
     fn reads_countdown() {
         assert_eq!(countdown_secs("Vui lòng chờ 21s (1/2)"), Some(21));
         assert_eq!(countdown_secs("LẤY MÃ"), None);
+    }
+
+    #[test]
+    fn test_sponsor_with_hash() {
+        assert_eq!(
+            super::sponsor_with_hash("https://giaiphapdokiem.vn/", "nJBenYY"),
+            "https://giaiphapdokiem.vn#ss-nJBenYY"
+        );
+        assert_eq!(
+            super::sponsor_with_hash("https://example.com/sub", "key123"),
+            "https://example.com/sub#ss-key123"
+        );
+        assert_eq!(
+            super::sponsor_with_hash("https://example.com", ""),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn test_countdown_stall_detection() {
+        use std::time::{Duration, Instant};
+
+        let start = Instant::now();
+        let mut last_progress = start;
+        let mut last_countdown = None;
+
+        let r1 = super::check_countdown_stall(
+            45,
+            &mut last_countdown,
+            &mut last_progress,
+            start,
+            Duration::from_secs(18),
+            Duration::from_secs(40),
+        );
+        assert_eq!(r1, Ok(false));
+
+        let r2 = super::check_countdown_stall(
+            44,
+            &mut last_countdown,
+            &mut last_progress,
+            start + Duration::from_secs(1),
+            Duration::from_secs(18),
+            Duration::from_secs(40),
+        );
+        assert_eq!(r2, Ok(false));
+
+        let r3 = super::check_countdown_stall(
+            44,
+            &mut last_countdown,
+            &mut last_progress,
+            start + Duration::from_secs(11),
+            Duration::from_secs(18),
+            Duration::from_secs(40),
+        );
+        assert_eq!(r3, Ok(false));
+
+        let r4 = super::check_countdown_stall(
+            44,
+            &mut last_countdown,
+            &mut last_progress,
+            start + Duration::from_secs(21),
+            Duration::from_secs(18),
+            Duration::from_secs(40),
+        );
+        assert_eq!(r4, Ok(true));
+
+        let r5 = super::check_countdown_stall(
+            44,
+            &mut last_countdown,
+            &mut last_progress,
+            start + Duration::from_secs(42),
+            Duration::from_secs(18),
+            Duration::from_secs(40),
+        );
+        assert_eq!(r5, Err("countdown stalled"));
     }
 }

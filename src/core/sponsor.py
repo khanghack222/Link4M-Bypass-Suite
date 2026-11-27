@@ -1344,20 +1344,27 @@ def _solve_single_sponsor_impl(context, page, sponsor_url: str, t_single_start: 
                 try:
                     from playwright.sync_api import sync_playwright
                     with sync_playwright() as p_sub:
+                        c_path = get_chrome_path()
                         b_sub = p_sub.chromium.launch(
+                            executable_path=c_path if c_path and os.path.exists(c_path) else None,
                             headless=True,
                             args=[
                                 f'--host-resolver-rules=MAP {d_name} {ip}, MAP *.{d_name} {ip}, MAP s1.what-on.com 104.21.43.112, MAP what-on.com 172.67.178.139',
                                 '--no-sandbox'
                             ]
                         )
-                        ctx_sub = b_sub.new_context(
-                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                            viewport={"width": 1280, "height": 720}
-                        )
-                        res_code = _solve_single_sponsor(ctx_sub, sponsor_url)
-                        b_sub.close()
-                        return res_code
+                        try:
+                            ctx_sub = b_sub.new_context(
+                                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                                viewport={"width": 1280, "height": 720}
+                            )
+                            res_code = _solve_single_sponsor(ctx_sub, sponsor_url)
+                            return res_code
+                        finally:
+                            try:
+                                b_sub.close()
+                            except Exception:
+                                pass
                 except Exception as sub_e:
                     log(f"[!] Mapped session error: {sub_e}")
         log(f"[!] Sponsor goto note: {e}")
