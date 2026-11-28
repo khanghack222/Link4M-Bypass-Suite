@@ -21,13 +21,54 @@ Two modes:
 
 import json
 import os
+import re
 import sys
 import time
 
+import numpy as np
 from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
 
-MAX_WIDTH = 800
+MAX_WIDTH = 640
+MAX_HEIGHT = int(os.environ.get("OCR_MAX_HEIGHT", "240") or 240)
+_DOMAIN_URL_RE = re.compile(r"https?://([a-z0-9-]+(?:\.[a-z0-9-]+)+)", re.I)
+_EXCLUDED_DOMAINS = (
+    "google.",
+    "facebook.",
+    "youtube.",
+    "link4m.",
+    "gstatic.",
+    "doubleclick.",
+    "googletagmanager",
+)
+
+
+def _has_sponsor_url(lines: list[str]) -> bool:
+    for line in lines:
+        for m in _DOMAIN_URL_RE.finditer(line):
+            host = m.group(1).lower()
+            if not any(ex in host for ex in _EXCLUDED_DOMAINS):
+                return True
+    return False
+
+
+def _scan_files(engine, files: list[str], pool=None) -> list[list[str]]:
+    # Scan from the last strip backwards: Link4M puts the full sponsor URL
+    # screenshot near the end (instr-3/instr-4), so stopping as soon as a
+    # non-excluded URL is found avoids OCR-ing the earlier instruction strips.
+    if len(files) > 1:
+        collected: list[list[str]] = []
+        for path in reversed(files):
+            lines = read_lines(engine, path)
+            collected.append(lines)
+            if _has_sponsor_url(lines):
+                collected.reverse()
+                return collected
+        collected.reverse()
+        return collected
+    if pool and len(files) > 1:
+        return list(pool.map(lambda path: read_lines(engine, path), files))
+    return [read_lines(engine, path) for path in files]
 
 
 def read_lines(engine, path: str) -> list[str]:
@@ -35,11 +76,12 @@ def read_lines(engine, path: str) -> list[str]:
         im = Image.open(path).convert("RGB")
         w, h = im.size
         if w > MAX_WIDTH:
-            im = im.resize((MAX_WIDTH, int(h * MAX_WIDTH / w)), Image.LANCZOS)
-            tmp = path + ".small.png"
-            im.save(tmp)
-            path = tmp
-        result, _ = engine(path)
+            h = int(h * MAX_WIDTH / w)
+            w = MAX_WIDTH
+            im = im.resize((w, h), Image.BILINEAR)
+        if MAX_HEIGHT > 0 and h > MAX_HEIGHT:
+            im = im.crop((0, 0, w, MAX_HEIGHT))
+        result, _ = engine(np.asarray(im))
         return [line[1] for line in (result or [])]
     except Exception:
         return []
@@ -49,7 +91,7 @@ def serve() -> int:
     from concurrent.futures import ThreadPoolExecutor
 
     engine = RapidOCR()
-    workers = max(1, min(4, int(os.environ.get("OCR_SERVE_THREADS", "2") or 2)))
+    workers = max(1, min(4, int(os.environ.get("OCR_SERVE_THREADS", "1") or 1)))
     pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
     for raw in sys.stdin:
         raw = raw.strip()
@@ -63,10 +105,7 @@ def serve() -> int:
             sys.stdout.flush()
             continue
         started = time.time()
-        if pool and len(files) > 1:
-            blocks = list(pool.map(lambda path: read_lines(engine, path), files))
-        else:
-            blocks = [read_lines(engine, path) for path in files]
+        blocks = _scan_files(engine, files, pool)
         timings = [int((time.time() - started) * 1000)]
         sys.stdout.write(
             json.dumps(
@@ -82,7 +121,7 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--serve":
         return serve()
     engine = RapidOCR()
-    out = [read_lines(engine, path) for path in sys.argv[1:]]
+    out = _scan_files(engine, sys.argv[1:])
     json.dump(out, sys.stdout, ensure_ascii=False)
     return 0
 

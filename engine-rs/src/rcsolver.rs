@@ -110,6 +110,7 @@ async fn mint(url: &str, sitekey: Option<&str>) -> Option<String> {
             return None;
         }
     };
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let child_pid = child.id();
 
     let output = match tokio::time::timeout(budget, child.wait_with_output()).await {

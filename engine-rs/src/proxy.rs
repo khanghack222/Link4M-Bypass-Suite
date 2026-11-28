@@ -127,9 +127,10 @@ pub struct ProxyPool {
 
 impl ProxyPool {
     /// Build from `PROXY_LIST` (inline, newline/comma separated) or
-    /// `PROXY_FILE` (default `data/proxies.txt`). Empty list → `None`.
+    /// `PROXY_FILE` (default `data/proxies.txt`). Empty list → auto-detect
+    /// local Cloudflare WARP SOCKS5 proxy (`127.0.0.1:40000`) when enabled.
     pub fn from_env() -> Option<Arc<ProxyPool>> {
-        match std::env::var("PROXY_LIST") {
+        let configured = match std::env::var("PROXY_LIST") {
             Ok(value) if !value.trim().is_empty() => Self::build(&value, None),
             _ => {
                 let path = std::env::var("PROXY_FILE")
@@ -137,7 +138,18 @@ impl ProxyPool {
                     .unwrap_or_else(|_| PathBuf::from("data/proxies.txt"));
                 Self::from_file(path)
             }
+        };
+        if configured.is_some() {
+            return configured;
         }
+        detect_warp_proxy().and_then(|proxy| {
+            info!(
+                target: "engine",
+                port = proxy.port,
+                "detected local Cloudflare WARP proxy"
+            );
+            Self::build(&format!("socks5://{}:{}", proxy.host, proxy.port), None)
+        })
     }
 
     fn from_file(path: PathBuf) -> Option<Arc<ProxyPool>> {
@@ -291,6 +303,95 @@ pub fn agent(timeout: Duration, user_agent: &str) -> ureq::Agent {
 pub fn shared() -> Option<Arc<ProxyPool>> {
     static POOL: OnceLock<Option<Arc<ProxyPool>>> = OnceLock::new();
     POOL.get_or_init(ProxyPool::from_env).clone()
+}
+
+fn warp_proxy_port() -> u16 {
+    std::env::var("L4M_WARP_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .filter(|p| *p > 0)
+        .unwrap_or(40000)
+}
+
+pub fn is_warp_proxy(proxy: &Proxy) -> bool {
+    proxy.scheme == Scheme::Socks5
+        && (proxy.host == "127.0.0.1" || proxy.host == "localhost")
+        && proxy.port == warp_proxy_port()
+}
+
+fn detect_warp_proxy() -> Option<Proxy> {
+    if matches!(std::env::var("L4M_WARP_PROXY"), Ok(v) if v.trim() == "0") {
+        return None;
+    }
+    let port = warp_proxy_port();
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(80)).is_ok() {
+        Some(Proxy {
+            scheme: Scheme::Socks5,
+            host: "127.0.0.1".into(),
+            port,
+            user: String::new(),
+            pass: String::new(),
+        })
+    } else {
+        None
+    }
+}
+
+/// Cycle the local Cloudflare WARP tunnel (`warp-cli disconnect` -> `connect`)
+/// to obtain a fresh exit IP when Google reCAPTCHA or Link4M rate-limits the
+/// current one. Serialized by a static lock so concurrent workers don't collide.
+pub async fn rotate_warp_ip() -> bool {
+    static ROTATING: OnceLock<tokio::sync::Mutex<Option<Instant>>> = OnceLock::new();
+    if matches!(std::env::var("L4M_WARP_ROTATE"), Ok(v) if v.trim() == "0") {
+        return false;
+    }
+    let lock = ROTATING.get_or_init(|| tokio::sync::Mutex::new(None));
+    let mut last = lock.lock().await;
+    if let Some(prev) = *last {
+        if prev.elapsed() < Duration::from_secs(12) {
+            return true;
+        }
+    }
+    let port = warp_proxy_port();
+    let rotated = tokio::task::spawn_blocking(move || {
+        let off = std::process::Command::new("warp-cli")
+            .arg("disconnect")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !off {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(350));
+        let on = std::process::Command::new("warp-cli")
+            .arg("connect")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !on {
+            return false;
+        }
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        for _ in 0..30 {
+            if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(120)).is_ok() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+    if rotated {
+        *last = Some(Instant::now());
+        info!(target: "engine", port, "rotated Cloudflare WARP exit IP");
+    }
+    rotated
 }
 
 /// A running local relay. Dropping it stops the listener.
@@ -621,9 +722,16 @@ async fn handle_socks(
     method: &str,
     target: &str,
 ) -> std::io::Result<()> {
-    let mut upstream = TcpStream::connect((proxy.host.as_str(), proxy.port)).await?;
+    let mut upstream = tokio::time::timeout(
+        RELAY_HANDSHAKE_TIMEOUT,
+        TcpStream::connect((proxy.host.as_str(), proxy.port)),
+    )
+    .await
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "socks5 connect timeout"))??;
     let _ = upstream.set_nodelay(true);
-    socks5_negotiate(&mut upstream, &proxy).await?;
+    tokio::time::timeout(RELAY_HANDSHAKE_TIMEOUT, socks5_negotiate(&mut upstream, &proxy))
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "socks5 negotiate timeout"))??;
 
     if method.eq_ignore_ascii_case("CONNECT") {
         let (host, port) = split_host_port(target)

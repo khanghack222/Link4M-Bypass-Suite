@@ -11,7 +11,7 @@
 use crate::cdp::Cdp;
 use crate::proxy::{self, Proxy};
 use base64::Engine as _;
-use futures_util::future::join_all;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -45,7 +45,7 @@ const INSTR_JS: &str = r#"(() => {
   const imgs = root ? [...root.querySelectorAll('img')]
     .map(i => i.src)
     .filter(s => s && (s.startsWith('data:image') || /img\.link4m\.net\/uploads\/advertiser/.test(s)))
-    .slice(0, 8) : [];
+    .slice(0, 5) : [];
   const camp = document.querySelector('input[name=campaign_id]');
   return {
     text: root ? (root.innerText || '') : '',
@@ -409,32 +409,86 @@ fn parse_keyword(blob: &str) -> String {
     String::new()
 }
 
-fn ocr_binary() -> PathBuf {
+pub fn ocr_binary() -> PathBuf {
     if let Ok(path) = std::env::var("L4M_PYTHON") {
-        return PathBuf::from(path);
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
     }
-    for candidate in [".venv/bin/python", "../.venv/bin/python"] {
-        let path = PathBuf::from(candidate);
+    let mut candidates: Vec<PathBuf> = vec![
+        PathBuf::from(".venv/bin/python"),
+        PathBuf::from("../.venv/bin/python"),
+        PathBuf::from("engine-rs/.venv/bin/python"),
+    ];
+    #[cfg(windows)]
+    {
+        candidates.push(PathBuf::from(".venv\\Scripts\\python.exe"));
+        candidates.push(PathBuf::from("..\\.venv\\Scripts\\python.exe"));
+        candidates.push(PathBuf::from("engine-rs\\.venv\\Scripts\\python.exe"));
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            for ver in ["Python311", "Python312", "Python313", "Python310"] {
+                candidates.push(
+                    PathBuf::from(&local_app_data)
+                        .join("Programs")
+                        .join("Python")
+                        .join(ver)
+                        .join("python.exe"),
+                );
+            }
+        }
+    }
+    for path in &candidates {
+        if path.exists() && runnable(path, &["-c", "import rapidocr_onnxruntime"]) {
+            return path.clone();
+        }
+    }
+    for name in ["python3", "python"] {
+        let path = PathBuf::from(name);
+        if runnable(&path, &["-c", "import rapidocr_onnxruntime"]) {
+            return path;
+        }
+    }
+    for path in candidates {
         if path.exists() {
             return path;
         }
     }
     #[cfg(windows)]
-    for candidate in [
-        ".venv\\Scripts\\python.exe",
-        "..\\.venv\\Scripts\\python.exe",
-    ] {
+    {
+        PathBuf::from("python")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("python3")
+    }
+}
+
+fn ocr_script() -> PathBuf {
+    if let Ok(path) = std::env::var("L4M_OCR") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    for candidate in ["tools/ocr.py", "engine-rs/tools/ocr.py", "../tools/ocr.py"] {
         let path = PathBuf::from(candidate);
         if path.exists() {
             return path;
         }
     }
-    PathBuf::from("python3")
-}
-
-fn ocr_script() -> PathBuf {
-    if let Ok(path) = std::env::var("L4M_OCR") {
-        return PathBuf::from(path);
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent();
+        for _ in 0..4 {
+            let Some(current) = dir else { break };
+            for rel in ["tools/ocr.py", "engine-rs/tools/ocr.py"] {
+                let candidate = current.join(rel);
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+            dir = current.parent();
+        }
     }
     PathBuf::from("tools/ocr.py")
 }
@@ -519,14 +573,22 @@ fn decode_image_bytes(src: &str, proxy: Option<&Proxy>) -> Option<Vec<u8>> {
             .filter(|raw| !raw.is_empty());
     }
     if src.starts_with("http://") || src.starts_with("https://") {
-        let body = proxy::agent_for(proxy, Duration::from_secs(6), "Mozilla/5.0")
-            .get(src)
-            .call()
-            .ok()?
-            .into_reader();
-        let mut buf = Vec::new();
-        body.take(8 * 1024 * 1024).read_to_end(&mut buf).ok()?;
-        return (!buf.is_empty()).then_some(buf);
+        let fetch_with = |p: Option<&Proxy>, secs: u64| -> Option<Vec<u8>> {
+            let body = proxy::agent_for(p, Duration::from_secs(secs), "Mozilla/5.0")
+                .get(src)
+                .call()
+                .ok()?
+                .into_reader();
+            let mut buf = Vec::new();
+            body.take(8 * 1024 * 1024).read_to_end(&mut buf).ok()?;
+            (!buf.is_empty()).then_some(buf)
+        };
+        if let Some(buf) = fetch_with(proxy, 6) {
+            return Some(buf);
+        }
+        if proxy.is_some() {
+            return fetch_with(None, 8);
+        }
     }
     None
 }
@@ -1067,13 +1129,14 @@ fn widget_refs(body: &str, proxy: Option<&Proxy>) -> String {
     } else {
         return "auto".into();
     };
-    let Ok(response) = proxy::agent_for(proxy, Duration::from_secs(4), UA_MOBILE)
-        .get(&url)
-        .call()
-    else {
-        return "auto".into();
+    let fetch_js = |p: Option<&Proxy>| -> Option<String> {
+        let response = proxy::agent_for(p, Duration::from_secs(4), UA_MOBILE)
+            .get(&url)
+            .call()
+            .ok()?;
+        response.into_string().ok()
     };
-    let Ok(js) = response.into_string() else {
+    let Some(js) = fetch_js(proxy).or_else(|| if proxy.is_some() { fetch_js(None) } else { None }) else {
         return "auto".into();
     };
     let Some(at) = js.find("ref_domain_list") else {
@@ -1096,47 +1159,214 @@ fn widget_refs(body: &str, proxy: Option<&Proxy>) -> String {
     }
 }
 
-/// Fetch a candidate homepage and return `(final host, widget key)`.
-fn probe(domain: &str, proxy: Option<&Proxy>) -> Option<(String, String)> {
-    let agent = proxy::agent_for(proxy, Duration::from_secs(5), UA_MOBILE);
-    let response = agent.get(&format!("https://{domain}/")).call().ok()?;
-    let final_url = response.get_url().to_string();
-    let mut body = String::new();
-    response
-        .into_reader()
-        .take(3 * 1024 * 1024)
-        .read_to_string(&mut body)
-        .ok()?;
-    let key = widget_key(&body)?;
-    let host = url::Url::parse(&final_url).ok()?.host_str()?.to_string();
-    let refs = widget_refs(&body, proxy);
-    Some((host, format!("{key}\u{1}{refs}")))
+/// Extract a lowercase URL path/slug from Google search snippet breadcrumbs
+/// such as `https://like.vn>mua-follow-tiktok` or `https://like.vn/slug`,
+/// ignoring capitalized page titles like `> Kuwin Chinh Hang`.
+fn extract_sponsor_target(blob: &str, domain: &str) -> String {
+    let lower_domain = domain.to_ascii_lowercase();
+    for line in blob.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let Some(pos) = lower.find(&lower_domain) else {
+            continue;
+        };
+        let after = &trimmed[pos + lower_domain.len()..];
+        let rest = after
+            .trim_start_matches(|c: char| c == '/' || c == '>' || c == '›' || c == ' ');
+        if rest.is_empty() {
+            continue;
+        }
+        // Only treat as a URL slug when it starts lowercase and has no spaces
+        // before the next separator (e.g. `mua-follow-tiktok`), not `Kuwin Chinh Hang`.
+        let slug: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        if slug.len() >= 3 && slug.contains('-') && slug.chars().all(|c| !c.is_ascii_uppercase()) {
+            if slug.ends_with('.') || slug.ends_with('-') {
+                let prefix = slug.trim_end_matches('.');
+                if prefix.len() >= 4 {
+                    return format!("{domain}/{prefix}*");
+                }
+            } else {
+                return format!("{domain}/{slug}");
+            }
+        }
+    }
+    domain.to_string()
 }
 
-/// Probe candidates in parallel, keeping the OCR order as priority.
-async fn probe_all(candidates: Vec<String>, proxy: Option<Proxy>) -> Option<(String, String)> {
-    for chunk in candidates.chunks(4) {
-        let futures = chunk.iter().enumerate().map(|(i, domain)| {
-            let domain = domain.clone();
-            let proxy = proxy.clone();
-            async move {
-                let hit = tokio::task::spawn_blocking(move || probe(&domain, proxy.as_ref()))
-                    .await
-                    .ok()
-                    .flatten();
-                (i, hit)
+fn resolve_truncated_href(body: &str, host: &str, prefix: &str, ocr_blob: &str) -> Option<String> {
+    let needle = format!("/{prefix}");
+    let mut best: Option<(usize, String)> = None;
+    let ocr_norm: String = ocr_blob
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let mut pos = 0;
+    while let Some(at) = body[pos..].find("href=") {
+        let start = pos + at + 5;
+        let rest = &body[start..];
+        let quote = rest.chars().next()?;
+        if quote == '"' || quote == '\'' {
+            if let Some(end) = rest[1..].find(quote) {
+                let href = &rest[1..1 + end];
+                let path = if let Some(stripped) = href.strip_prefix(&format!("https://{host}")) {
+                    stripped
+                } else if let Some(stripped) = href.strip_prefix(&format!("http://{host}")) {
+                    stripped
+                } else {
+                    href
+                };
+                if path.starts_with(&needle) && path.len() > needle.len() && !path.contains('?') {
+                    let slug_norm: String = path
+                        .chars()
+                        .filter(|c| c.is_ascii_alphabetic())
+                        .map(|c| c.to_ascii_lowercase())
+                        .collect();
+                    let score = if !slug_norm.is_empty() && ocr_norm.contains(&slug_norm) {
+                        100 + slug_norm.len()
+                    } else {
+                        slug_norm.len()
+                    };
+                    if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+                        best = Some((score, path.trim_start_matches('/').to_string()));
+                    }
+                }
+                pos = start + 1 + end;
+                continue;
             }
-        });
-        let results = join_all(futures).await;
-        let best = results
-            .into_iter()
-            .filter_map(|(i, hit)| hit.map(|h| (i, h)))
-            .min_by_key(|(i, _)| *i);
-        if let Some((_, hit)) = best {
+        }
+        pos = start + 1;
+    }
+    best.map(|(_, p)| format!("{host}/{p}"))
+}
+
+/// Fetch a candidate page and return `(final host[/path], widget key)`.
+fn probe(target: &str, ocr_blob: &str, proxy: Option<&Proxy>) -> Option<(String, String)> {
+    let try_probe = |cand: &str, p: Option<&Proxy>| -> Option<(String, String)> {
+        let agent = proxy::agent_for(p, Duration::from_secs(5), UA_MOBILE);
+        let url = if cand.contains('/') {
+            format!("https://{cand}")
+        } else {
+            format!("https://{cand}/")
+        };
+        let response = agent.get(&url).call().ok()?;
+        let final_url = response.get_url().to_string();
+        let mut body = String::new();
+        response
+            .into_reader()
+            .take(3 * 1024 * 1024)
+            .read_to_string(&mut body)
+            .ok()?;
+        let key = widget_key(&body)?;
+        let parsed = url::Url::parse(&final_url).ok()?;
+        let host = parsed.host_str()?.to_string();
+        let path = parsed.path().trim_end_matches('/');
+        let sponsor = if cand.contains('/') && !path.is_empty() {
+            format!("{host}{path}")
+        } else {
+            host
+        };
+        let refs = widget_refs(&body, p);
+        Some((sponsor, format!("{key}\u{1}{refs}")))
+    };
+    if let Some((host, pat)) = target.split_once('/') {
+        if let Some(prefix) = pat.strip_suffix('*') {
+            let fetch_home = |p: Option<&Proxy>| -> Option<String> {
+                let agent = proxy::agent_for(p, Duration::from_secs(5), UA_MOBILE);
+                let resp = agent.get(&format!("https://{host}/")).call().ok()?;
+                let mut body = String::new();
+                resp.into_reader().take(2 * 1024 * 1024).read_to_string(&mut body).ok()?;
+                Some(body)
+            };
+            if let Some(home) = fetch_home(proxy).or_else(|| if proxy.is_some() { fetch_home(None) } else { None }) {
+                if let Some(resolved) = resolve_truncated_href(&home, host, prefix, ocr_blob) {
+                    if let Some(hit) = try_probe(&resolved, proxy).or_else(|| if proxy.is_some() { try_probe(&resolved, None) } else { None }) {
+                        return Some(hit);
+                    }
+                }
+            }
+            return try_probe(host, proxy).or_else(|| if proxy.is_some() { try_probe(host, None) } else { None });
+        }
+    }
+    if let Some(hit) = try_probe(target, proxy) {
+        return Some(hit);
+    }
+    if proxy.is_some() {
+        if let Some(hit) = try_probe(target, None) {
             return Some(hit);
         }
     }
+    if let Some((host, _)) = target.split_once('/') {
+        if let Some(hit) = try_probe(host, proxy) {
+            return Some(hit);
+        }
+        if proxy.is_some() {
+            return try_probe(host, None);
+        }
+    }
     None
+}
+
+async fn probe_indexed(
+    idx: usize,
+    domain: String,
+    blob: String,
+    proxy: Option<Proxy>,
+) -> (usize, Option<(String, String)>) {
+    let hit = tokio::task::spawn_blocking(move || probe(&domain, &blob, proxy.as_ref()))
+        .await
+        .ok()
+        .flatten();
+    (idx, hit)
+}
+
+/// Probe candidates concurrently with early exit once priority #0 hits or
+/// higher-priority slots fail/timeout briefly after a valid hit arrives.
+async fn probe_all(candidates: Vec<String>, ocr_blob: String, proxy: Option<Proxy>) -> Option<(String, String)> {
+    let total = candidates.len();
+    if total == 0 {
+        return None;
+    }
+    let mut iter = candidates.into_iter().enumerate();
+    let mut in_flight = FuturesUnordered::new();
+    for _ in 0..4 {
+        let Some((idx, domain)) = iter.next() else { break };
+        in_flight.push(probe_indexed(idx, domain, ocr_blob.clone(), proxy.clone()));
+    }
+
+    let mut best: Option<(usize, (String, String))> = None;
+    let mut grace_deadline: Option<tokio::time::Instant> = None;
+    loop {
+        let next_item = if let Some(deadline) = grace_deadline {
+            match tokio::time::timeout_at(deadline, in_flight.next()).await {
+                Ok(item) => item,
+                Err(_) => break,
+            }
+        } else {
+            in_flight.next().await
+        };
+        let Some((idx, hit)) = next_item else { break };
+        if let Some(h) = hit {
+            let better = best.as_ref().map(|(bi, _)| idx < *bi).unwrap_or(true);
+            if better {
+                best = Some((idx, h));
+                if idx == 0 {
+                    break;
+                }
+                grace_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(1200));
+            }
+        }
+        if let Some((next_idx, domain)) = iter.next() {
+            let can_beat = best.as_ref().map(|(bi, _)| next_idx < *bi).unwrap_or(true);
+            if can_beat {
+                in_flight.push(probe_indexed(next_idx, domain, ocr_blob.clone(), proxy.clone()));
+            }
+        }
+    }
+    best.map(|(_, h)| h)
 }
 
 /// Read the instruction block on the current campaign page.
@@ -1151,7 +1381,7 @@ pub async fn discover(cdp: &Cdp, proxy: Option<Proxy>) -> Option<Campaign> {
             return Some(hit);
         }
         // Cached before the probe existed, or the probe failed last time.
-        if let Some((host, packed)) = probe_all(vec![hit.sponsor.clone()], proxy.clone()).await {
+        if let Some((host, packed)) = probe_all(vec![hit.sponsor.clone()], String::new(), proxy.clone()).await {
             let (key, refs) = packed
                 .split_once('\u{1}')
                 .map(|(k, r)| (k.to_string(), r.to_string()))
@@ -1171,6 +1401,7 @@ pub async fn discover(cdp: &Cdp, proxy: Option<Proxy>) -> Option<Campaign> {
     let mut domains = clean_domains(text);
     let mut keyword = parse_keyword(text);
 
+    let mut ocr_blob = String::new();
     if !direct || domains.is_empty() {
         let images: Vec<String> = value
             .get("imgs")
@@ -1216,10 +1447,12 @@ pub async fn discover(cdp: &Cdp, proxy: Option<Proxy>) -> Option<Campaign> {
             warn!(target: "engine", "instruction OCR returned nothing");
         }
         let blob = lines.join("\n");
+        ocr_blob = blob.clone();
         debug!(target: "engine", ocr = %blob.replace('\n', " | "), "instruction OCR");
         for domain in clean_domains(&blob) {
-            if !domains.contains(&domain) {
-                domains.push(domain);
+            let target = extract_sponsor_target(&blob, &domain);
+            if !domains.contains(&target) {
+                domains.push(target);
             }
         }
         if keyword.is_empty() {
@@ -1227,7 +1460,7 @@ pub async fn discover(cdp: &Cdp, proxy: Option<Proxy>) -> Option<Campaign> {
         }
     }
 
-    let (sponsor, packed) = probe_all(domains, proxy).await?;
+    let (sponsor, packed) = probe_all(domains, ocr_blob, proxy).await?;
     let (key, refs) = packed
         .split_once('\u{1}')
         .map(|(k, r)| (k.to_string(), r.to_string()))
@@ -1269,6 +1502,14 @@ mod tests {
         assert_eq!(parse_keyword("Bước 2: Gõ tìm từ khoá sevenam"), "sevenam");
         assert_eq!(parse_keyword("Buoc 2: Go tim tu khoa betmoney"), "betmoney");
         assert_eq!(parse_keyword("Buoc 2: Go tim tp khoa bet88"), "bet88");
+    }
+
+    #[test]
+    fn extracts_sponsor_slug_from_breadcrumb() {
+        let blob = "Like.vn\nhttps://like.vn>mua-follow-tiktok\nTang,BuffFollow";
+        assert_eq!(extract_sponsor_target(blob, "like.vn"), "like.vn/mua-follow-tiktok");
+        let title_blob = "grbets527.com\nhttps://m.grbets527.com > Kuwin Chinh Hang";
+        assert_eq!(extract_sponsor_target(title_blob, "m.grbets527.com"), "m.grbets527.com");
     }
 
     #[test]

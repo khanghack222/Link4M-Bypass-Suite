@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, Mutex};
@@ -239,7 +239,7 @@ impl Config {
             chrome_bin: env_or("CHROME_BIN", &find_chrome()),
             headless: match std::env::var("L4M_HEADLESS") {
                 Ok(value) => value != "0",
-                Err(_) => std::env::var("DISPLAY").map(|d| d.trim().is_empty()).unwrap_or(true),
+                Err(_) => true,
             },
             profile_dir: PathBuf::from(
                 std::env::var("CHROME_PROFILE")
@@ -275,6 +275,14 @@ impl CacheEntry {
         let now = unix_now();
         now.saturating_sub(self.stored_at) < ttl.as_secs()
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct InflightOutcome {
+    pub job_id: String,
+    pub destination: Option<String>,
+    pub error: Option<String>,
+    pub elapsed_ms: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -397,10 +405,13 @@ pub struct Inner {
     /// Serialises the atomic snapshot files so an older snapshot can never
     /// land after a newer one.
     writers: Mutex<()>,
+    links_dirty: AtomicBool,
+    links_flushing: AtomicBool,
     /// Fan-out for the status board. Slow SSE clients lag and skip instead of
     /// blocking dispatch.
     pub events: broadcast::Sender<serde_json::Value>,
     pub locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    pub inflight: Mutex<HashMap<String, (String, broadcast::Sender<InflightOutcome>)>>,
     pub stats: Stats,
 }
 
@@ -455,8 +466,11 @@ impl Inner {
             links: Mutex::new(links),
             pending: Mutex::new(pending),
             writers: Mutex::new(()),
+            links_dirty: AtomicBool::new(false),
+            links_flushing: AtomicBool::new(false),
             events,
             locks: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
             stats,
         })
     }
@@ -525,6 +539,61 @@ impl Inner {
         })
         .await;
         self.persist_links().await;
+    }
+
+    /// Record an already-resolved cache/decode hit on the status board without
+    /// blocking the HTTP response on synchronous disk `fsync`. Concurrent bursts
+    /// coalesce into a single background flush every ~50 ms.
+    pub async fn record_cached_hit(
+        self: &Arc<Self>,
+        url: &str,
+        provider: &str,
+        destination: &str,
+        elapsed_ms: f64,
+        cached: bool,
+    ) {
+        let now = unix_now();
+        let entry = LinkEntry {
+            id: new_job_id(),
+            url: url.to_string(),
+            status: "success".into(),
+            destination_url: Some(destination.to_string()),
+            provider: Some(provider.to_string()),
+            cached,
+            elapsed_ms,
+            created_at: now,
+            updated_at: now,
+            error: None,
+        };
+        {
+            let mut links = self.links.lock().await;
+            links.push_front(entry.clone());
+            while links.len() > LINK_HISTORY {
+                links.pop_back();
+            }
+        }
+        self.emit_link(&entry);
+        self.links_dirty.store(true, Ordering::Release);
+        if !self.links_flushing.swap(true, Ordering::AcqRel) {
+            let inner = Arc::clone(self);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    if inner.links_dirty.swap(false, Ordering::AcqRel) {
+                        inner.persist_links().await;
+                        if inner.links_dirty.load(Ordering::Acquire) {
+                            continue;
+                        }
+                    }
+                    inner.links_flushing.store(false, Ordering::Release);
+                    if !inner.links_dirty.load(Ordering::Acquire)
+                        || inner.links_flushing.swap(true, Ordering::AcqRel)
+                    {
+                        break;
+                    }
+                }
+            });
+        }
     }
 
     async fn link_update<F>(&self, id: &str, mutate: F)
@@ -696,6 +765,55 @@ impl Inner {
             .entry(key.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    pub async fn inflight_join(
+        &self,
+        key: &str,
+    ) -> Option<(String, broadcast::Receiver<InflightOutcome>)> {
+        let inflight = self.inflight.lock().await;
+        inflight
+            .get(key)
+            .map(|(job_id, tx)| (job_id.clone(), tx.subscribe()))
+    }
+
+    pub async fn inflight_register(&self, key: &str, job_id: &str) {
+        let (tx, _) = broadcast::channel(16);
+        let mut inflight = self.inflight.lock().await;
+        inflight.insert(key.to_string(), (job_id.to_string(), tx));
+    }
+
+    pub async fn inflight_has_waiters(&self, key: &str) -> bool {
+        let inflight = self.inflight.lock().await;
+        inflight
+            .get(key)
+            .map(|(_, tx)| tx.receiver_count() > 0)
+            .unwrap_or(false)
+    }
+
+    pub async fn inflight_complete(
+        &self,
+        key: &str,
+        job_id: &str,
+        destination: Option<String>,
+        error: Option<String>,
+        elapsed_ms: f64,
+    ) {
+        let removed = {
+            let mut inflight = self.inflight.lock().await;
+            match inflight.get(key) {
+                Some((active_id, _)) if active_id == job_id => inflight.remove(key),
+                _ => None,
+            }
+        };
+        if let Some((_, tx)) = removed {
+            let _ = tx.send(InflightOutcome {
+                job_id: job_id.to_string(),
+                destination,
+                error,
+                elapsed_ms,
+            });
+        }
     }
 }
 

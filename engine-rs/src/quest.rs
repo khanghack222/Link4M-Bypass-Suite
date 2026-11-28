@@ -44,13 +44,14 @@ const FIND_WIDGET_JS: &str = r#"(() => {
     .map(s => (s.src.match(/key=([A-Za-z0-9]+)/) || [])[1]).filter(Boolean);
   for (const k of [...new Set(keys)]) {
     const e = document.getElementById(k);
-    if (e && (e.querySelector('button') || /LẤY MÃ/i.test(e.innerText || ''))) return k;
+    if (e && (e.querySelector('button') || e.querySelector('.whatoncode') || /LẤY MÃ|GET CODE|Mã KM|\ds/i.test(e.innerText || ''))) return k;
   }
   for (const e of document.querySelectorAll('div[id]')) {
-    if (!/^[A-Za-z0-9]{6,10}$/.test(e.id)) continue;
+    if (!/^[A-Za-z0-9]{4,12}$/.test(e.id)) continue;
     if (e.querySelector('.whatoncode')) return e.id;
     const b = e.querySelector('button');
-    if (b && /LẤY MÃ/i.test(b.innerText || '')) return e.id;
+    if (b && /LẤY MÃ|GET CODE/i.test(b.innerText || '')) return e.id;
+    if (/LẤY MÃ|GET CODE|Mã KM/i.test(e.innerText || '') && (e.innerText || '').length < 120) return e.id;
   }
   return '';
 })()"#;
@@ -62,6 +63,14 @@ const CLEAR_QUEST_JS: &str = r#"(() => {
     if (/_quest$/.test(k)) { out.push(k); localStorage.removeItem(k); }
   }
   return out;
+})()"#;
+
+const HAS_QUEST_JS: &str = r#"(() => {
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (/_quest$/.test(k)) return true;
+  }
+  return false;
 })()"#;
 
 const STATUS_JS: &str = r#"(() => {
@@ -109,8 +118,9 @@ fn with_key(script: &str, key: &str) -> String {
 fn open_tab(port: u16) -> anyhow::Result<(String, String)> {
     let url = format!("http://127.0.0.1:{port}/json/new?about:blank");
     let body = ureq::put(&url)
+        .set("Content-Length", "0")
         .timeout(Duration::from_secs(10))
-        .call()?
+        .send_bytes(&[])?
         .into_string()?;
     let value: Value = serde_json::from_str(&body)?;
     let ws = value
@@ -176,7 +186,12 @@ async fn tap(cdp: &Cdp, x: f64, y: f64, touch: bool) -> anyhow::Result<()> {
 
 /// Pull the 6-char campaign code out of the widget text.
 pub fn parse_code(text: &str) -> Option<String> {
-    let idx = text.find("Mã KM")?;
+    let idx = text
+        .find("Mã KM")
+        .or_else(|| text.find("Code:"))
+        .or_else(|| text.find("CODE:"))
+        .or_else(|| text.find("Code :"))
+        .or_else(|| text.find("CODE :"))?;
     let rest = &text[idx..];
     let after = rest.split(':').nth(1).unwrap_or("");
     let code: String = after
@@ -235,33 +250,39 @@ async fn press_widget(cdp: &Cdp, key: &str) -> bool {
     tap(cdp, x, y, touch).await.is_ok()
 }
 
-/// The widget is idle when it still offers `LẤY MÃ` and no countdown is live.
+/// The widget is idle when it still offers `LẤY MÃ` or `GET CODE` and no countdown is live.
 fn is_idle(text: &str) -> bool {
-    text.to_uppercase().contains("LẤY MÃ") && countdown_secs(text).is_none()
+    let up = text.to_uppercase();
+    (up.contains("LẤY MÃ") || up.contains("GET CODE")) && countdown_secs(text).is_none()
 }
 
 async fn click_widget(cdp: &Cdp, key: &str) -> bool {
     for attempt in 1..=4 {
-        if !press_widget(cdp, key).await {
-            return false;
+        let mut clicked = press_widget(cdp, key).await;
+        if !clicked {
+            // Fall back to DOM `.click()` when the visual rect is missing or
+            // occluded (e.g. sticky ad header) instead of aborting attempt 1.
+            clicked = matches!(cdp.eval(None, &with_key(JS_CLICK_JS, key)).await, Ok(Value::Bool(true)));
         }
         // Poll for the quest actually starting instead of sleeping 1.5 s and
         // reading once: a countdown or any non-idle label is the signal. An
         // empty status is not a start — the tap can land on an ad and navigate
         // the tab away, leaving the widget missing.
-        let until = Instant::now() + Duration::from_millis(1500);
-        while Instant::now() < until {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let text = status(cdp, key).await;
-            if !text.trim().is_empty() && !is_idle(&text) {
-                return true;
+        if clicked {
+            let until = Instant::now() + Duration::from_millis(1500);
+            while Instant::now() < until {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let text = status(cdp, key).await;
+                if !text.trim().is_empty() && !is_idle(&text) {
+                    return true;
+                }
             }
         }
         match attempt {
-            2 => {
+            1 => {
                 let _ = cdp.eval(None, &with_key(JS_CLICK_JS, key)).await;
             }
-            3 => {
+            2 => {
                 let _ = cdp
                     .eval(
                         None,
@@ -325,6 +346,22 @@ async fn document_signature(cdp: &Cdp) -> Option<f64> {
 }
 
 async fn load_and_scroll(cdp: &Cdp, url: &str, referrer: Option<&str>) -> QuestResult<()> {
+    // When navigating to a URL with a `#hash` fragment (such as `#ss-<key>`)
+    // that shares the same base document already loaded in the tab, Chrome
+    // performs an in-page fragment scroll instead of a document load:
+    // `performance.timeOrigin` never changes and the new `Referer` header is
+    // never sent. Resetting through `about:blank` when a current document
+    // already exists guarantees a real HTTP navigation with the right referrer.
+    if document_signature(cdp).await.is_some() {
+        if let Ok(Value::String(cur)) = cdp.eval(None, "location.href").await {
+            let cur_base = cur.split('#').next().unwrap_or(&cur).trim_end_matches('/');
+            let dst_base = url.split('#').next().unwrap_or(url).trim_end_matches('/');
+            if !cur_base.is_empty() && cur_base == dst_base {
+                let _ = cdp.call("Page.navigate", json!({"url": "about:blank"})).await;
+                tokio::time::sleep(Duration::from_millis(60)).await;
+            }
+        }
+    }
     let mut params = json!({"url": url});
     if let Some(referrer) = referrer {
         params["referrer"] = json!(referrer);
@@ -527,6 +564,15 @@ async fn wait_step(cdp: &Cdp, key: &str, step: u8, budget: Duration) -> QuestRes
             debug!(target: "engine", text = %text.replace('\n', " | ").chars().take(120).collect::<String>(), "widget status");
             last = text.clone();
         }
+        let lower = text.to_lowercase();
+        if lower.contains("chưa cập nhật được mã")
+            || lower.contains("try again later")
+            || lower.contains("code is not ready")
+            || lower.contains("error getting code")
+            || lower.contains("incorrect")
+        {
+            return Err(QuestError::new("widget", "widget rejected countdown (timer too fast or session invalid)"));
+        }
         if let Some(code) = parse_code(&text) {
             return Ok(Some(code));
         }
@@ -559,55 +605,49 @@ async fn wait_step(cdp: &Cdp, key: &str, step: u8, budget: Duration) -> QuestRes
             }
         }
         if step == 1 {
-            if text.trim().is_empty() {
-                empty_polls = empty_polls.saturating_add(1);
+            if lower.contains("(2/2)") || lower.contains("bước 2") {
+                return Ok(None);
+            }
+            if saw_countdown {
+                if let Ok(Value::Bool(true)) = cdp.eval(None, HAS_QUEST_JS).await {
+                    debug!(target: "engine", "quest state saved in localStorage, moving to step 2");
+                    return Ok(None);
+                }
+                if countdown_secs(&text).is_none() {
+                    if text.trim().is_empty() {
+                        empty_polls = empty_polls.saturating_add(1);
+                        // The widget sometimes rebuilds its DOM at the end of step 1:
+                        // a blank node after a countdown means the step is over.
+                        if empty_polls >= 3 {
+                            debug!(target: "engine", "widget went blank after countdown, moving to step 2");
+                            return Ok(None);
+                        }
+                    } else if !is_idle(&text) {
+                        debug!(target: "engine", "countdown gone without a code, moving to step 2");
+                        return Ok(None);
+                    }
+                } else {
+                    empty_polls = 0;
+                }
             } else {
-                empty_polls = 0;
-            }
-            // The widget sometimes rebuilds its DOM at the end of step 1: the
-            // node stays but the text goes blank. A blank node after a
-            // countdown means the step is over; reload and continue at 2/2.
-            if saw_countdown && empty_polls >= 3 {
-                debug!(target: "engine", "widget went blank after countdown, moving to step 2");
-                return Ok(None);
-            }
-            // End-of-step wording varies per advertiser; a countdown that
-            // disappears without a code is the stable signal that step 1 is
-            // done. Waiting for a literal "link" burned up to 140 s here.
-            if saw_countdown && countdown_secs(&text).is_none() {
-                debug!(target: "engine", "countdown gone without a code, moving to step 2");
-                return Ok(None);
-            }
-            // No countdown ever appeared and the node has been blank for ~4 s:
-            // the tap navigated away (ad overlay) or the widget died. Fail now
-            // instead of idling until the 140 s fallback.
-            if !saw_countdown && empty_polls >= 30 {
-                return Err(QuestError::new("widget", "widget disappeared after the press"));
-            }
-            // Hard fallback: some builds show neither a countdown nor a link
-            // at the end of step 1. After 140 s a reload is always safe — the
-            // widget keeps its quest state in localStorage.
-            if Instant::now().duration_since(started) > Duration::from_secs(140)
-                && countdown_secs(&text).is_none()
-            {
-                debug!(target: "engine", "step 1 timed out without a marker, reloading");
-                return Ok(None);
-            }
-        }
-        if step == 1 {
-            let low = text.to_lowercase();
-            if low.contains("(2/2)") || low.contains("bước 2") || low.contains("link") {
-                return Ok(None);
-            }
-            // The widget marks the end of step 1 with a link whose wording
-            // varies per advertiser ("Nhấn vào đây", "Tải lại trang"...). The
-            // stable signal is the countdown disappearing while no code has
-            // been issued yet.
-            if !text.trim().is_empty()
-                && countdown_secs(&text).is_none()
-                && !text.to_uppercase().contains("LẤY MÃ")
-            {
-                return Ok(None);
+                if text.trim().is_empty() {
+                    empty_polls = empty_polls.saturating_add(1);
+                } else {
+                    empty_polls = 0;
+                }
+                // No countdown ever appeared and the node has been blank for ~4 s:
+                // the tap navigated away (ad overlay) or the widget died.
+                if empty_polls >= 30 {
+                    return Err(QuestError::new("widget", "widget disappeared after the press"));
+                }
+                // Hard fallback: some builds show neither a countdown nor a link
+                // at the end of step 1.
+                if Instant::now().duration_since(started) > Duration::from_secs(140)
+                    && countdown_secs(&text).is_none()
+                {
+                    debug!(target: "engine", "step 1 timed out without a marker, reloading");
+                    return Ok(None);
+                }
             }
         }
         tokio::time::sleep(Duration::from_millis(120)).await;
@@ -626,6 +666,18 @@ async fn drive(
         cdp.call(method, json!({}))
             .await
             .map_err(|e| QuestError::new("cdp", e.to_string()))?;
+    }
+    if let Ok(raw_scale) = std::env::var("L4M_TIMER_SCALE") {
+        if let Ok(scale) = raw_scale.trim().parse::<f64>() {
+            if scale > 0.05 && scale < 0.99 {
+                let patch = format!(
+                    "(() => {{ if (window.__l4m_timer_scaled) return; window.__l4m_timer_scaled = true; const orig = window.setInterval.bind(window); window.setInterval = function(fn, delay, ...args) {{ const d = (typeof delay === 'number' && delay >= 500) ? Math.max(100, Math.round(delay * {scale:.3})) : delay; return orig(fn, d, ...args); }}; }})()"
+                );
+                let _ = cdp
+                    .call("Page.addScriptToEvaluateOnNewDocument", json!({ "source": patch }))
+                    .await;
+            }
+        }
     }
     // disable-devtool closes tabs that expose CDP; ads only cost memory.
     let _ = cdp
@@ -676,10 +728,12 @@ async fn drive(
     // already read which list this key ships, so load with the right one.
     let google = Some("https://www.google.com/");
     let mut target_urls = Vec::new();
+    // Try the clean sponsor URL with a Google referrer first so `jscd.href`
+    // matches what Link4M expects (`#ss-<key>` is kept strictly as fallback).
+    target_urls.push(sponsor.to_string());
     if !key_hint.is_empty() {
         target_urls.push(sponsor_with_hash(sponsor, key_hint));
     }
-    target_urls.push(sponsor.to_string());
 
     let mut attempts: Vec<(String, Option<&str>)> = Vec::new();
     for u in target_urls {
@@ -687,12 +741,17 @@ async fn drive(
             "google" => attempts.push((u, google)),
             "none" => attempts.push((u, None)),
             _ => {
-                attempts.push((u.clone(), None));
-                attempts.push((u, google));
+                // Google referrer satisfies both `ref_domain_list = ["google.com"]`
+                // and `ref_domain_list = []` on service-v2/v3 widgets, so try
+                // it first when the probe could not determine `refs`.
+                attempts.push((u.clone(), google));
+                attempts.push((u, None));
             }
         }
     }
     let mut key = String::new();
+    let mut active_url = sponsor.to_string();
+    let mut active_ref: Option<&str> = if refs == "none" { None } else { google };
     for (url, referrer) in &attempts {
         load_and_scroll(cdp, url, *referrer).await?;
         // A quest left by a previous visit makes the widget jump straight to
@@ -700,11 +759,13 @@ async fn drive(
         if let Ok(Value::Array(keys)) = cdp.eval(None, CLEAR_QUEST_JS).await {
             if !keys.is_empty() {
                 debug!(target: "engine", stale = keys.len(), "clearing stale quest state");
-                load_and_scroll(cdp, url, *referrer).await?;
+                reload_and_scroll(cdp).await?;
             }
         }
         key = find_widget(cdp).await;
         if !key.is_empty() {
+            active_url = url.clone();
+            active_ref = *referrer;
             break;
         }
     }
@@ -712,9 +773,13 @@ async fn drive(
     if key.is_empty() && !key_hint.is_empty() {
         let forced = sponsor_with_hash(sponsor, key_hint);
         debug!(target: "engine", url = %forced, "retrying with forced widget hash and document reload");
-        load_and_scroll(cdp, &forced, None).await?;
+        load_and_scroll(cdp, &forced, google).await?;
         reload_and_scroll(cdp).await?;
         key = find_widget(cdp).await;
+        if !key.is_empty() {
+            active_url = forced;
+            active_ref = google;
+        }
     }
     if key.is_empty() {
         return Err(QuestError::new("widget", "sponsor page has no what-on widget"));
@@ -726,8 +791,7 @@ async fn drive(
         // the sponsor; a fresh load plus one more press is much cheaper than
         // losing the campaign code for this job.
         debug!(target: "engine", "press did not start the quest, reloading sponsor once");
-        let referrer = if refs == "google" { google } else { None };
-        load_and_scroll(cdp, sponsor, referrer).await?;
+        load_and_scroll(cdp, &active_url, active_ref).await?;
         let retry_key = find_widget(cdp).await;
         if retry_key.is_empty() || !click_widget(cdp, &retry_key).await {
             return Err(QuestError::new("widget", "LẤY MÃ button did not start the quest"));
@@ -745,8 +809,9 @@ async fn drive(
         None => debug!(target: "engine", "quest step 1 done, reloading for step 2"),
     }
 
-    // Step 2: reload with the quest id in local storage, then click again.
-    load_and_scroll(cdp, sponsor, if refs == "google" { google } else { None }).await?;
+    // Step 2: reload with the quest id in local storage, preserving the exact
+    // URL (including `#ss-<key>`) and referrer that activated the widget in Step 1.
+    load_and_scroll(cdp, &active_url, active_ref).await?;
     let key = find_widget(cdp).await;
     if key.is_empty() {
         return Err(QuestError::new("widget", "widget missing on step 2 reload"));

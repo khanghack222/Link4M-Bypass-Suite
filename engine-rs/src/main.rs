@@ -89,34 +89,42 @@ async fn main() -> Result<()> {
 
     l4m_engine::instr::prewarm();
     let asr = Arc::new(asr);
-    if let Some(target) = once {
-        return run_once(cfg, asr, &target).await;
-    }
-
-    let inner = Inner::new(cfg.clone(), Some(asr));
-    let pool = Arc::new(Pool::spawn(inner.clone()));
-    let state = Arc::new(ApiState { inner, pool });
-    let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
-    info!(target: "engine", "listening on http://{}:{}", cfg.host, cfg.port);
-    // The timeout must bound the graceful drain only. Wrapping the whole
-    // serve future in a 10 s timeout killed every long-running instance ten
-    // seconds after boot, so API clients saw an empty reply mid-request.
-    let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = axum::serve(listener, router(state)).with_graceful_shutdown(async move {
-        shutdown_signal().await;
-        let _ = drain_tx.send(());
-    });
-    let drain_deadline = async {
-        let _ = drain_rx.await;
-        tokio::time::sleep(Duration::from_secs(10)).await;
+    let res = if let Some(target) = once {
+        run_once(cfg, asr, &target).await
+    } else {
+        let inner = Inner::new(cfg.clone(), Some(asr));
+        let pool = Arc::new(Pool::spawn(inner.clone()));
+        let state = Arc::new(ApiState { inner, pool });
+        let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
+        info!(target: "engine", "listening on http://{}:{}", cfg.host, cfg.port);
+        // The timeout must bound the graceful drain only. Wrapping the whole
+        // serve future in a 10 s timeout killed every long-running instance ten
+        // seconds after boot, so API clients saw an empty reply mid-request.
+        let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = axum::serve(listener, router(state)).with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            let _ = drain_tx.send(());
+        });
+        let drain_deadline = async {
+            let _ = drain_rx.await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        };
+        tokio::select! {
+            result = server => result?,
+            _ = drain_deadline => {
+                warn!(target: "engine", "shutdown timed out, dropping open sessions");
+            }
+        }
+        Ok(())
     };
-    tokio::select! {
-        result = server => result?,
-        _ = drain_deadline => {
-            warn!(target: "engine", "shutdown timed out, dropping open sessions");
+    #[cfg(not(feature = "local-asr"))]
+    if let Ok(mut guard) = ASR_CHILD.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
-    Ok(())
+    res
 }
 
 #[cfg(feature = "local-asr")]
@@ -137,15 +145,164 @@ async fn load_local_asr(
 }
 
 #[cfg(not(feature = "local-asr"))]
+static ASR_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+
+#[cfg(not(feature = "local-asr"))]
+fn find_asr_script() -> Option<std::path::PathBuf> {
+    for candidate in ["tools/asr_server.py", "engine-rs/tools/asr_server.py", "../tools/asr_server.py"] {
+        let path = std::path::PathBuf::from(candidate);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent();
+        for _ in 0..4 {
+            let Some(current) = dir else { break };
+            for rel in ["tools/asr_server.py", "engine-rs/tools/asr_server.py"] {
+                let candidate = current.join(rel);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+            dir = current.parent();
+        }
+    }
+    None
+}
+
+#[cfg(not(feature = "local-asr"))]
+fn find_asr_python() -> std::path::PathBuf {
+    let mut candidates = vec![
+        l4m_engine::instr::ocr_binary(),
+        std::path::PathBuf::from(".venv/bin/python"),
+        std::path::PathBuf::from("engine-rs/.venv/bin/python"),
+    ];
+    #[cfg(windows)]
+    {
+        candidates.push(std::path::PathBuf::from(".venv\\Scripts\\python.exe"));
+        candidates.push(std::path::PathBuf::from("engine-rs\\.venv\\Scripts\\python.exe"));
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            for ver in ["Python311", "Python312", "Python313", "Python310"] {
+                candidates.push(
+                    std::path::PathBuf::from(&local_app_data)
+                        .join("Programs")
+                        .join("Python")
+                        .join(ver)
+                        .join("python.exe"),
+                );
+            }
+        }
+    }
+    candidates.push(std::path::PathBuf::from("python3"));
+    candidates.push(std::path::PathBuf::from("python"));
+    for path in &candidates {
+        let ok = std::process::Command::new(path)
+            .args(["-c", "import faster_whisper"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return path.clone();
+        }
+    }
+    l4m_engine::instr::ocr_binary()
+}
+
+#[cfg(not(feature = "local-asr"))]
 async fn load_local_asr(
     _model_path: &std::path::Path,
     _model_url: &str,
     _threads: i32,
 ) -> Result<Asr> {
-    Err(anyhow!(
-        "this build has no local ASR; set ASR_URL to a whisper.cpp server \
-         or an OpenAI-compatible transcription endpoint"
-    ))
+    let port: u16 = std::env::var("ASR_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|p| *p > 0)
+        .unwrap_or(18089);
+    let health_url = format!("http://127.0.0.1:{port}/");
+    let infer_url = format!("http://127.0.0.1:{port}/inference");
+
+    let already_up = tokio::task::spawn_blocking({
+        let health_url = health_url.clone();
+        move || {
+            std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+                Duration::from_millis(120),
+            )
+            .is_ok()
+                && health_url.starts_with("http")
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    if !already_up {
+        let script = find_asr_script().ok_or_else(|| {
+            anyhow!(
+                "this build has no local ASR and tools/asr_server.py was not found; set ASR_URL"
+            )
+        })?;
+        let python = find_asr_python();
+        let err_log = std::env::temp_dir().join(format!("l4m-asr-{}.log", std::process::id()));
+        let err_file = std::fs::File::create(&err_log).ok();
+        let mut cmd = std::process::Command::new(&python);
+        cmd.arg(&script)
+            .env("ASR_PORT", port.to_string())
+            .stdout(std::process::Stdio::null());
+        if let Some(f) = err_file {
+            cmd.stderr(std::process::Stdio::from(f));
+        } else {
+            cmd.stderr(std::process::Stdio::null());
+        }
+        let child = cmd
+            .spawn()
+            .map_err(|e| anyhow!("failed to spawn asr_server.py: {e}"))?;
+        if let Ok(mut guard) = ASR_CHILD.lock() {
+            *guard = Some(child);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(45);
+        let mut ready = false;
+        while std::time::Instant::now() < deadline {
+            if let Ok(mut guard) = ASR_CHILD.lock() {
+                if let Some(child) = guard.as_mut() {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        let detail = std::fs::read_to_string(&err_log).unwrap_or_default();
+                        let _ = std::fs::remove_file(&err_log);
+                        return Err(anyhow!(
+                            "asr_server.py exited early ({status}): {}",
+                            detail.trim()
+                        ));
+                    }
+                }
+            }
+            let ok = tokio::task::spawn_blocking(move || {
+                std::net::TcpStream::connect_timeout(
+                    &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+                    Duration::from_millis(150),
+                )
+                .is_ok()
+            })
+            .await
+            .unwrap_or(false);
+            if ok {
+                ready = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let _ = std::fs::remove_file(&err_log);
+        if !ready {
+            return Err(anyhow!("asr_server.py did not start on {health_url} within 45s"));
+        }
+        info!(target: "engine", endpoint = %infer_url, "auto-started local faster-whisper ASR");
+    } else {
+        info!(target: "engine", endpoint = %infer_url, "asr ready (existing local server)");
+    }
+
+    Asr::remote(&infer_url)
 }
 
 /// `--check` used to leave proxy and OCR misconfiguration for the first job to

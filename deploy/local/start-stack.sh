@@ -80,15 +80,10 @@ fi
 export CHROME_BIN="$CHROME_EXEC"
 echo "[✓] Chrome binary: $CHROME_BIN"
 
-# Headless / Display configuration
+# Headless / Display configuration (Strict Headless by default)
 if [ -z "${L4M_HEADLESS:-}" ]; then
-  if [ -z "${DISPLAY:-}" ]; then
-    export L4M_HEADLESS=1
-    echo "[i] No DISPLAY detected. Defaulting L4M_HEADLESS=1 (headless new mode)."
-  else
-    export L4M_HEADLESS=0
-    echo "[i] DISPLAY=$DISPLAY detected. Running headful."
-  fi
+  export L4M_HEADLESS=1
+  echo "[i] Defaulting L4M_HEADLESS=1 (strict headless=new mode)."
 fi
 
 # ------------------------------------------------------------------------------

@@ -295,6 +295,16 @@ impl ChromeProc {
             let _ = std::fs::remove_dir_all(&profile);
         }
         std::fs::create_dir_all(&profile).context("create chrome profile")?;
+        if !fresh {
+            let lockfile = profile.join("lockfile");
+            if lockfile.exists() && std::fs::remove_file(&lockfile).is_err() {
+                sweep(std::slice::from_ref(&profile));
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            for name in ["lockfile", "SingletonLock", "SingletonCookie", "SingletonSocket"] {
+                let _ = std::fs::remove_file(profile.join(name));
+            }
+        }
 
         let mut command = Command::new(binary);
         command

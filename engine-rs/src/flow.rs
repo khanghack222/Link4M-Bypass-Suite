@@ -71,13 +71,26 @@ const STATE_JS: &str = r#"(() => {
   const campInput = form ? form.querySelector('input[name=campaign_id]') : null;
   const wrapper = document.getElementById('captcha-html-wrapper');
   const pwVisible = !!(pw && (pw.offsetWidth || pw.offsetHeight));
+  let err = '';
+  const title = document.title || '';
+  if (!form && !wrapper && !pwVisible && document.readyState !== 'loading') {
+    const low = ((title + ' ' + (document.body ? document.body.innerText : '')) || '').toLowerCase();
+    if (!low.includes('just a moment')) {
+      if (low.includes('vượt quá giới hạn') || low.includes('access limit') || low.includes('too many requests') || low.includes('tần suất truy cập')) {
+        err = 'rate_limit';
+      } else if (low.includes('không tồn tại') || low.includes('does not exist') || low.includes('đã bị xóa') || low.includes('đã bị xoá') || low.includes('page not found') || /^404\b/.test(title.trim())) {
+        err = 'not_found';
+      }
+    }
+  }
   return {
     form: !!form,
     captcha: !!wrapper && !pwVisible,
     password: pwVisible,
     code: codeInput ? codeInput.value : (wrapper ? (wrapper.getAttribute('data-code') || '') : ''),
     campaign: campInput ? campInput.value : '',
-    title: document.title || ''
+    title,
+    err
   };
 })()"#;
 
@@ -218,8 +231,14 @@ const AUDIO_BUTTON_JS: &str = r#"(() => {
   return true;
 })()"#;
 
-const AUDIO_READY_JS: &str =
-    r#"(() => !!document.getElementById('audio-response'))()"#;
+const AUDIO_READY_JS: &str = r#"(() => {
+  if (!document.getElementById('audio-response')) return false;
+  const srcEl = document.querySelector('#audio-source') || document.querySelector('audio');
+  const src = srcEl ? (srcEl.src || srcEl.getAttribute('src') || '') : '';
+  const dl = document.querySelector('.rc-audiochallenge-tdownload-link');
+  const href = dl ? (dl.href || '') : '';
+  return !!(src || href);
+})()"#;
 
 const CHALLENGE_JS: &str = r#"(() => {
   return !!(document.getElementById('rc-imageselect-target') ||
@@ -443,7 +462,7 @@ impl<'a> Flow<'a> {
         // job that still has budget left.
         let mut state = match self.wait_for_page().await {
             Ok(state) => state,
-            Err(err) if self.remaining() > Duration::from_secs(60) => {
+            Err(err) if (err.kind == "page" || err.kind == "cdp") && self.remaining() > Duration::from_secs(60) => {
                 warn!(target: "engine", alias = %self.alias, "page not ready ({err}), renavigating once");
                 self.navigate_and_settle(&url).await?;
                 self.wait_for_page().await?
@@ -512,12 +531,13 @@ impl<'a> Flow<'a> {
 
         let mut attempt = 0;
         let mut last_err: Option<FlowError> = None;
-        while self.remaining().as_secs() > 8 {
+        let mut bad_campaigns: HashSet<String> = HashSet::new();
+        while attempt < 2 && self.remaining().as_secs() > 8 {
             attempt += 1;
             if attempt > 1 {
-                debug!(target: "engine", attempt, "reloading page for a fresh anchor");
-                self.reload().await?;
-                prepared = self.ensure_code_roll(&url).await?;
+                debug!(target: "engine", attempt, "re-navigating page for a fresh anchor/campaign");
+                self.navigate_and_settle(&url).await?;
+                prepared = self.ensure_code_roll_excluding(&url, &bad_campaigns).await?;
             }
             let campaign_key = self.campaign_sitekey().await;
             if let Some(key) = &campaign_key {
@@ -559,7 +579,7 @@ impl<'a> Flow<'a> {
                         break;
                     }
                 }
-                if watch_start.elapsed() >= Duration::from_millis(400) {
+                if watch_start.elapsed() >= Duration::from_millis(250) {
                     if let Some(frame) = self.challenge_frame(campaign_key.as_deref(), &skip).await? {
                         debug!(target: "engine", frame = %frame.0, "challenge open");
                         match self.solve_audio(&frame.0).await {
@@ -575,7 +595,7 @@ impl<'a> Flow<'a> {
                         }
                     }
                 }
-                let delay = if watch_start.elapsed() < Duration::from_millis(400) {
+                let delay = if watch_start.elapsed() < Duration::from_millis(250) {
                     Duration::from_millis(80)
                 } else {
                     poll_delay(probe_step)
@@ -633,16 +653,18 @@ impl<'a> Flow<'a> {
                 }
                 Err(err) => {
                     warn!(target: "engine", "token did not unlock: {err}");
-                    if err.kind == "rate_limit" {
-                        return Err(err);
-                    }
                     if err.kind == "code" {
                         if let Some((campaign, _)) = &prepared {
-                            warn!(target: "engine", campaign = %campaign, "cached code rejected, invalidating");
+                            warn!(target: "engine", campaign = %campaign, "cached code rejected, invalidating and excluding campaign");
                             codes::invalidate(campaign);
+                            instr::forget(campaign);
+                            bad_campaigns.insert(campaign.clone());
                         }
                         self.code = None;
-                        prepared = None;
+                        return Err(err);
+                    }
+                    if err.kind == "rate_limit" || (prepared.is_none() && err.kind == "captcha" && attempt >= 2) {
+                        return Err(err);
                     }
                     last_err = Some(err);
                 }
@@ -655,45 +677,36 @@ impl<'a> Flow<'a> {
     /// masked domain OCR cannot resolve). Instead of failing the job, roll a
     /// fresh campaign and try again.
     async fn ensure_code_roll(&mut self, url: &str) -> FlowResult<Option<(String, String)>> {
+        let empty = HashSet::new();
+        self.ensure_code_roll_excluding(url, &empty).await
+    }
+
+    async fn ensure_code_roll_excluding(
+        &mut self,
+        url: &str,
+        excluded: &HashSet<String>,
+    ) -> FlowResult<Option<(String, String)>> {
         let mut last: Option<FlowError> = None;
-        for attempt in 0..3 {
+        for attempt in 0..2 {
+            let state = self.wait_for_page().await?;
+            if state.password && excluded.contains(&state.campaign) {
+                debug!(target: "engine", campaign = %state.campaign, "skipping excluded campaign, failing fast");
+                return Err(last.unwrap_or_else(|| {
+                    FlowError::new("needs_code", format!("campaign {} already failed", state.campaign))
+                }));
+            }
             match self.ensure_code().await {
                 Ok(prepared) => return Ok(prepared),
                 Err(err) if err.kind == "needs_code" => {
                     warn!(target: "engine", attempt = attempt + 1, "campaign has no usable sponsor: {err}");
                     last = Some(err);
-                    if attempt < 2 {
-                        // Each roll costs a full navigation + campaign fetch;
-                        // do not start one the deadline cannot cover.
-                        if self.remaining() < Duration::from_secs(120) {
-                            break;
-                        }
-                        // Wait for the new document instead of a flat 2.5 s;
-                        // ensure_code below then polls for the form it needs.
+                    if attempt == 0 && self.remaining() >= Duration::from_secs(95) {
                         self.navigate_and_settle(url).await?;
+                    } else {
+                        break;
                     }
                 }
                 Err(err) => return Err(err),
-            }
-        }
-        // Some campaigns point at dead sponsor widgets. Link4M also serves a
-        // captcha-only page that releases the destination without a code, so
-        // roll a few more times instead of failing work that can still finish.
-        for _ in 0..5 {
-            if self.remaining() < Duration::from_secs(75) {
-                break;
-            }
-            self.navigate_and_settle(url).await?;
-            let state = match self.wait_for_page().await {
-                Ok(state) => state,
-                Err(err) => {
-                    debug!(target: "engine", "captcha-only roll skipped: {err}");
-                    continue;
-                }
-            };
-            if state.captcha && !state.password {
-                info!(target: "engine", alias = %self.alias, "no usable sponsor, falling back to captcha-only page");
-                return Ok(None);
             }
         }
         Err(last.unwrap_or_else(|| FlowError::new("needs_code", "no campaign served a code")))
@@ -761,8 +774,13 @@ impl<'a> Flow<'a> {
         } else {
             campaign.keyword.clone()
         };
+        let sponsor_url = if campaign.sponsor.contains('/') {
+            format!("https://{}", campaign.sponsor)
+        } else {
+            format!("https://{}/", campaign.sponsor)
+        };
         info!(target: "engine", alias = %self.alias, sponsor = %campaign.sponsor, keyword = %keyword, "harvesting sponsor code");
-        match quest::harvest(self.port, &format!("https://{}/", campaign.sponsor), &keyword, &campaign.key, &campaign.refs, budget).await {
+        match quest::harvest(self.port, &sponsor_url, &keyword, &campaign.key, &campaign.refs, budget).await {
             Ok(code) => Some(code),
             Err(err) => {
                 warn!(target: "engine", "sponsor harvest failed: {err}");
@@ -905,7 +923,8 @@ impl<'a> Flow<'a> {
     }
 
     async fn wait_for_page(&self) -> FlowResult<PageState> {
-        let until = Instant::now() + Duration::from_secs(35);
+        let started = Instant::now();
+        let until = started + Duration::from_secs(18);
         let mut state = PageState::default();
         let mut step = 0usize;
         while Instant::now() < until {
@@ -919,8 +938,28 @@ impl<'a> Flow<'a> {
                     self.await_widget_boot(state.password).await;
                     return Ok(state);
                 }
+                if state.err == "rate_limit" {
+                    return Err(FlowError::new("rate_limit", format!("rate limited on landing page (title: {})", state.title)));
+                }
+                if state.err == "not_found" {
+                    return Err(FlowError::new("not_found", format!("link not found (title: {})", state.title)));
+                }
+                if started.elapsed() >= Duration::from_secs(4)
+                    && state.title.starts_with("Untitled #")
+                {
+                    return Err(FlowError::new(
+                        "interstitial",
+                        format!("untitled interstitial (title: {})", state.title),
+                    ));
+                }
                 if state.title.to_lowercase().contains("just a moment") {
-                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    if self.solve_cf_clearance().await {
+                        let _ = self.cdp.call("Page.reload", json!({})).await;
+                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                    } else {
+                        self.click_cf_challenge().await;
+                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                    }
                     step = 0;
                     continue;
                 }
@@ -932,6 +971,228 @@ impl<'a> Flow<'a> {
             "page",
             format!("page did not expose a captcha (title: {})", state.title),
         ))
+    }
+
+    async fn solve_cf_clearance(&self) -> bool {
+        static CF_CACHE: std::sync::OnceLock<Mutex<HashMap<String, (String, String, String, Instant)>>> =
+            std::sync::OnceLock::new();
+        let cache = CF_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let proxy_arg = self
+            .proxy
+            .as_ref()
+            .map(|p| {
+                let scheme = match p.scheme {
+                    crate::proxy::Scheme::Socks5 => "socks5",
+                    crate::proxy::Scheme::Http => "http",
+                };
+                if p.user.is_empty() {
+                    format!("{scheme}://{}:{}", p.host, p.port)
+                } else {
+                    format!("{scheme}://{}:{}@{}:{}", p.user, p.pass, p.host, p.port)
+                }
+            })
+            .unwrap_or_default();
+        let cached = cache.lock().ok().and_then(|guard| {
+            guard.get(&proxy_arg).and_then(|(val, dom, path, at)| {
+                (at.elapsed() < Duration::from_secs(720))
+                    .then(|| (val.clone(), dom.clone(), path.clone()))
+            })
+        });
+        if let Some((val, dom, path)) = cached {
+            if self
+                .cdp
+                .call(
+                    "Network.setCookie",
+                    json!({
+                        "name": "cf_clearance",
+                        "value": val,
+                        "domain": dom,
+                        "path": path,
+                        "secure": true,
+                        "httpOnly": true
+                    }),
+                )
+                .await
+                .is_ok()
+            {
+                debug!(target: "engine", alias = %self.alias, "reused cached cf_clearance");
+                return true;
+            }
+        }
+
+        let mut script = None;
+        for candidate in [
+            "tools/cf_clearance.py",
+            "engine-rs/tools/cf_clearance.py",
+            "../tools/cf_clearance.py",
+        ] {
+            let p = std::path::PathBuf::from(candidate);
+            if p.exists() {
+                script = Some(p);
+                break;
+            }
+        }
+        let Some(script) = script else {
+            return false;
+        };
+        let python = instr::ocr_binary();
+        let url = format!("https://link4m.net/go/{}", self.alias);
+        let ua = self
+            .cdp
+            .eval(None, "navigator.userAgent")
+            .await
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let proxy_for_cmd = proxy_arg.clone();
+
+        let out = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&python)
+                .arg(&script)
+                .arg(&url)
+                .arg(&proxy_for_cmd)
+                .arg(&ua)
+                .output()
+        })
+        .await
+        .ok()
+        .and_then(Result::ok);
+
+        let Some(output) = out else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let Ok(val) = serde_json::from_str::<Value>(stdout.trim()) else {
+            return false;
+        };
+        let Some(cookie) = val.get("cookie") else {
+            return false;
+        };
+        let Some(value) = cookie.get("value").and_then(Value::as_str) else {
+            return false;
+        };
+        let domain = cookie
+            .get("domain")
+            .and_then(Value::as_str)
+            .unwrap_or(".link4m.net");
+        let path = cookie.get("path").and_then(Value::as_str).unwrap_or("/");
+        let res = self
+            .cdp
+            .call(
+                "Network.setCookie",
+                json!({
+                    "name": "cf_clearance",
+                    "value": value,
+                    "domain": domain,
+                    "path": path,
+                    "secure": true,
+                    "httpOnly": true
+                }),
+            )
+            .await;
+        if res.is_ok() {
+            if let Ok(mut guard) = cache.lock() {
+                guard.insert(
+                    proxy_arg,
+                    (value.to_string(), domain.to_string(), path.to_string(), Instant::now()),
+                );
+            }
+            info!(target: "engine", alias = %self.alias, "injected cf_clearance via Patchright");
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Click the Cloudflare Managed Challenge checkbox iframe when stuck on
+    /// `Just a moment...`, using CDP `Page.getFrameTree` + `DOM.getFrameOwner`
+    /// + `DOM.getBoxModel` so it works even inside shadow roots.
+    async fn click_cf_challenge(&self) {
+        let Ok(tree) = self.cdp.call("Page.getFrameTree", json!({})).await else {
+            return;
+        };
+        let mut stack = vec![tree.get("frameTree").cloned().unwrap_or(Value::Null)];
+        let mut cf_frame_id: Option<String> = None;
+        while let Some(node) = stack.pop() {
+            if let Some(frame) = node.get("frame") {
+                let url = frame.get("url").and_then(Value::as_str).unwrap_or("");
+                if url.contains("challenges.cloudflare.com") {
+                    cf_frame_id = frame.get("id").and_then(Value::as_str).map(str::to_string);
+                    break;
+                }
+            }
+            if let Some(children) = node.get("childFrames").and_then(Value::as_array) {
+                for child in children {
+                    stack.push(child.clone());
+                }
+            }
+        }
+        let Some(frame_id) = cf_frame_id else {
+            return;
+        };
+        let Ok(owner) = self
+            .cdp
+            .call("DOM.getFrameOwner", json!({ "frameId": frame_id }))
+            .await
+        else {
+            return;
+        };
+        let Some(backend_id) = owner.get("backendNodeId").and_then(Value::as_i64) else {
+            return;
+        };
+        let Ok(box_model) = self
+            .cdp
+            .call("DOM.getBoxModel", json!({ "backendNodeId": backend_id }))
+            .await
+        else {
+            return;
+        };
+        let Some(content) = box_model
+            .get("model")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+        if content.len() < 8 {
+            return;
+        }
+        let (Some(x0), Some(y0), Some(y2)) = (
+            content[0].as_f64(),
+            content[1].as_f64(),
+            content[5].as_f64(),
+        ) else {
+            return;
+        };
+        let cx = x0 + 28.0;
+        let cy = (y0 + y2) / 2.0;
+        debug!(target: "engine", x = cx, y = cy, "clicking Cloudflare challenge checkbox");
+        let _ = self
+            .cdp
+            .call(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": cx, "y": cy }),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let _ = self
+            .cdp
+            .call(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1 }),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let _ = self
+            .cdp
+            .call(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1 }),
+            )
+            .await;
     }
 
     /// Wait up to ~2 s for the widget to arm, then proceed regardless. A page
@@ -1336,36 +1597,48 @@ impl<'a> Flow<'a> {
 
     async fn solve_audio(&mut self, frame_id: &str) -> FlowResult<String> {
         let mut context = self.context_cached(frame_id).await?;
-        let mut audio: Option<(String, i64)> = None;
-        // Two presses are enough. The old three-press loop spent 18 s when the
-        // challenge was slow to render, and re-pressing can reset whatever the
-        // panel already started.
-        for attempt in 1..=2 {
-            match self.eval_frame(frame_id, &mut context, AUDIO_BUTTON_JS).await {
-                Ok(Value::Bool(true)) => debug!(target: "engine", attempt, "audio button clicked"),
-                _ => debug!(target: "engine", attempt, "audio button missing"),
-            }
-            let wait = if attempt == 1 {
-                Duration::from_secs(7)
-            } else {
-                Duration::from_secs(4)
-            };
-            if let Some(found) = self.wait_audio_frame_for(wait).await? {
-                audio = Some(found);
-                break;
-            }
-            if let Ok(Value::String(text)) = self
-                .eval_frame(frame_id, &mut context, "document.body ? document.body.innerText : ''")
-                .await
-            {
-                debug!(target: "engine", attempt, text = %text.chars().take(180).collect::<String>(), "challenge text");
-            }
-            if let Ok(frames) = self.frames().await {
-                let urls: Vec<String> = frames
-                    .iter()
-                    .map(|(_, url)| url.chars().take(70).collect())
-                    .collect();
-                debug!(target: "engine", attempt, ?urls, "frames");
+        let mut audio: Option<(String, i64)> = self.wait_audio_frame_for(Duration::from_millis(80)).await?;
+        if audio.is_none() {
+            for attempt in 1..=2 {
+                // Wait briefly for `#recaptcha-audio-button` to mount before clicking
+                // so attempt 1 does not miss a still-hydrating challenge panel.
+                let btn_until = Instant::now() + Duration::from_millis(2000);
+                let mut clicked = false;
+                while Instant::now() < btn_until {
+                    match self.eval_frame(frame_id, &mut context, AUDIO_BUTTON_JS).await {
+                        Ok(Value::Bool(true)) => {
+                            clicked = true;
+                            debug!(target: "engine", attempt, "audio button clicked");
+                            break;
+                        }
+                        _ => tokio::time::sleep(Duration::from_millis(80)).await,
+                    }
+                }
+                if !clicked {
+                    debug!(target: "engine", attempt, "audio button missing");
+                }
+                let wait = if attempt == 1 {
+                    Duration::from_secs(6)
+                } else {
+                    Duration::from_secs(4)
+                };
+                if let Some(found) = self.wait_audio_frame_for(wait).await? {
+                    audio = Some(found);
+                    break;
+                }
+                if let Ok(Value::String(text)) = self
+                    .eval_frame(frame_id, &mut context, "document.body ? document.body.innerText : ''")
+                    .await
+                {
+                    debug!(target: "engine", attempt, text = %text.chars().take(180).collect::<String>(), "challenge text");
+                }
+                if let Ok(frames) = self.frames().await {
+                    let urls: Vec<String> = frames
+                        .iter()
+                        .map(|(_, url)| url.chars().take(70).collect())
+                        .collect();
+                    debug!(target: "engine", attempt, ?urls, "frames");
+                }
             }
         }
         let (audio_frame_id, mut context) = audio
@@ -1375,10 +1648,19 @@ impl<'a> Flow<'a> {
             if Instant::now() >= self.deadline {
                 return Err(FlowError::new("captcha", "budget exhausted in audio"));
             }
-            let blob = self
-                .eval_frame(&audio_frame_id, &mut context, AUDIO_PCM_JS)
-                .await?;
-            let encoded = blob.as_str().unwrap_or("");
+            let src_until = Instant::now() + Duration::from_millis(1500);
+            let mut encoded = String::new();
+            while Instant::now() < src_until {
+                let blob = self
+                    .eval_frame(&audio_frame_id, &mut context, AUDIO_PCM_JS)
+                    .await?;
+                let val = blob.as_str().unwrap_or("");
+                if !val.is_empty() {
+                    encoded = val.to_string();
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
             if encoded.is_empty() || encoded.starts_with("ERR") {
                 return Err(FlowError::new("audio", format!("no clip ({encoded})")));
             }
@@ -1625,6 +1907,7 @@ impl<'a> Flow<'a> {
             if lower.contains("vượt quá giới hạn")
                 || lower.contains("quay lại sau")
                 || lower.contains("rate limit")
+                || lower.contains("access limit")
                 || lower.contains("too many requests")
             {
                 return Err(FlowError::new("rate_limit", info.to_string()));
@@ -1632,6 +1915,8 @@ impl<'a> Flow<'a> {
             if info.contains("Mã không hợp lệ")
                 || info.contains("Sai url")
                 || info.contains("Không lấy được code")
+                || lower.contains("invalid code")
+                || lower.contains("incorrect search url")
             {
                 return Err(FlowError::new("code", info.to_string()));
             }
@@ -1705,6 +1990,7 @@ struct PageState {
     code: String,
     campaign: String,
     title: String,
+    err: String,
 }
 
 impl PageState {
@@ -1724,6 +2010,7 @@ impl PageState {
             code: value.get("code").and_then(Value::as_str).unwrap_or("").to_string(),
             campaign: value.get("campaign").and_then(Value::as_str).unwrap_or("").to_string(),
             title: value.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
+            err: value.get("err").and_then(Value::as_str).unwrap_or("").to_string(),
         }
     }
 }

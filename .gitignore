@@ -69,7 +69,17 @@ _local/
 /data/rust_cache.json
 data/campaigns.json
 data/ocr-cache.json
+data/codes.json
+data/links.json
+data/queue.json
+data/native_cache.json
+data/dead_domains.json
+data/bot_brain.json
+data/bench_daemon.err
+data/batch.txt
+data/batch-results.jsonl
 data/batch-engine.log
+data/chrome-profile*/
 engine-batch.log
 
 # Discord Bot runtime databases & caches

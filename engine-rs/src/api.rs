@@ -181,23 +181,16 @@ async fn resolve(
 
     // 1) Zero-browser decode.
     if let Some(destination) = fast_decode(&url) {
-        let track_id = state.inner.link_begin(&url, Some("decode")).await;
+        let elapsed = elapsed_ms(started);
         state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
         state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
         state
             .inner
-            .link_finish(
-                &track_id,
-                "success",
-                Some(destination.clone()),
-                None,
-                elapsed_ms(started),
-                false,
-            )
+            .record_cached_hit(&url, "decode", &destination, elapsed, false)
             .await;
         let mut response = envelope("success", &url, Some("decode"));
         response["destination_url"] = json!(destination);
-        response["elapsed_ms"] = json!(elapsed_ms(started));
+        response["elapsed_ms"] = json!(elapsed);
         return Ok(response);
     }
 
@@ -223,60 +216,85 @@ async fn resolve(
     // 3) Cache.
     if !fresh {
         if let Some(destination) = state.inner.cache_get(&key).await {
-            let track_id = state.inner.link_begin(&url, Some(provider)).await;
+            let elapsed = elapsed_ms(started);
             state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
             state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
             state.inner.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
             state
                 .inner
-                .link_finish(
-                    &track_id,
-                    "success",
-                    Some(destination.clone()),
-                    None,
-                    elapsed_ms(started),
-                    true,
-                )
+                .record_cached_hit(&url, provider, &destination, elapsed, true)
                 .await;
             let mut response = envelope("success", &url, Some(provider));
             response["destination_url"] = json!(destination);
             response["cached"] = json!(true);
-            response["elapsed_ms"] = json!(elapsed_ms(started));
+            response["elapsed_ms"] = json!(elapsed);
             return Ok(response);
         }
     }
 
-    // 4) Single-flight per key: a burst on one alias runs one browser job.
+    // 4) Single-flight per key: a burst on one alias shares one browser job and
+    // does not block async (`wait=false`) or timed waiters behind a long lock.
     let key_lock = state.inner.key_lock(&key).await;
-    let _guard = key_lock.lock().await;
+    let guard = key_lock.lock().await;
+    let req_code = code.filter(|c| !c.trim().is_empty());
     if !fresh {
         if let Some(destination) = state.inner.cache_get(&key).await {
-            let track_id = state.inner.link_begin(&url, Some(provider)).await;
+            drop(guard);
+            let elapsed = elapsed_ms(started);
             state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
             state.inner.stats.successes.fetch_add(1, Ordering::Relaxed);
             state.inner.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
             state
                 .inner
-                .link_finish(
-                    &track_id,
-                    "success",
-                    Some(destination.clone()),
-                    None,
-                    elapsed_ms(started),
-                    true,
-                )
+                .record_cached_hit(&url, provider, &destination, elapsed, true)
                 .await;
             let mut response = envelope("success", &url, Some(provider));
             response["destination_url"] = json!(destination);
             response["cached"] = json!(true);
-            response["elapsed_ms"] = json!(elapsed_ms(started));
+            response["elapsed_ms"] = json!(elapsed);
             return Ok(response);
+        }
+        if req_code.is_none() {
+            if let Some((existing_job_id, mut rx)) = state.inner.inflight_join(&key).await {
+                drop(guard);
+                let mut response = envelope("queued", &url, Some(provider));
+                response["job_id"] = json!(existing_job_id);
+                if !wait {
+                    return Ok(response);
+                }
+                return match tokio::time::timeout(timeout, rx.recv()).await {
+                    Ok(Ok(outcome)) => {
+                        let mut done = envelope(
+                            if outcome.destination.is_some() { "success" } else { "failed" },
+                            &url,
+                            Some(provider),
+                        );
+                        done["destination_url"] = json!(outcome.destination);
+                        done["elapsed_ms"] = json!(elapsed_ms(started));
+                        done["job_id"] = json!(outcome.job_id);
+                        done["error"] = json!(outcome.error);
+                        Ok(done)
+                    }
+                    Ok(Err(_)) => {
+                        response["status"] = json!("failed");
+                        response["error"] = json!("worker dropped the job");
+                        Ok(response)
+                    }
+                    Err(_) => {
+                        response["status"] = json!("timeout");
+                        Ok(response)
+                    }
+                };
+            }
         }
     }
 
     // 5) Queue.
-    let req_code = code.filter(|c| !c.trim().is_empty());
     let job_id = new_job_id();
+    let coalesced = !fresh && req_code.is_none();
+    if coalesced {
+        state.inner.inflight_register(&key, &job_id).await;
+    }
     state
         .inner
         .job_put(JobView {
@@ -312,11 +330,25 @@ async fn resolve(
         url: url.clone(),
         code: req_code,
         track_id: track_id.clone(),
+        expect_result: wait,
         respond: sender,
     };
     if state.pool.try_dispatch(job).is_err() {
+        if coalesced {
+            state
+                .inner
+                .inflight_complete(
+                    &key,
+                    &job_id,
+                    None,
+                    Some("Hàng đợi đầy".into()),
+                    elapsed_ms(started),
+                )
+                .await;
+        }
         state.inner.queue_remove(&job_id).await;
         state.inner.job_remove(&job_id).await;
+        drop(guard);
         state
             .inner
             .link_finish(
@@ -331,6 +363,7 @@ async fn resolve(
         state.inner.stats.errors.fetch_add(1, Ordering::Relaxed);
         return Err(ApiError::busy());
     }
+    drop(guard);
     state.inner.stats.total.fetch_add(1, Ordering::Relaxed);
 
     let mut response = envelope("queued", &url, Some(provider));

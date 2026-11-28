@@ -21,6 +21,8 @@ pub struct Job {
     pub code: Option<String>,
     /// Row id on the live status board.
     pub track_id: String,
+    /// True when the primary HTTP caller is awaiting `respond` directly.
+    pub expect_result: bool,
     pub respond: oneshot::Sender<JobOutcome>,
 }
 
@@ -110,6 +112,7 @@ async fn resume_pending(inner: Arc<Inner>, sender: mpsc::Sender<Job>) {
             url: job_url,
             code: entry.code,
             track_id: entry.track_id,
+            expect_result: false,
             respond,
         };
         // A full channel leaves the row on disk untouched for the next boot;
@@ -145,7 +148,7 @@ pub fn audio_blocked(err: &FlowError) -> bool {
 pub fn is_bad_proxy_error(err: &FlowError) -> bool {
     matches!(
         err.kind,
-        "cdp" | "browser" | "timeout" | "rate_limit" | "captcha"
+        "cdp" | "browser" | "timeout" | "rate_limit" | "captcha" | "page" | "interstitial"
     ) || audio_blocked(err)
         || ip_blocked(err)
 }
@@ -154,13 +157,13 @@ pub fn is_bad_proxy_error(err: &FlowError) -> bool {
 pub fn is_retryable_error(err: &FlowError) -> bool {
     matches!(
         err.kind,
-        "rate_limit" | "audio" | "captcha" | "cdp" | "timeout" | "browser"
+        "rate_limit" | "audio" | "captcha" | "cdp" | "timeout" | "browser" | "page" | "interstitial"
     )
 }
 
 pub fn parse_job_retries(val: Option<&str>) -> usize {
     val.and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(3)
+        .unwrap_or(1)
         .clamp(1, 5)
 }
 
@@ -244,6 +247,15 @@ async fn worker_loop(
                 )
                 .await;
             record_failure(&inner, &job, "asr", "whisper model not loaded", elapsed_ms).await;
+            inner
+                .inflight_complete(
+                    &job.key,
+                    &job.job_id,
+                    None,
+                    Some("asr: whisper model not loaded".into()),
+                    elapsed_ms,
+                )
+                .await;
             inner.queue_remove(&job.job_id).await;
             if let Some(tx) = respond.take() {
                 let _ = tx.send(JobOutcome {
@@ -259,10 +271,16 @@ async fn worker_loop(
         };
 
         let max_attempts = job_retries_limit();
-        let mut final_outcome: Option<Result<String, FlowError>> = None;
+        let final_outcome;
+        let mut attempt = 0usize;
+        let mut interstitial_retried = false;
 
-        for attempt in 1..=max_attempts {
-            if respond.as_ref().map(|tx| tx.is_closed()).unwrap_or(true) {
+        loop {
+            attempt += 1;
+            if job.expect_result
+                && !inner.inflight_has_waiters(&job.key).await
+                && respond.as_ref().map(|tx| tx.is_closed()).unwrap_or(true)
+            {
                 warn!(
                     target: "engine",
                     worker = worker_id,
@@ -270,6 +288,7 @@ async fn worker_loop(
                     attempt,
                     "caller dropped connection/timed out, aborting remaining retries"
                 );
+                final_outcome = Some(Err(FlowError::new("aborted", "caller timed out")));
                 break;
             }
 
@@ -334,6 +353,15 @@ async fn worker_loop(
                             )
                             .await;
                         record_failure(&inner, &job, "browser", &err.to_string(), elapsed_ms).await;
+                        inner
+                            .inflight_complete(
+                                &job.key,
+                                &job.job_id,
+                                None,
+                                Some(format!("browser: {err}")),
+                                elapsed_ms,
+                            )
+                            .await;
                         inner.queue_remove(&job.job_id).await;
                         if let Some(tx) = respond.take() {
                             let _ = tx.send(JobOutcome {
@@ -356,7 +384,7 @@ async fn worker_loop(
             let chrome_port = active.chrome.port;
             let cdp = active.cdp.clone();
             let active_proxy = active.proxy.clone();
-            let attempt_timeout = inner.cfg.job_timeout.min(Duration::from_secs(150));
+            let attempt_timeout = inner.cfg.job_timeout.min(Duration::from_secs(140));
             let outcome = run_alias(
                 &cdp,
                 &asr,
@@ -380,7 +408,11 @@ async fn worker_loop(
             if let (Some(pool), Some(bad)) = (proxy::shared(), active_proxy.as_ref()) {
                 match &outcome {
                     Err(err) if is_bad_proxy_error(err) => {
-                        pool.mark_bad(bad)
+                        if proxy::is_warp_proxy(bad) {
+                            let _ = proxy::rotate_warp_ip().await;
+                        } else {
+                            pool.mark_bad(bad);
+                        }
                     }
                     Ok(_) => pool.mark_good(bad),
                     _ => {}
@@ -428,6 +460,20 @@ async fn worker_loop(
                 Err(err) => {
                     if is_bad_proxy_error(&err) {
                         session = None;
+                    }
+                    let fast_interstitial = err.kind == "interstitial"
+                        && !interstitial_retried
+                        && active_proxy.is_some();
+                    if fast_interstitial {
+                        interstitial_retried = true;
+                        warn!(
+                            target: "engine",
+                            worker = worker_id,
+                            alias = %job.alias,
+                            error = %err,
+                            "untitled interstitial detected in ~4s, rotating IP and retrying once"
+                        );
+                        continue;
                     }
                     if attempt < max_attempts && is_retryable_error(&err) {
                         warn!(
@@ -486,17 +532,22 @@ async fn worker_loop(
                 }
             }
         };
+        let inflight_dest = snapshot.destination_url.clone();
+        let inflight_err = snapshot.error.clone();
         inner
             .link_finish(
                 &job.track_id,
                 &snapshot.status,
-                snapshot.destination_url.clone(),
-                snapshot.error.clone(),
+                inflight_dest.clone(),
+                inflight_err.clone(),
                 snapshot.elapsed_ms,
                 false,
             )
             .await;
         inner.job_put(snapshot).await;
+        inner
+            .inflight_complete(&job.key, &job.job_id, inflight_dest, inflight_err, elapsed_ms)
+            .await;
         inner.queue_remove(&job.job_id).await;
 
         if let Some(tx) = respond.take() {
@@ -573,9 +624,9 @@ mod tests {
 
     #[test]
     fn test_parse_job_retries_clamping() {
-        assert_eq!(parse_job_retries(None), 3);
-        assert_eq!(parse_job_retries(Some("")), 3);
-        assert_eq!(parse_job_retries(Some("not-a-number")), 3);
+        assert_eq!(parse_job_retries(None), 1);
+        assert_eq!(parse_job_retries(Some("")), 1);
+        assert_eq!(parse_job_retries(Some("not-a-number")), 1);
         assert_eq!(parse_job_retries(Some("0")), 1);
         assert_eq!(parse_job_retries(Some("1")), 1);
         assert_eq!(parse_job_retries(Some("2")), 2);
